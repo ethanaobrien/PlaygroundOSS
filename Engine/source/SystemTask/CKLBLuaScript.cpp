@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -48,7 +48,7 @@ CKLBLuaScript::create(const char *bootScriptURL)
 {
     // 初期スクリプトのロードおよび初期化処理実行。
     // これ以後、スクリプトからタスクの起動が出来る。
-    if(!CKLBLuaEnv::getInstance().setupLuaEnv()) return NULL;    
+    if(!CKLBLuaEnv::getInstance().setupLuaEnv()) return NULL;
     if(!CKLBLuaEnv::getInstance().loadScript(bootScriptURL)) {
 		// boot script が読めないため、assertを出す。
 		klb_assertAlways("NOT FOUND! [ start.lua ]");

@@ -17,8 +17,13 @@
 
 #ifndef OPENGL2
 
-CShader*	CKLBOGLWrapper::createShader(SRenderState::RENDER_MODE /*mode*/, SHADER_TYPE type, const SParam* listParam) {
-	return createShader(null, type, listParam);
+const char*	CKLBOGLWrapper::getShaderSource(SRenderState::RENDER_MODE /*mode*/, SHADER_TYPE /*type*/) {
+	return null;
+}
+
+CShader*	CKLBOGLWrapper::createShader(SRenderState::RENDER_MODE mode, SHADER_TYPE type, const SParam* listParam) {
+	const char* source = getShaderSource(mode, type);
+	return createShader(source, type, listParam);
 }
 
 // Shaders.
@@ -196,6 +201,10 @@ void CKLBOGLWrapper::releaseShaderSet(CShaderSet* pFullShader) {
 
 	KLBDELETE(pFullShader);
 	pFullShader = NULL;	// 2012.12.11  念の為
+}
+
+void CKLBOGLWrapper::resetShader() {
+	m_lastShaderInstance = NULL;
 }
 
 void CKLBOGLWrapper::draw(

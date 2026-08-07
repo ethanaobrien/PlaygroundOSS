@@ -370,7 +370,7 @@ void callbackFS(u32 cbInfos, float float_1, const char* string_1)
 	ETRY
 }
 
-void CKLBScriptEnv::call_onDie					(const char* funcNAme, CKLBObjectScriptable* obj)
+void CKLBScriptEnv::call_onDie					(const char* funcNAme, CKLBObject* obj)
 {
 	m_call++;
 	u32 objectHandle = obj->getScriptHandle();
@@ -446,6 +446,23 @@ void CKLBScriptEnv::call_resume					(const char* funcName, CKLBObjectScriptable*
 	callbackV(objectHandle);
 }
 
+void CKLBScriptEnv::call_safeAreaChanged		(const char* /*funcName*/)
+{
+}
+
+const char* CKLBScriptEnv::call_getString(const char* /*funcName*/, const char* /*key*/)
+{
+	return NULL;
+}
+
+void CKLBScriptEnv::call_eventUIListUpdate	(const char* /*funcName*/)
+{
+}
+
+void CKLBScriptEnv::call_assetNotFound(const char* /*funcName*/, CKLBObjectScriptable* /*obj*/, const char* /*assetPath*/, const char* /*fileName*/)
+{
+}
+
 void CKLBScriptEnv::call_storeEvent				(const char* funcName, CKLBObjectScriptable* obj, u32 type, const char* itemID, const char* param)
 {
 	m_call++;
@@ -468,6 +485,22 @@ void CKLBScriptEnv::call_eventVirtualDoc		(const char* funcName, CKLBObjectScrip
 	u32 objectHandle = obj->getScriptHandle();
 	klb_assert(objectHandle != _NULLHANDLER,"ScriptHandle is null");
 	callbackUIIII(objectHandle, type, param1, param2, param3, param4);
+}
+
+void CKLBScriptEnv::call_eventClippedMap(const char* /*funcName*/, CKLBObjectScriptable* obj, u8 limitMask)
+{
+	m_call++;
+	u32 objectHandle = obj->getScriptHandle();
+	klb_assert(objectHandle != _NULLHANDLER,"ScriptHandle is null");
+	callbackU(objectHandle, limitMask);
+}
+
+void CKLBScriptEnv::call_eventClippedMap(const char* /*funcName*/, CKLBObjectScriptable* obj)
+{
+	m_call++;
+	u32 objectHandle = obj->getScriptHandle();
+	klb_assert(objectHandle != _NULLHANDLER,"ScriptHandle is null");
+	callbackV(objectHandle);
 }
 
 void CKLBScriptEnv::call_touchPad				(const char* funcName, CKLBObjectScriptable* obj)
@@ -718,7 +751,7 @@ void CKLBScriptEnv::call_eventUpdateError(const char* funcName, CKLBObjectScript
 	// TODO
 }
 
-bool CKLBScriptEnv::call_netAPI_callback(const char* funcName, CKLBObjectScriptable* obj, s32 uniq, s32 msg, s32 status, CKLBJsonItem * pRoot) {
+bool CKLBScriptEnv::call_netAPI_callback(const char* funcName, CKLBObjectScriptable* obj, s32 uniq, s32 msg, s32 status, CKLBJsonItem * pRoot, int /*dataSize*/) {
 	m_call++;
 	u32 objectHandle = obj->getScriptHandle();
 	klb_assert(objectHandle != _NULLHANDLER,"ScriptHandle is null");

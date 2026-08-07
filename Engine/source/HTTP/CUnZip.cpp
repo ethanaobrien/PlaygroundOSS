@@ -26,18 +26,24 @@
 
 #define IsShiftJIS(x) ((BYTE)((x ^ 0x20) - 0xA1) <= 0x3B)
 
+bool KLBCreateDirectories(const char * path);
+
 CUnZip::CUnZip()
 : m_hUnzip  (0)
+, m_targetPath (NULL)
+, m_finished_entry  (0)
+, m_finished_file   (0)
 , m_bReady  (false)
-, m_finished_entry  (0) 
 {
 }
 
 CUnZip::CUnZip(const char * zip_path)
 : m_hUnzip      (0)
-, m_bReady      (false)
-, m_finished_entry  (0)
 , m_wrfile      (NULL)
+, m_targetPath  (NULL)
+, m_finished_entry  (0)
+, m_finished_file   (0)
+, m_bReady      (false)
 {
 	Open(zip_path);
     memset(m_currentPath, 0, sizeof(m_currentPath));
@@ -45,6 +51,7 @@ CUnZip::CUnZip(const char * zip_path)
 
 CUnZip::~CUnZip()
 {
+	if (m_targetPath) delete [] m_targetPath;
 	if(m_hUnzip) unzClose(m_hUnzip);
 }
 
@@ -101,24 +108,12 @@ bool
 CUnZip::CreateDirectoryReflex(const char * assetPath)
 {
 	const char * strPath = CPFInterface::getInstance().platform().getFullPath(assetPath);
-	char * strSubPath = new char [ strlen(strPath) + 1 ];
-	for (const char * p = strPath; *p; p++) {
-		if (*p == '/') {
-			int len = p - strPath + 1;
-			strncpy(strSubPath, strPath, len);
-			strSubPath[len] = 0;
-			if (!IsFileExist(strSubPath)) {
-				if (!make_directory(strSubPath)) {
-					delete [] strSubPath;
-					delete [] strPath;
-					return false;
-				}
-			}
-		}
+	bool result = false;
+	if (strPath) {
+		result = KLBCreateDirectories(strPath);
+		delete [] strPath;
 	}
-	delete [] strSubPath;
-	delete [] strPath;
-	return true;
+	return result;
 }
 
 bool
@@ -142,10 +137,17 @@ CUnZip::extractCurrentFile(const char * extract_root)
 {
 	if(!m_bReady) return false;
 
+	if (m_targetPath) delete [] m_targetPath;
 	m_targetPath = new char [ strlen(extract_root) + 512 + 1 ];
 	strcpy(m_targetPath, extract_root);
 	strcat(m_targetPath, m_currentPath);
-	CreateDirectoryReflex(m_targetPath);	// 指定されたディレクトリが無ければ作る
+	const char * targetPath = m_targetPath;
+	const char * strPath = CPFInterface::getInstance().platform().getFullPath(targetPath);
+	bool directoryReady = strPath && KLBCreateDirectories(strPath);
+	delete [] strPath;
+	if (!directoryReady) {
+		return abortCurrentFile();
+	}
 	m_extractFinish = true;
 
 	// ディレクトリの場合
@@ -155,29 +157,21 @@ CUnZip::extractCurrentFile(const char * extract_root)
 		afterExtract(m_targetPath, true, 0);
 		if (m_targetPath) {
 			delete [] m_targetPath;
-			m_targetPath = NULL;
 		}
+		m_targetPath = NULL;
 		return true;
 	}
 
 	// ファイルの場合
 	if (unzOpenCurrentFile(m_hUnzip) != UNZ_OK) {
-		if (m_targetPath) {
-			delete [] m_targetPath;
-			m_targetPath = NULL;
-		}
-		return false;
+		return abortCurrentFile();
 	}
 
 	m_wrfile = CPFInterface::getInstance().platform().openTmpFile(m_targetPath);
 	if(!m_wrfile) {
 		// ファイルが書き込めない場合
 		unzCloseCurrentFile(m_hUnzip);
-		if (m_targetPath) {
-			delete [] m_targetPath;
-			m_targetPath = NULL;
-		}
-		return false;
+		return abortCurrentFile();
 	}
 
 	// unzReadCurrentFile() は最初の一回のみ malloc() を呼ぶため、
@@ -185,28 +179,31 @@ CUnZip::extractCurrentFile(const char * extract_root)
 	unsigned char szBuffer[BUF_SIZE];
 	unsigned long dwSizeRead;
 	m_dwSizeWrite = 0;
-    memset(szBuffer, 0, sizeof(szBuffer));
 	if((dwSizeRead = unzReadCurrentFile(m_hUnzip, szBuffer, sizeof szBuffer)) > 0) {
 		m_dwSizeWrite += m_wrfile->writeTmp(szBuffer, dwSizeRead);
-        memset(szBuffer, 0, sizeof(szBuffer));
 	}
 
 	// この段階で展開が終了していたら、わざわざ別スレッドを立ち上げる必要はない。
 	if(m_dwSizeWrite == m_fileInfo.uncompressed_size) {
 		return true;
 	}
+	if(m_dwSizeWrite != dwSizeRead) {
+		return abortCurrentFile();
+	}
 
 	// 展開はこれから別スレッドで行う。スレッド立ち上げ前に展開終了ステータスを false にする
 	m_extractFinish = false;
-	IPlatformRequest& pForm = CPFInterface::getInstance().platform();
-	m_hThread = pForm.createThread(CUnZip::ThreadExtractEntry, this);
+	m_writeError = false;
+	m_hThread = CPFInterface::getInstance().platform().createThread(CUnZip::ThreadExtractEntry, this);
 
 	return true;
 }
 
 bool
-CUnZip::isFinishExtract()
+CUnZip::isFinishExtract(bool * hasError)
 {
+	bool result = true;
+	*hasError = false;
 	if(!m_extractFinish) {
 		// 展開が終了していない場合はスレッドをウォッチ
 		s32 status = 0;
@@ -216,39 +213,49 @@ CUnZip::isFinishExtract()
 		pForm.deleteThread(m_hThread);
 		m_hThread = NULL;
 		m_extractFinish = true;
+		if(m_writeError) {
+			*hasError = true;
+		}
 	}
 
     if (m_wrfile) {
         delete m_wrfile;
         m_wrfile = NULL;
     }
-	unzCloseCurrentFile(m_hUnzip);
-/*
-	if(m_dwSizeWrite != m_fileInfo.uncompressed_size) {
-		delete [] m_targetPath;
-		m_targetPath = 0;
-		return true;
+	bool extractionResult;
+	if(unzCloseCurrentFile(m_hUnzip) != UNZ_OK) {
+		*hasError = true;
+		extractionResult = true;
+	} else {
+		extractionResult = *hasError;
+		if(!extractionResult) {
+			m_finished_entry++;
+			m_finished_file++;
+			extractionResult = false;
+		}
 	}
-*/
-	// 展開後処理呼び出し
-	m_finished_entry++;
-	afterExtract(m_targetPath, false, m_dwSizeWrite);
-    if (m_targetPath) {
-        DEBUG_PRINT("[unzip] m_targetpath delete %s", m_targetPath);
-        delete [] m_targetPath;
-        m_targetPath = NULL;
-    }
-	return true;
+	result = extractionResult;
+	if(m_targetPath) {
+		delete [] m_targetPath;
+	}
+	m_targetPath = NULL;
+	return result;
 }
 
 s32
-CUnZip::ThreadExtract(void * /* hThread */, void * /*data*/)
+CUnZip::ThreadExtract(void * /* hThread */, void * /* data */)
 {
 	unsigned char szBuffer[BUF_SIZE];
-	unsigned long dwSizeRead;
+	int dwSizeRead;
     memset(szBuffer, 0, sizeof(szBuffer));
     while ((dwSizeRead = unzReadCurrentFile(m_hUnzip, szBuffer, sizeof szBuffer)) > 0) {
-		m_dwSizeWrite += m_wrfile->writeTmp(szBuffer, dwSizeRead);
+		size_t sizeRead = dwSizeRead;
+		size_t sizeWritten = m_wrfile->writeTmp(szBuffer, sizeRead);
+		if(sizeRead != sizeWritten) {
+			m_writeError = true;
+			break;
+		}
+		m_dwSizeWrite += sizeWritten;
         memset(szBuffer, 0, sizeof(szBuffer));
 	}
 

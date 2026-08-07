@@ -41,15 +41,17 @@ static CKLBTaskFactory<CKLBUITouchPad> factory("UI_TouchPad", CLS_KLBUITOUCHPAD,
 enum {
 	ARG_CALLBACK = 1,
 	ARG_MODAL,
+	ARG_EXCLUSIVE,
 
 	ARG_REQUIRE = ARG_CALLBACK,
-	ARG_NUMS = ARG_MODAL
+	ARG_NUMS = ARG_EXCLUSIVE
 };
 
 CKLBUITouchPad::CKLBUITouchPad() 
 : CKLBLuaTask   ()
 , m_luaFunc     (NULL)
-, m_bAll        (false) 
+, m_fingerMask  (0)
+, m_bAll        (false)
 {
 }
 
@@ -64,12 +66,12 @@ CKLBUITouchPad::getClassID()
 }
 
 CKLBUITouchPad* 
-CKLBUITouchPad::create(CKLBTask* pParentTask, const char * funcName, bool modal) 
+CKLBUITouchPad::create(CKLBTask* pParentTask, const char * funcName, bool modal, bool exclusive) 
 {
 	CKLBUITouchPad* pTask = KLBNEW(CKLBUITouchPad);
     if(!pTask) { return NULL; }
 
-	if(!pTask->init(pParentTask, funcName, modal)) {
+	if(!pTask->init(pParentTask, funcName, modal, exclusive)) {
 		KLBDELETE(pTask);
 		return NULL;
 	}
@@ -77,26 +79,16 @@ CKLBUITouchPad::create(CKLBTask* pParentTask, const char * funcName, bool modal)
 }
 
 bool 
-CKLBUITouchPad::init(CKLBTask* pTask, const char* funcname, bool modal) 
+CKLBUITouchPad::init(CKLBTask* pTask, const char* funcname, bool modal, bool exclusive) 
 {
 	if(funcname) setStrC(m_luaFunc, funcname);
 	m_modal = modal;
 
-	m_ctrlList.pGroup           = NULL;
-	m_ctrlList.pGrpPrev         = NULL;
-	m_ctrlList.pGrpNext         = NULL;
-
-	m_ctrlList.pBegin           = NULL;
-	m_ctrlList.next             = NULL;
 	m_ctrlList.bEnable          = true;
-	m_ctrlList.bExclusive       = false;
-	m_ctrlList.bWorking         = false;
-	m_ctrlList.pCallbackIF      = NULL;
-	m_ctrlList.nativeCallback   = NULL;
-	m_ctrlList.pID              = NULL;
+	m_ctrlList.bExclusive       = exclusive;
 
 	if(m_modal) {
-		m_modalStack.setModal(false);
+		m_modalStack.setModal(true);
 		m_modalStack.push();	// modal stack に積む
 	}
     bool result = regist(pTask, P_AFTER);
@@ -116,8 +108,9 @@ CKLBUITouchPad::initScript(CLuaState& lua)
 
 	const char * funcname = lua.getString(ARG_CALLBACK);
 	bool modal = (argc >= ARG_MODAL) ? lua.getBool(ARG_MODAL) : false;
+	bool exclusive = (argc >= ARG_EXCLUSIVE) ? lua.getBool(ARG_EXCLUSIVE) : false;
 
-	return init(NULL, funcname, modal);
+	return init(NULL, funcname, modal, exclusive);
 }
 
 void
@@ -127,10 +120,14 @@ CKLBUITouchPad::execute(u32 /*deltaT*/)
 	CKLBFormGroup& fGrp = CKLBFormGroup::getInstance();
 
 	bool bEnable = (m_modal) ? m_modalStack.isEnable() : true;
-	bEnable = bEnable && !fGrp.isWorking(&m_ctrlList, this);	// locker 指定により、自分以外のロックのみを見る
+	bool bGroupEnable = true;
+	if(fGrp.isWorking(&m_ctrlList, this)) {
+		bGroupEnable = (m_fingerMask != 0);
+	}
+	bEnable &= bGroupEnable;	// locker 指定により、自分以外のロックのみを見る
 
 	// モーダル状態と、グループによる排他制御状態で反応を返すべきか判断する
-    if(!bEnable) { return; }    // どちらかにより無効にされていたら処理しない。
+    if(bEnable != true) { return; }    // どちらかにより無効にされていたら処理しない。
 
 	CKLBTouchPadQueue& tpq = CKLBTouchPadQueue::getInstance();
 
@@ -164,6 +161,28 @@ CKLBUITouchPad::execute(u32 /*deltaT*/)
 
 		lua.retString("type");
 		lua.retInt(item->type);
+
+		if(m_ctrlList.bExclusive) {
+			switch(item->type) {
+			case PAD_ITEM::TAP:
+				{
+					u32 fingerMask = m_fingerMask;
+					m_fingerMask |= 1U << item->id;
+					if(!fingerMask) {
+						fGrp.setWorking(&m_ctrlList, true, this);
+					}
+				}
+				break;
+			case PAD_ITEM::RELEASE:
+				m_fingerMask &= ~(1U << item->id);
+				if(!m_fingerMask) {
+					fGrp.setWorking(&m_ctrlList, false, this);
+				}
+				break;
+			default:
+				break;
+			}
+		}
 		lua.tableSet();
 
 		lua.retString("id");

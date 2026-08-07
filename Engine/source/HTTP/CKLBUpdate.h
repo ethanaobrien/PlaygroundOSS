@@ -64,10 +64,23 @@ public:
 class CKLBUpdate : public CKLBLuaTask
 {
 	friend class CKLBTaskFactory<CKLBUpdate>;
+	friend class CKLBLuaLibASSET;
+	friend void teardownActiveConnectionList();
+	friend void teardownUpdateLists();
+	friend CKLBUpdate* popActiveUpdate();
 protected:
-	CKLBUpdate();
+	CKLBUpdate(bool createConnection = true);
 	virtual ~CKLBUpdate();
 public:
+	// Reported to the detailed error callback, so these cross into Lua.
+	enum UpdateError {
+		DOWNLOAD_FORBIDDEN		= -1,
+		DOWNLOAD_INVALID_SIZE	= -2,
+		DOWNLOAD_NODATA			= -3,
+		DOWNLOAD_ERROR			= -4,
+		UNZIP_ERROR				= -5
+	};
+
 	virtual u32  getClassID	();
 	virtual bool initScript	(CLuaState& lua);
 
@@ -75,24 +88,31 @@ public:
 	void die				();
 
 	static bool lockExist	();
+	static CKLBUpdate* createAssetDownload(
+		const char* callback, const char* targetName, const char* url,
+		const char* expectedSize, u32 timeout);
 protected:
+	static void startWaitingUpdates();
+	bool initAssetDownload(
+		const char* callback, const char* temporaryPath, const char* url,
+		const char* expectedSize, u32 timeout);
 	void exec_init_download	(u32 deltaT);
 	void exec_download		(u32 deltaT);
 	void exec_init_unzip	(u32 deltaT);
 	void exec_unzip			(u32 deltaT);
+	void exec_init_subthread_unzip(u32 deltaT);
+	void exec_subthread_unzip(u32 deltaT);
 	void exec_complete		(u32 deltaT);
-	void exec_finish		(u32 deltaT);
 
 	bool isUpdating			();
 	void cleanUpdate		(const char* tmpFile);
 	bool saveUpdate			();
 
-		   s32					workThread			();
-	static s32					threadFunc			(void* pThread, void* data);
-
 protected:
 	CKLBHTTPInterface	*	m_httpIF;
 	CUpdateUnZip		*	m_unzip;
+	CKLBSubThreadUnzip	*	m_subThreadUnzip;
+	CKLBUpdate			*	m_nextUpdate;
 
 	enum STEP {
 		S_INIT_DL,		// ダウンロード初期化
@@ -100,7 +120,13 @@ protected:
 		S_INIT_UNZIP,	// ZIP展開初期化
 		S_UNZIP,		// ZIP展開中
 		S_COMPLETE,		// Ensure that zip is fully unzipped
-		S_FINISHED,		// 完了
+		S_INIT_SUBTHREAD_UNZIP,
+		S_SUBTHREAD_UNZIP,
+		S_FINISHED,
+	};
+	struct SDownloadProgress {
+		float maximum;
+		STEP step;
 	};
 
 	const char			*	m_callbackDL;
@@ -108,20 +134,26 @@ protected:
 	const char			*	m_callbackFinish;
 	const char			*	m_callbackError;
 	
-	void*					m_thread;
-	const char			*	m_outPath;
+	const char			*	m_callbackDetailedError;
 	const char			*	m_tmpPath;
 	const char			*	m_zipURL;
 	s64						m_zipSize;
-	float					m_maxProgress;
-
-	volatile
-	STEP					m_eStep;		// 進行ステップ
+	SDownloadProgress		m_progress;
 	bool					m_extracting;	// 展開中
+	bool					m_zipOnly;
+	s32						m_httpStatusCode;
+	s32						m_downloadIdleTime;
+	s32						m_downloadTimeout;
+	bool					m_downloadComplete;
+	bool					m_unzipComplete;
 
 	s64						m_dlSize;	// ダウンロード終了サイズ
 	int						m_zipEntry;	// zip内のエントリ数
 };
+
+void teardownActiveConnectionList();
+void teardownUpdateLists();
+CKLBUpdate* popActiveUpdate();
 
 /*!
 * \class CKLBUpdateZip

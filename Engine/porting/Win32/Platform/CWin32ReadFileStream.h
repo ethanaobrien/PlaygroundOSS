@@ -39,6 +39,7 @@ private:
     }
 public:
     virtual ~CWin32ReadFileStream();
+	bool isUserEncrypted() { return m_decrypter.m_useNew; }
 	inline void decryptSetup(const u8* ptr) {
 		u8 hdr[4];
 		hdr[0] = 0;
@@ -70,8 +71,8 @@ public:
     bool    readBlock	(void * buffer, u32 byteSize);
     ESTATUS getStatus	();
     
-    int     readU16arr	(u16 * pBufferU16, int items);
-    int     readU32arr	(u32 * PBufferU32, int items);
+    size_t  readU16arr	(u16 * pBufferU16, size_t items);
+    size_t  readU32arr	(u32 * PBufferU32, size_t items);
     
     IWriteStream * getWriteStream();
 

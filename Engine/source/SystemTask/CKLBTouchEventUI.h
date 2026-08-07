@@ -31,18 +31,23 @@ public:
 
 	void processUI      ();
 	void resetSelectable(CKLBUISelectable * pSelectable);
+	void resetDragTarget(CKLBUISelectable * pSelectable);
+	void dumpFormList   ();
 
 	void registForm     (SFormCtrlList * pList);
 	void removeForm     (SFormCtrlList * pList);
-	SFormCtrlList * searchCtrl(CKLBUISelectable * pCtrl);
+	SFormCtrlList * searchCtrl(CKLBUISelectable ** ppCtrl);
 
 	enum {
 		MAX_TOUCH_POINT = 10,
 		MV_BORDER = 20	// TAPからこのpixel数以上DRAGしたら、クリック操作ではないと判断
 	};
 private:
+	s32 processRelease(const PAD_ITEM * item, CKLBUISelectable ** ppCtrl);
+
 	// 現在稼働中のフォームごとに、各フォームのコントロールリストが登録される。
 	SFormCtrlList		*	m_pFormBegin;
+	CKLBUISelectable	*	m_pDragTarget;
 
 	CKLBUISelectable	*	m_pTarget[ MAX_TOUCH_POINT ];
 	struct {

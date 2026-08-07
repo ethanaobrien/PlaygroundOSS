@@ -15,5 +15,18 @@
 */
 
 struct SUserStruct {
-	// Here add your custom information needed in the decrypter
+	u32	m_streamOffset;
+	u32	m_blockRemaining;
+	u32	m_payloadLength;
+	u8	m_primaryKeyBytes[4];
+	u8	m_secondaryKeyBytes[4];
+	u8	m_headerKeyBytes[4];
+	u8	m_workKeyBytes[4];
+	u8	m_savedWorkKeyBytes[4];
+	u8	m_streamPhase;
+	u32	m_primaryInitialState;
+	u32	m_primaryVariant;
+	u32	m_primaryState;
+	u32	m_secondaryInitialState;
+	u32	m_secondaryState;
 };

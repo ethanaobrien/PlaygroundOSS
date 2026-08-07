@@ -35,10 +35,12 @@ class CKLBListDrag : public CKLBDragCallbackIF
 public:
 	CKLBListDrag(CKLBUIList * parent, const char * funcname);
 	virtual ~CKLBListDrag();
-	void callback(PAD_ITEM::TYPE type, int tap_x, int tap_y, int mv_x, int mv_y);
+	s32 callback(PAD_ITEM::TYPE type, int tap_x, int tap_y, int mv_x, int mv_y);
+	void setEventClip(bool eventClip) { m_eventClip = eventClip; }
 
 private:
 	CKLBUIList		*	m_pParent;
+	bool				m_eventClip;
 };
 
 /*!
@@ -210,10 +212,10 @@ public:
 
 	int  cmdItemAdd     (CLuaState& lua, int argc);
 	bool cmdItemAdd     (const char* assetName);
-	bool cmdItemAdd     (const char* assetName, int step, int id = -1);
+	bool cmdItemAdd     (const char* assetName, int step, s64 id = -1);
 	int  cmdItemInsert  (CLuaState& lua, int argc);
 	bool cmdItemInsert  (const char* assetName, int idx);
-	bool cmdItemInsert  (const char* assetName, int idx, int step, int id);
+	bool cmdItemInsert  (const char* assetName, int idx, int step, s64 id);
 	bool cmdItemRemove  (int idx);
 	void cmdItemMove    (int src, int dst);
 	int  cmdItemRemoveSelection (CLuaState& lua, int argc);
@@ -225,16 +227,17 @@ public:
 
 	void cmdSetMargin   (int top, int bottom);
 	bool cmdSetItemMode (int mode, const char* dynamicCallback);
+	void bindDataTask   (CKLBDataTask* dataTask);
 
-	bool cmdAddRecords  (int insIdx, const char* tpform, u32 sizeTemplate, const char* dbrecs, u32 sizeDBRec, int step);
+	bool cmdAddRecords  (int insIdx, const char* tpform, size_t sizeTemplate, const char* dbrecs, size_t sizeDBRec, int step);
 
 	int  cmdSetPosition (int pos, int dir);
 	int  cmdSetInitial  (int);
 	int cmdSetDragRect  (CLuaState& lua, int argc);
 	int  cmdGetPosition ();
 
-	void cmdSetItemID   (int index, int id);
-	int  cmdSearchID    (int id);
+	void cmdSetItemID   (int index, s64 id);
+	int  cmdSearchID    (s64 id);
 
 	void cmdSetItemPos  (int mode, int idx, int offset);
 
@@ -260,6 +263,7 @@ public:
 	void cmdSetClip         (u32 orderBegin, u32 orderEnd, s16 clipX, s16 clipY, s16 clipWidth, s16 clipHeight);
 	int  cmdGetItemCount    (CLuaState& lua, int argc);
 	int  cmdGetItemForm     (CLuaState& lua, int argc);
+	int  cmdSetDynamicMargin(CLuaState& lua, int argc);
 
 	int  setPosition        (int pos);
 	void updateEnable       ();
@@ -291,12 +295,15 @@ private:
 	bool					m_vertical;		// 縦配置フラグ(true:縦スクロール/false:横スクロール)
 	bool					m_chklimit;		// 上限/下限制約をつける
 	bool					m_touchenable;	// 入力取得許可/禁止
+	bool					m_eventClipRect;
 
 	int						m_stepX;		// 横方向のアイテム原点間隔(縦配置のときは0)
 	int						m_stepY;		// 縦方向のアイテム原点間隔(横配置のときは0)
 
 	int						m_listLength;	// リストの長さ
 	int						m_flags;		// 動作オプションフラグ
+	s32						m_dynamicMarginTop;
+	s32						m_dynamicMarginBottom;
 
 	// Listの親ノード
 	// 全てのアイテムは、このノードの下にぶらさがる。
@@ -329,7 +336,7 @@ private:
 		bool				enable;	// 項目操作の許可禁止
 
 		const char		*	jsonp;	// dynamic モードで使用。アイテム生成フォームのJSON
-		u32					jsonlen;
+		size_t				jsonlen;
 
 		CKLBNode		*	form;	// 項目フォームのノード
 		u32					handle;	// フォームアセットのハンドル
@@ -339,7 +346,7 @@ private:
 		int					step;	// 項目の占有する幅
 		int					pos;	// アイテムが現在存在する場所
 		int					index;	// アイテムのindex
-		int					id;		// アイテムに与えられたID
+		s64					id;		// アイテムに与えられたID
 
 		// このアイテムで起動されたタスクの一覧
 		CKLBRegistedTaskList	taskList;
@@ -366,6 +373,10 @@ private:
 
 	LISTITEM		*	m_killBegin;
 	LISTITEM		*	m_killEnd;
+	LISTITEM		*	m_pDynamicCurrentItem;
+	s32					m_dragCurX;
+	s32					m_dragCurY;
+	bool					m_deferredDragRelease;
 
 	int					m_itemCnt;			// 登録アイテム数
 	int					m_scrollPos;		// スクロール位置
@@ -386,6 +397,10 @@ private:
 	int					m_limitAreaSize;	// 両端超過コールバックを呼びだす領域のサイズ
 
 	const char		*	m_dynamicCallback;	// ダイナミックモードでアイテムの再生が終了した後に呼び出すコールバック
+	const char		*	m_itemUpdateCallback;
+	CKLBCompositeAsset*	m_templateAsset;
+	const char		*	m_templateString;
+	DataSourceSubscription m_dataSourceSubscription;
 
 	int					m_dragID;
 	int					m_dragX;
@@ -397,6 +412,7 @@ private:
 	s32					m_dragDistance;
 
 	CKLBScrollBarIF		m_scrBar;			// スクロールバー
+	bool					m_forceScrollBarEnable;
 
 	// デフォルトスクロールで使用する。
 	int					m_defaultPrePos;
@@ -416,6 +432,9 @@ private:
 
 
 private:
+	static void dataSourceUpdateCallback(void* context, s64 afterRecordID, s64 firstRecordID, u32 recordCount);
+	void        dataSourceUpdate        (s64 afterRecordID, s64 firstRecordID, u32 recordCount);
+
 	void        updateIndex ();
 
 	bool        setClip     (u32 orderBegin, u32 orderEnd,
@@ -423,36 +442,38 @@ private:
 
 	bool        resetClip   (u32 orderBegin, u32 orderEnd, s16 clipX, s16 clipY, s16 clipWidth, s16 clipHeight, bool forceClip);
 
-	LISTITEM *  create_item (const char * json, u32 jsonLen, int id = -1, CKLBCompositeAsset * pAsset = NULL, IDataSource * pSource = NULL);
+	LISTITEM *  create_item (const char * json, size_t jsonLen, s64 id = -1, CKLBCompositeAsset * pAsset = NULL, BaseRealDataProducer * pSource = NULL);
 	void        delete_item (LISTITEM * pItem, bool kill_child = true);
 
-	bool        load_itemform   (LISTITEM * pItem, const char * json, u32 jsonLen, CKLBCompositeAsset * pOrgAsset = NULL, IDataSource * pSource = NULL);
+	bool        load_itemform   (LISTITEM * pItem, const char * json, size_t jsonLen, CKLBCompositeAsset * pOrgAsset = NULL, BaseRealDataProducer * pSource = NULL);
 	bool        unload_itemform (LISTITEM * pItem, bool kill_child = true);
 	
-	inline void set_item_id (LISTITEM * pItem, int id = -1) { pItem->id = id; }
+	inline void set_item_id (LISTITEM * pItem, s64 id = -1) { pItem->id = id; }
 
-	int         get_item_index_by_id(int id);
+	int         get_item_index_by_id(s64 id);
 
-	LISTITEM *  getItemByID (int id);
+	LISTITEM *  getItemByID (s64 id);
 
 	LISTITEM *  getItemByIndex(int index);
 
 	// 指定されたLuaスタック上のパラメータをJSON文字列に変換する
-	const char * toJSON(CLuaState& lua, int index, u32& size);
+	const char * toJSON(CLuaState& lua, int index, size_t& size);
+	bool         setTemplate(const char* assetName);
 
 	// 指定されたLuaスタック上のパラメータを元に、テーブルにぶら下げるアイテムツリーを生成する。
-	bool itemInsertUniversal(LISTITEM * posItem, int step, CLuaState& lua, int index, int id = -1);
+	bool itemInsertUniversal(LISTITEM * posItem, int step, CLuaState& lua, int index, s64 id = -1);
 
 	// JSONをもとにアイテムツリーを作り、
 	// posItem とその直前のアイテムの間に挟む
-	bool itemInsert(LISTITEM * posItem, int step, const char * json, u32 jsonLen, int id = -1,
-					CKLBCompositeAsset * pAsset = 0, IDataSource * pSource = 0);
+	bool itemInsert(LISTITEM * posItem, int step, const char * json, size_t jsonLen, s64 id = -1,
+					CKLBCompositeAsset * pAsset = 0, BaseRealDataProducer * pSource = 0);
 
 	// 指定されたアイテムを削除し、間を詰める
 	void itemDelete(LISTITEM * posItem);
 
 	// 削除予約されたアイテムインスタンスをすべて削除する
-	void itemCleanUp(bool kill_child = true);
+	void itemCleanUp();
+	void itemCleanUp(bool kill_child);
 
 	// アイテムを挿入/破棄した後の処理として、各アイテムの配置を再計算する。
 	void itemRealloc();
@@ -466,6 +487,9 @@ private:
 	// タッチパッドイベント処理
 	void touchpadEvent();
 
+	// ドラッグ判定領域の実座標変換
+	void getDragArea(s32* area, s32& originX, s32& originY);
+
 	
 	s32 fromScreenDistanceToSplineDistance(s32 posPixelSpace);
 
@@ -474,13 +498,16 @@ private:
 	void interpolate2(float* array_, float sub, float& resA, float& resB);
 	void interpolate3(float* array_, float sub, float& resA, float& resB, float& resC);
 
+	static s32 scrollDirection(s32 from, s32 to);
+
 	// デフォルトスクロール処理
-	static void defaultScroll(void * pData, PAD_ITEM::TYPE type, int dragX, int dragY, int mvX, int mvY);
+	static s32 defaultScroll(void * pData, PAD_ITEM::TYPE type, int dragX, int dragY,
+						 int mvX, int mvY, int x, int y);
 
 public:
-	bool itemAddInsert(LISTITEM * posItem, const char* assetName, int step, int id);
+	bool itemAddInsert(LISTITEM * posItem, const char* assetName, int step, s64 id);
 	
-	static const char * toJSON(const char* param, u32& size);
+	const char * toJSON(const char* param, size_t& size);
 };
 
 

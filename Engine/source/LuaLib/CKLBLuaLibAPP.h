@@ -31,7 +31,14 @@ public:
 
 private:
 	static int luaCallApplication	(lua_State * L);
+	static int luaClearCookies		(lua_State * L);
 	static int luaGetPhysicalMem	(lua_State * L);
+	static int luaTimeSinceStart	(lua_State * L);
+	static int luaTimeSinceReboot	(lua_State * L);
+	static int luaDateTimeNow		(lua_State * L);
+	static int luaScreenShot		(lua_State * L);
+	static int luaSetIdleTimerActivity(lua_State * L);
+	static int luaGetBundleId		(lua_State * L);
 public: // Lua-free
 	static bool callApplication(IPlatformRequest::APP_TYPE type, const char* addr, const char* subject, const char* body);
 };

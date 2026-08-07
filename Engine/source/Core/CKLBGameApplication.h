@@ -25,6 +25,7 @@
 #include "CKLBObject.h"
 
 class CKLBAssetManager;
+class CKLBNode;
 
 class CKLBGameApplication : public IClientRequest
 {
@@ -34,19 +35,25 @@ public:
 
 	void setInitParam	(u32 param, void* complexSetup);
 	bool initGame		();
-	void finishGame		();
+	void finishGame		(bool complete);
     
 	bool setScreenInfo	(bool rotate, int width, int height);
 	bool setFilePath	(const char * strPath);
+	bool setLanguageFolder(const char * folder);
+	bool setStringCallback(const char * callback);
     
 	virtual 
 	bool executeCommand	(const char* command);
 	void reboot			();
 
     void resetViewport	();
+	void changeProjectionMatrix();
 
 	virtual FILE* getShellOutput();
 	virtual void  setShellOutput(FILE* stream);
+	virtual const char* getAssetDirPrefix();
+	virtual bool getString(char* buffer, u32 bufferSize, const char* key,
+	                       u32* charCount, const char* fallback);
 
 protected:
 	struct AllocationSize {
@@ -75,7 +82,7 @@ protected:
     // デフォルトでは全方向許可
     virtual bool reportScreenRotation(ORIGIN origin, SCRMODE mode);        
     // デフォルトでは縦横いずれでも全画面使用
-    virtual void changeScreenMatrix(ORIGIN origin, int width, int height);
+    bool changeScreenMatrix(ORIGIN origin, int width, int height);
     
     
     
@@ -102,7 +109,15 @@ protected:
 	bool	initLocalSystem		(CKLBAssetManager& mgrAsset);
 	virtual 
 	void	localFinish			();
-    
+	void	dumpScene			(CKLBNode* node);
+	void	resumeUITasks		(CKLBNode* node);
+	void	resumeTextInputTasks	(CKLBNode* node);
+	void	allocateCallbackMutex	();
+	void	releaseCallbackMutex	();
+	void	lockCallbackMutex		();
+	void	unlockCallbackMutex	();
+	    
+	int						m_sceneDumpDepth;
 	int						m_width;
 	int						m_height;
 	int						m_frameTime;
@@ -111,7 +126,11 @@ protected:
 	bool					m_useDefaultFont;
     bool                    m_updateRotation;
 	bool					m_reboot;
+	bool					m_freezeOnNextFrame;
 	const char			*	m_bootFile;
+	const char			*	m_languageFolder;
+	const char			*	m_stringCallback;
+	void				*	m_callbackMutex;
 	FILE*					m_outStream;
 };
 

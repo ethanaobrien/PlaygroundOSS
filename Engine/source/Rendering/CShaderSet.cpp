@@ -148,8 +148,8 @@ void CShaderSet::releaseAllInstances() {
 }
 
 void CShaderSet::releaseInstance(CShaderInstance* pInstance) {
-	klb_assertc(pInstance != NULL,						"null shader");
-	klb_assertc(pInstance->m_pShaderSet == this,"Invalid shader set");
+	klb_assertNull(pInstance != NULL,						"null shader");
+	klb_assertNull(pInstance->m_pShaderSet == this,"Invalid shader set");
 
 	CShaderInstance* p		= this->pInstances;
 	CShaderInstance* pPrev	= null;

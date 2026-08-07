@@ -23,6 +23,7 @@
 #include "CKLBFormIF.h"
 #include "CKLBModalStack.h"
 #include "CKLBFormGroup.h"
+#include "CKLBDataTask.h"
 
 /*!
 * \class CKLBUIForm
@@ -34,16 +35,34 @@
 class CKLBUIForm : public CKLBUITask
 {
 	friend class CKLBTaskFactory<CKLBUIForm>;
+
+	// Named design rectangles retained from the form's composite asset.
+	// The shipped command interface exposes at most twenty entries.
+	enum { DESIGN_RECT_MAX = 20 };
+	struct DESIGN_RECT {
+		float		x;
+		float		y;
+		float		width;
+		float		height;
+		CKLBNode*	pNode;
+		const char*	name;
+	};
 private:
 	CKLBUIForm();
 	virtual ~CKLBUIForm();
 
-	bool init(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, bool bAssetFile, const char* asset, bool bExclusive, bool modal, bool urgent);
-	bool initCore(u32 order, float x, float y, bool bAssetFile, const char* asset, u32 size, bool bExclusive, bool modal, bool urgent);
+	bool init(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, bool bAssetFile, const char* asset, bool bExclusive, bool modal, bool urgent,
+		u32 formWidth, u32 formHeight, CKLBDataTask* dataTask);
+	bool initCore(u32 order, float x, float y, bool bAssetFile, const char* asset, size_t size, bool bExclusive, bool modal, bool urgent,
+		u32 formWidth, u32 formHeight, CKLBDataTask* dataTask);
 
 public:
-	static CKLBUIForm* create(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, bool bAssetFile, const char* asset, bool bExclusive, bool modal, bool urgent);
+	static CKLBUIForm* create(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, bool bAssetFile, const char* asset, bool bExclusive, bool modal, bool urgent,
+		u32 formWidth = (u32)-1, u32 formHeight = (u32)-1, CKLBDataTask* dataTask = NULL);
+	static void setDataTask(CKLBDataTask* dataTask);
+	static CKLBDataTask* getDataTask();
 	bool initUI  (CLuaState& lua);
+	bool initUISecondary(CLuaState& lua);
 	int commandUI(CLuaState& lua, int argc, int cmd);
 
 	void execute(u32 deltaT);
@@ -105,12 +124,18 @@ public:
 protected:
 	u32			m_order;
 	const char* m_asset;
+	BaseRealDataProducer* m_dataSource;
+	DataSourceSubscription m_dataSourceSubscription;
 	bool		m_bAssetFile;
 	bool		m_bExclusive;
 private:
+	bool         initUI             (CLuaState& lua, int argumentOffset);
 	void         setGlobalVolume_r  (CKLBNode* pNode, float volume);
 	bool         setFormEnable      (bool bEnable);
 	virtual void setVisible         (bool visible);
+
+	DESIGN_RECT			m_designRect[DESIGN_RECT_MAX];
+	u16					m_designRectCount;
 
 	CKLBNode		*	m_pFormNode;
 	SFormCtrlList		m_ctrlList;
@@ -125,6 +150,7 @@ private:
 	bool				m_bInputEnable;	// これまでの InputEnable
 
 	static	PROP_V2		ms_propItems[];
+	static CKLBDataTask*	ms_dataTask;
 };
 
 #endif // CKLBUIForm_h

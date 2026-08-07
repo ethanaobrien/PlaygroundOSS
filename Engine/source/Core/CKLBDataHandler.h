@@ -20,6 +20,7 @@
 #include "CKLBTask.h"
 
 class CKLBDataSet;
+class CKLBAbstractAsset;
 
 class CKLBDataHandler {
 	friend class CKLBDataSet;
@@ -40,6 +41,9 @@ public:
 	static u16		allocateHandle	(void* ptr);
 
 	static void*	getPointer		(u16 handle);
+	static void		broadcastToHandlers(const char* name, void* data);
+	static void		replacePointer	(CKLBAbstractAsset* previous, CKLBAbstractAsset* replacement);
+	static void		replaceTexture	(CKLBAbstractAsset* replacement);
 private:
 	static u32		s_maxHandler;
 };

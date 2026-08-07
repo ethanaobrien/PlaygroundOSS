@@ -47,9 +47,78 @@ private:
 /*static*/ FT_Library		FontObject::s_library;
 /*static*/ FontObject::FONTALIAS	FontObject::g_fonts[5];
 /*static*/ u32				FontObject::g_fontInstalled	= 0;
+/*static*/ u32*			FontObject::s_textCodepoints	= NULL;
+/*static*/ u32*			FontObject::s_textFormatting	= NULL;
+/*static*/ u32				FontObject::s_textCapacity	= 0;
+/*static*/ bool				FontObject::s_useHinting		= true;
+
+static bool s_nativeFont;
 
 /*static*/ MemoryBlock*		MemoryBlock::s_blockList	= NULL;
 /*static*/ u16				MemoryBlock::s_blockCounter	= 0;
+
+void IPlatformRequest::setNativeFont(bool native) {
+	s_nativeFont = native;
+}
+
+void* IPlatformRequest::getFont(int size, const char* fontName, u32 type) {
+	if(s_nativeFont) {
+		s_nativeFont = false;
+		IFontIF* system = static_cast<IFontIF*>(getFontSystem());
+		return system->getFont(size, type);
+	}
+	return FontObject::createFont(fontName, size);
+}
+
+void IPlatformRequest::deleteFontResource(void* font) {
+	if(s_nativeFont) {
+		s_nativeFont = false;
+		IFontIF* system = static_cast<IFontIF*>(getFontSystem());
+		system->deleteFont(font);
+	} else {
+		FontObject::destroyFont(static_cast<FontObject*>(font));
+	}
+}
+
+bool IPlatformRequest::renderText(const char* text, void* font, u32 color,
+								  u16 width, u16 height, u8* buffer,
+								  s16 stride, s16 baseX, s16 baseY,
+								  u32 pixelBytes, float scaleX, float scaleY) {
+	if(s_nativeFont) {
+		s_nativeFont = false;
+		IFontIF* system = static_cast<IFontIF*>(getFontSystem());
+		return system->renderText(text, font, color, width, height, buffer,
+								  stride, baseX, baseY, pixelBytes,
+								  scaleX, scaleY);
+	}
+	FontObject* fontObject = static_cast<FontObject*>(font);
+	if(fontObject) {
+		fontObject->renderText(baseX, baseY, text, buffer, color,
+							   width, height, stride, pixelBytes, scaleX, scaleY);
+	}
+	return true;
+}
+
+bool IPlatformRequest::getTextInfo(const char* text, void* font, STextInfo* info,
+								   float scaleX, float scaleY) {
+	if(s_nativeFont) {
+		s_nativeFont = false;
+		IFontIF* system = static_cast<IFontIF*>(getFontSystem());
+		return system->getTextInfo(text, font, info, scaleX, scaleY);
+	}
+	if(font) {
+		static_cast<FontObject*>(font)->getTextInfo(text, info, scaleX, scaleY);
+	} else {
+		info->characterCount = 0;
+		info->width = 0.0f;
+		info->height = 0.0f;
+		info->ascent = 0.0f;
+		info->descent = 0.0f;
+		info->top = 0.0f;
+		info->bottom = 0.0f;
+	}
+	return true;
+}
 
 // ==========================================================================================
 //   Global reboot function
@@ -103,6 +172,9 @@ void FntDebug::checkTreeRec(u32 depth, u32 idx, u32 code) {
 	} else {
 		CharCache* pChar = &CharCache::s_cacheArray[idx];
 		if (pChar->m_unicode != code) {
+			// A leaf is reached after consuming all eight Unicode nibbles.
+			// Its cache entry must therefore retain the same reconstructed code.
+			// Any mismatch means the dictionary traversal no longer identifies it.
 			klb_assertAlways(" Adr Code : %08X <-> Char : %08X\n", code, pChar->m_unicode);
 		} else {
 //			printf(" Char : %08X\n", code);
@@ -114,13 +186,18 @@ void FntDebug::checkTreeRec(u32 depth, u32 idx, u32 code) {
 namespace FontSystem {
 	void reboot() {
 		// Release Font
-		FontObject::releaseFontSystem();
+		FontObject::releaseFontSystem(false);
 		// Clean Dictionnary entries.
 		CharDictionnary::reboot();
 		// Clean Character cache.
 		CharCache::reboot();
 		// Clean Memory Block
 		MemoryBlock::reboot();
+	}
+
+	void shutdown() {
+		FontObject::releaseFontSystem(true);
+		reboot();
 	}
 } // end FontSystem
 
@@ -132,80 +209,80 @@ namespace FontSystem {
 }
 
 /*static*/ void FontObject::test() {
-	DEBUG_PRINT("Font Object Test====\n");
+	// DEBUG_PRINT("Font Object Test====\n");
 	FontObject* p    = s_list;
 	FontObject* prev = NULL;
-	DEBUG_PRINT("Init : %i\n", s_init ? 1 : 0);
-	DEBUG_PRINT("Forward Parse.\n");
+	// DEBUG_PRINT("Init : %i\n", s_init ? 1 : 0);
+	// DEBUG_PRINT("Forward Parse.\n");
 	while (p) {
-		DEBUG_PRINT("\t%8X RefCount\n",p, p->m_refCount);
+		// DEBUG_PRINT("\t%8X RefCount\n",p, p->m_refCount);
 		prev = p;
 		p = p->m_next;
 	}
 	p = prev;
-	DEBUG_PRINT("Backward Parse.\n");
+	// DEBUG_PRINT("Backward Parse.\n");
 	while (p) {
-		DEBUG_PRINT("\t%8X\n",p);
+		// DEBUG_PRINT("\t%8X\n",p);
 		p = p->m_prev;
 	}
 }
 
 /*static*/ void CharDictionnary::test() {
-	DEBUG_PRINT("Char Dictionnary Test====\n");
+	// DEBUG_PRINT("Char Dictionnary Test====\n");
 	u16 p		= s_freeList;
 	u16 prev	= 0xFFFF;
-	DEBUG_PRINT("Forward Parse Free List.\n");
+	// DEBUG_PRINT("Forward Parse Free List.\n");
 	while (p != 0xFFFF) {
-		DEBUG_PRINT("\t%4X\n",p);
+		// DEBUG_PRINT("\t%4X\n",p);
 		prev = p;
 		p = s_dicoArray[p].m_next;
 	}
 
 	p = prev;
-	DEBUG_PRINT("Backward Parse free list.\n");
+	// DEBUG_PRINT("Backward Parse free list.\n");
 	while (p != 0xFFFF) {
-		DEBUG_PRINT("\t%4X\n",p);
+		// DEBUG_PRINT("\t%4X\n",p);
 		p = s_dicoArray[p].m_prev;
 	}
 
 	p		= s_usedList;
 	prev	= 0xFFFF;
-	DEBUG_PRINT("Forward Parse used List.\n");
+	// DEBUG_PRINT("Forward Parse used List.\n");
 	while (p != 0xFFFF) {
-		DEBUG_PRINT("\t%4X\n",p);
+		// DEBUG_PRINT("\t%4X\n",p);
 		prev = p;
 		p = s_dicoArray[p].m_next;
 	}
 
 	p = (u16)prev;
-	DEBUG_PRINT("Backward Parse used list.\n");
+	// DEBUG_PRINT("Backward Parse used list.\n");
 	while (p != 0xFFFF) {
-		DEBUG_PRINT("\t%4X\n",p);
+		// DEBUG_PRINT("\t%4X\n",p);
 		p = s_dicoArray[p].m_prev;
 	};
 }
 
 /*static*/ void CharCache::test() {
-	DEBUG_PRINT("Char Cache Test====\n");
-	DEBUG_PRINT("\tAlloc Count : %i\n",s_allocCounter);
+	// DEBUG_PRINT("Char Cache Test====\n");
+	// DEBUG_PRINT("\tAlloc Count : %i\n",s_allocCounter);
 
 	u16 p		= s_cacheStart;
 	u16 prev	= 0xFFFF;
-	DEBUG_PRINT("Forward Parse Allocated List.\n");
+	// DEBUG_PRINT("Forward Parse Allocated List.\n");
 	while (p != 0xFFFF) {
-		DEBUG_PRINT("\t%4X\n",p);
+		// DEBUG_PRINT("\t%4X\n",p);
 		prev = p;
 		p = s_cacheArray[p].m_next;
 	}
 
 	if ((prev != s_cacheEnd) && (s_cacheStart != 0xFFFF)) {
-		DEBUG_PRINT("ERROR !!! Char cache");
+		// DEBUG_PRINT("ERROR !!! Char cache");
 	}
 
 	p = prev;
-	DEBUG_PRINT("Backward Parse Allocated list.\n");
+	// DEBUG_PRINT("Backward Parse Allocated list.\n");
 	while (p != 0xFFFF) {
-		DEBUG_PRINT("\t%4X\n",p);
+		// DEBUG_PRINT("\t%4X\n",p);
 		p = s_cacheArray[p].m_prev;
 	}
 }
@@ -214,9 +291,6 @@ namespace FontSystem {
 }
 
 
-// ==========================================================================================
-//   Implementation CharCache
-// ==========================================================================================
 
 struct SubEntry {
 public:
@@ -240,10 +314,10 @@ CharDictionnary::CharDictionnary()
 	memset(m_idxTbl, 0xFF, 16 * sizeof(u16));
 }
 
-/*static*/ CharCache* CharDictionnary::getChar(u32 uniCode, FontObject* pFont) {
+/*static*/ CharCache* CharDictionnary::getChar(u32 uniCode, FontObject* pFont, s32 scaleX, s32 scaleY) {
 	FntDebug::check();	// Only place with one check.
 
-	CharCache* pEntry = findEntry(pFont, uniCode);
+	CharCache* pEntry = findEntry(pFont, uniCode, scaleX, scaleY);
 
 	if (pEntry == NULL) {
 		CharDictionnary* pParse = &s_dicoArray[pFont->m_dicoStart];
@@ -264,7 +338,7 @@ CharDictionnary::CharDictionnary()
 		}
 
 		u16 idxChar;
-		pEntry = CharCache::createEntry(uniCode, &idxChar, pFont);
+		pEntry = CharCache::createEntry(uniCode, &idxChar, pFont, scaleX, scaleY);
 		if (pEntry) {
 			pParse->m_idxTbl[copyCode>>28] = idxChar;
 		}
@@ -272,7 +346,7 @@ CharDictionnary::CharDictionnary()
 	return pEntry;
 }
 
-/*static*/ CharCache* CharDictionnary::findEntry(FontObject* pFont, u32 uniCode) {
+/*static*/ CharCache* CharDictionnary::findEntry(FontObject* pFont, u32 uniCode, s32 scaleX, s32 scaleY) {
 	CharDictionnary* pParse = &s_dicoArray[pFont->m_dicoStart];
 	u16 idx = 0;
 	for (int n=0; n < 8; n++) {
@@ -285,10 +359,15 @@ CharDictionnary::CharDictionnary()
 	}
 
 	if (idx != 0xFFFF) {
-		return &CharCache::s_cacheArray[idx];
+		CharCache* entry = &CharCache::s_cacheArray[idx];
+		if ((entry->m_scaleX == scaleY) && (entry->m_scaleY == scaleY)) {
+			return entry;
+		}
+		entry->m_unicode = (u32)-1;
 	} else {
 		return NULL;
 	}
+	return NULL;
 }
 
 /*static*/ u16		 CharDictionnary::createDicoEntry() {
@@ -486,25 +565,27 @@ CharDictionnary::CharDictionnary()
 	}
 }
 
-/*static*/ const char* FontObject::getFileFromFontName(const char* fontName, char* tmpBuffer) {
+/*static*/ const char* FontObject::getFileFromFontName(const char* fontName, char* tmpBuffer, FONTALIAS** fallbackFont, bool* useHinting) {
 
 	u32 idx			= 0xFFFF;
 	u32 defaultIdx	= 0xFFFF;
 
 	// Search logical name
-	for (u32 n=0; n < g_fontInstalled; n++) {
+	for (s32 n = g_fontInstalled - 1; n >= 0; n--) {
 		if (fontName && stricmp(fontName, g_fonts[n].logicalName) == 0) {
 			idx = n;
 			break;
 		}
 		if (g_fonts[n].isDefault) {
-			defaultIdx = n;
+			if (defaultIdx == 0xFFFF) {
+				defaultIdx = n;
+			}
 		}
 	}
 
 	// Search physical name
 	if ((idx == 0xFFFF) && fontName) {
-		for (u32 n=0; n < g_fontInstalled; n++) {
+		for (s32 n = g_fontInstalled - 1; n >= 0; n--) {
 			if (strstr(g_fonts[n].physicalName, fontName)) {
 				idx = n;
 				break;
@@ -518,18 +599,23 @@ CharDictionnary::CharDictionnary()
 	}
 
 	if (idx == 0xFFFF) {
-		DEBUG_PRINT("Call porting registerFont function from entry point (ie entrance) or LUA start.");
 		return NULL;
 	} else {
 		// Copy back to user
 		sprintf(tmpBuffer,"%s",g_fonts[idx].physicalName);
+		if (fallbackFont) {
+			*fallbackFont = g_fonts[idx].fallbackFont;
+		}
+		if (useHinting) {
+			*useHinting = g_fonts[idx].useHinting;
+		}
 
 		// return input buffer;
 		return tmpBuffer;
 	}
 }
 
-/*static*/ void FontObject::releaseFontSystem() {
+/*static*/ void FontObject::releaseFontSystem(bool releaseAllAliases) {
 	if (s_init) {
 		s_init = false;
 		while (s_list) {
@@ -537,19 +623,43 @@ CharDictionnary::CharDictionnary()
 			destroyFont(s_list, true);
 		}
 		FT_Done_FreeType( s_library );
-		for (u32 n=0; n < g_fontInstalled; n++) {
-			delete g_fonts[n].physicalName;		// Porting layer 'new'
-			KLBDELETEA(g_fonts[n].logicalName);	// Used copy utility to do copy, KLBNEWA
-		}
-		g_fontInstalled = 0;
+		s_library = NULL;
 	}
+	for (u32 n=0; n < g_fontInstalled; n++) {
+		if (releaseAllAliases || !g_fonts[n].isSystemFont) {
+			KLBDELETEA(g_fonts[n].physicalName);
+			g_fonts[n].physicalName = NULL;
+			KLBDELETEA(g_fonts[n].logicalName);
+			g_fonts[n].logicalName = NULL;
+		}
+	}
+	if (!releaseAllAliases) {
+		g_fontInstalled = g_fonts[0].isSystemFont;
+	}
+	KLBDELETEA(s_textCodepoints);
+	KLBDELETEA(s_textFormatting);
+	s_textCodepoints = NULL;
+	s_textFormatting = NULL;
+	s_textCapacity = 0;
 }
 
-/*static*/ bool	FontObject::registerFont(const char* logicalName, const char* physicalFont, bool asDefault) {
+/*static*/ bool	FontObject::registerFont(const char* logicalName, const char* physicalFont, bool asDefault, bool useHinting) {
 	if ((g_fontInstalled < 5) && logicalName && physicalFont) {
 		IPlatformRequest& platform = CPFInterface::getInstance().platform();
 		const char* fullpath = platform.getFullPath(physicalFont);	// Check also that file exists.
 		if (fullpath) {
+			for (u32 n = 0; n < g_fontInstalled; n++) {
+				if (strcmp(logicalName, g_fonts[n].logicalName) == 0) {
+					if (asDefault) {
+						for (u32 idx = 0; idx < g_fontInstalled; idx++) {
+							g_fonts[idx].isDefault = false;
+						}
+						g_fonts[n].isDefault = true;
+					}
+					return true;
+				}
+			}
+
 			const char* logicN	= CKLBUtility::copyString(logicalName);
 			if (logicN) {
 				if (asDefault) {
@@ -568,12 +678,51 @@ CharDictionnary::CharDictionnary()
 					}
 				}
 
+				g_fonts[g_fontInstalled		].isSystemFont	= s_useHinting;
+				g_fonts[g_fontInstalled		].fallbackFont	= NULL;
 				g_fonts[g_fontInstalled		].logicalName	= logicN;
-				g_fonts[g_fontInstalled++	].physicalName	= fullpath;
+				g_fonts[g_fontInstalled		].physicalName	= fullpath;
+				g_fonts[g_fontInstalled++	].useHinting	= useHinting;
 
 				return true;
 			}
 			delete fullpath;
+		}
+	}
+	return false;
+}
+
+/*static*/ void FontObject::disableHinting() {
+	s_useHinting = false;
+}
+
+bool IPlatformRequest::registerFont(const char* logicalName, const char* fallbackName) {
+	return FontObject::registerFont(logicalName, fallbackName);
+}
+
+bool IPlatformRequest::registerFont(const char* logicalName, const char* physicalFont,
+									bool asDefault, bool useHinting) {
+	return FontObject::registerFont(logicalName, physicalFont, asDefault, useHinting) | m_bNoDefaultFont;
+}
+
+/*static*/ bool FontObject::registerFont(const char* logicalName, const char* fallbackName) {
+	if (logicalName) {
+		u32 fontCount = g_fontInstalled;
+		s32 logicalIndex = -1;
+		if (fontCount) {
+			for (u32 n = 0; n < fontCount; n++) {
+				if (strcmp(g_fonts[n].logicalName, logicalName) == 0) {
+					logicalIndex = n;
+					break;
+				}
+			}
+		}
+
+		for (u32 n = 0; n < g_fontInstalled; n++) {
+			if ((strcmp(g_fonts[n].logicalName, fallbackName) == 0) && (logicalIndex >= 0)) {
+				g_fonts[logicalIndex].fallbackFont = &g_fonts[n];
+				return true;
+			}
 		}
 	}
 	return false;
@@ -590,38 +739,57 @@ CharDictionnary::CharDictionnary()
 	// 0. Init library if not done yet.
 	s32 error;
 	if (!s_init) {
-		error = FT_Init_FreeType( &s_library );              /* initialize library */
-		if ( !error ) {
-			s_init = true;
+		if (s_textCapacity < 1500) {
+			u32* codepoints = KLBNEWA(u32, 1501);
+			u32* formatting = KLBNEWA(u32, 1501);
+			KLBDELETEA(s_textCodepoints);
+			KLBDELETEA(s_textFormatting);
+			s_textCodepoints = codepoints;
+			s_textFormatting = formatting;
+			s_textCapacity = 1501;
 		}
+		error = FT_Init_FreeType( &s_library );              /* initialize library */
+		if (error) {
+			return NULL;
+		}
+		s_init = true;
 	}
 
 	// 1. Search matching font
 	FontObject* pFont = s_list;
 	
-	u32 lenN = 0;
+	size_t lenN = 0;
 	if (fontName) {
 		lenN = strlen(fontName);
-	
 		while (pFont) {
-			if (pFont->m_lenName == lenN) {
-				if (pFont->m_size == size) {
-					if (strcmp(pFont->m_name, fontName) == 0) {
-						pFont->m_refCount++;
-						return pFont;
-					}
-				}
+			if ((pFont->m_lenName == lenN) &&
+				(pFont->m_size == size) &&
+				(strcmp(pFont->m_name, fontName) == 0)) {
+				pFont->m_refCount++;
+				return pFont;
+			}
+			pFont = pFont->m_next;
+		}
+	} else {
+		while (pFont) {
+			if ((pFont->m_lenName == 0) &&
+				(pFont->m_size == size) &&
+				(pFont->m_name == NULL)) {
+				pFont->m_refCount++;
+				return pFont;
 			}
 			pFont = pFont->m_next;
 		}
 	}
 	
 	FT_Face face;
+	FONTALIAS* fallbackFont = NULL;
+	bool useHinting = true;
 	
 	// Internal Font
 	char buff[512];
 
-	error = FT_New_Face( s_library, FontObject::getFileFromFontName(fontName, buff), 0, &face );/* create face object */
+	error = FT_New_Face( s_library, FontObject::getFileFromFontName(fontName, buff, &fallbackFont, &useHinting), 0, &face );/* create face object */
 	if ( !error ) {
 		error = FT_Set_Char_Size( 	face, 		/* handle to face object			*/ 
 									0,			/* char_width same as char_height	*/
@@ -638,8 +806,8 @@ CharDictionnary::CharDictionnary()
 			pFont = new FontObject();
 			
 			if (pFont) {
-				pFont->m_prev = NULL;
 				// 2. If not found, add at the beginning of the list
+				pFont->m_prev = NULL;
 				if (s_list) {
 					s_list->m_prev = pFont;
 					pFont->m_next = s_list;
@@ -648,14 +816,22 @@ CharDictionnary::CharDictionnary()
 				}
 				s_list = pFont;
 				
-				pFont->m_refCount	= 1;
+				pFont->m_name		= fontName ? CKLBUtility::copyString(fontName) : NULL;
 				pFont->m_size		= size;
+				pFont->m_refCount	= 1;
 				pFont->m_face		= face;
 				pFont->m_lenName	= lenN;
-				pFont->m_name		= fontName ? CKLBUtility::copyString(fontName) : NULL;
 				pFont->m_hasKerning = FT_HAS_KERNING( face );
+				pFont->m_loadFlags = useHinting ? 0 : FT_LOAD_NO_HINTING;
 				pFont->m_dicoStart	= CharDictionnary::createDicoEntry();
 				if (pFont->m_dicoStart != 0xFFFF) {
+					if (fallbackFont) {
+						pFont->m_fallback = createFont(fallbackFont->logicalName, size);
+						if (pFont->m_fallback == NULL) {
+							destroyFont(pFont);
+							return NULL;
+						}
+					}
 					return pFont;
 				}
 				destroyFont(pFont);
@@ -693,6 +869,9 @@ CharDictionnary::CharDictionnary()
 			FT_Done_Face ( pFont->m_face );
 
 			CharDictionnary::destroyTree(pFont->m_dicoStart, 0);
+			if (pFont->m_fallback) {
+				destroyFont(pFont->m_fallback);
+			}
 
 			// 3. Destroy object
 			delete pFont;
@@ -701,7 +880,10 @@ CharDictionnary::CharDictionnary()
 }
 
 FontObject::FontObject()
-{ /* Do nothing, all done inside static functions */ }
+{
+	m_fallback = NULL;
+	m_name = NULL;
+}
 
 FontObject::~FontObject()
 {
@@ -721,12 +903,25 @@ float FontObject::getAscent() {
 	return (float)(met->ascender >> 6);
 }
 
-FT_GlyphSlot FontObject::renderChar(u32 unicode) {
-	FT_GlyphSlot glyphslt = m_face->glyph;
-	u32 glyph_index = FT_Get_Char_Index( m_face, unicode );
-	FT_Error error = FT_Load_Glyph(	m_face,				/* handle to face object */
-							glyph_index,		/* glyph index */
-							FT_LOAD_RENDER );	/* does render with FT_RENDER_MODE_NORMAL as we do not perform any transform */
+FT_GlyphSlot FontObject::renderChar(u32 unicode, s32 scaleX, s32 scaleY, FontObject** selectedFont) {
+	FT_Face face = m_face;
+	FT_GlyphSlot glyphslt = face->glyph;
+	u32 glyph_index = FT_Get_Char_Index(face, unicode);
+	if ((glyph_index == 0) && m_fallback) {
+		face = m_fallback->m_face;
+		glyphslt = face->glyph;
+		glyph_index = FT_Get_Char_Index(face, unicode);
+		*selectedFont = m_fallback;
+	} else {
+		*selectedFont = this;
+	}
+
+	FT_Matrix transform = {
+		(FT_Fixed)(scaleX << 2), 0,
+		0, (FT_Fixed)(scaleY << 2)
+	};
+	FT_Set_Transform(face, &transform, NULL);
+	FT_Error error = FT_Load_Glyph(face, glyph_index, FT_LOAD_RENDER | m_loadFlags);
 	if (!error) {
 		return glyphslt;
 	} else {
@@ -734,11 +929,12 @@ FT_GlyphSlot FontObject::renderChar(u32 unicode) {
 	}
 }
 
-/*static*/ CharCache* CharCache::createEntry(u32 uniCode, u16* outIdx, FontObject* pFont) {
+/*static*/ CharCache* CharCache::createEntry(u32 uniCode, u16* outIdx, FontObject* pFont, s32 scaleX, s32 scaleY) {
 	CharCache* pItem = NULL;
 
 	// Render Glyph
-	FT_GlyphSlot glyphslt = pFont->renderChar(uniCode);
+	FontObject* renderFont;
+	FT_GlyphSlot glyphslt = pFont->renderChar(uniCode, scaleX, scaleY, &renderFont);
 	
 	// Add to block	
 	u16 blockIdx;
@@ -786,12 +982,14 @@ FT_GlyphSlot FontObject::renderChar(u32 unicode) {
 		pItem->m_height		= bmp->rows;
 		pItem->m_offsetX	= glyphslt->bitmap_left;
 		pItem->m_offsetY	= -glyphslt->bitmap_top;
-		pItem->m_advanceX	= (s8)(glyphslt->advance.x >> 6);
-		pItem->m_advanceY	= (s8)(glyphslt->advance.y >> 6);
+		pItem->m_advanceX	= (s16)glyphslt->advance.x;
 		pItem->m_blockIndex	= blockIdx;
 		pItem->m_blockCharIndex = blockCharIdx;
 		pItem->m_ptr		= ptrBuff;
 		pItem->m_pFontObj	= pFont;
+		pItem->m_pRenderFont = renderFont;
+		pItem->m_scaleX		= scaleX;
+		pItem->m_scaleY		= scaleY;
 
 		u8* write	= pItem->m_ptr;
 		u8* src		= bmp->buffer;
@@ -818,8 +1016,30 @@ FT_GlyphSlot FontObject::renderChar(u32 unicode) {
 #endif
 		}
 
+		/*
+		 * Each cache slot stores two views of the rendered glyph.
+		 * The first view is the byte-per-pixel FreeType coverage copied above.
+		 *
+		 * The second view is a compact column mask used by clipped text drawing.
+		 * It starts after the coverage bytes at the next four-byte boundary,
+		 * allowing the mask to be addressed as an array of u32 values.
+		 *
+		 * Each output word covers up to 32 horizontal pixels on one scanline.
+		 * Consecutive words advance through the glyph rows before moving to
+		 * the next 32-pixel horizontal group.
+		 *
+		 * Only complete groups use all 32 bits.  For the final group, ex keeps
+		 * iteration within the actual glyph width and leaves higher bits clear.
+		 *
+		 * Consumers can therefore reject transparent 32-pixel spans quickly
+		 * without re-reading every coverage byte, while retaining the original
+		 * bitmap immediately before the table for alpha compositing.
+		 * Keeping both views in one MemoryBlock allocation also preserves their
+		 * shared eviction lifetime and avoids a second cache lookup during
+		 * rendering.
+		 */
 		pItem->m_tblOffset = ((pItem->m_width * bmp->rows) + 3) & 0xFFFC;
-		u32 size = ((bmp->width+31)>>5)*(bmp->rows<<2);	// number of 32 bit mask for storage. 
+		u32 size = ((bmp->width+31)>>5)*(bmp->rows<<2);	// number of 32 bit mask for storage.
 		if ((pItem->m_tblOffset < MB_BLOCK_ITEM_SIZE) && ((pItem->m_tblOffset+size) <= MB_BLOCK_ITEM_SIZE)) {
 			u32* p = (u32*)&pItem->m_ptr[pItem->m_tblOffset];
 			for (int x=0; x < bmp->width; x += 32) {
@@ -852,10 +1072,16 @@ FT_GlyphSlot FontObject::renderChar(u32 unicode) {
 	return pItem;
 }
 
-void FontObject::renderText	(s32 x, s32 y, const char* text, u8* Buffer8888, u32 colorARGB8888, u32 buffWidth, u32 buffHeight, s32 strideByte, bool use4444) {
+void FontObject::renderText	(s32 x, s32 y, const char* text, u8* Buffer8888, u32 colorARGB8888, u32 buffWidth, u32 buffHeight, s32 strideByte, u32 pixelBytes, float scaleX, float scaleY) {
 	// FT_GlyphSlot glyphslt = m_face->glyph;
-	s32 currX = x;
-	s32 currY = y;
+	s32 scaledX = (s32)(scaleX * 16384.0f);
+	s32 scaledY = (s32)(scaleY * 16384.0f);
+	s32 fixedScaleX = (scaledX < 0) ? 0 : scaledX;
+	s32 fixedScaleY = (scaledY < 0) ? 0 : scaledY;
+	fixedScaleX = (u16)fixedScaleX;
+	fixedScaleY = (u16)fixedScaleY;
+
+	klb_assertNull((((colorARGB8888 >> 24) + (colorARGB8888 >> 31)) == 256), "RENDERING IGNORE ALPHA FOR TEXT");
 
 	// ARGB
 	u32 rgb32 = 0;
@@ -869,15 +1095,39 @@ void FontObject::renderText	(s32 x, s32 y, const char* text, u8* Buffer8888, u32
 			  | ((colorARGB8888 >> 0) & 0x00F0)		// Blue
 			  ;
 
-	u32 arrayUnicode[1500];
-	u32 charCount = 1500;
+	s32 currX = x << 6;
+	s32 currY = y;
 
-	if (wind_utf8ucs4(text, arrayUnicode, &charCount) == 0)
-	for (u32 n=0; n < charCount; n++) {
-		u32 charcode = arrayUnicode[n];
+	u32* codepoints;
+	size_t charCount = s_textCapacity;
+	for (;;) {
+		codepoints = s_textCodepoints;
+		s32 result = wind_utf8ucs4(text, codepoints, NULL, &charCount);
+		if (result == WIND_ERR_INVALID_UTF8) {
+			return;
+		}
+		if (result == 0) {
+			break;
+		}
+		u32 required = strlen(text);
+		if (s_textCapacity < required) {
+			required++;
+			u32* grownCodepoints = KLBNEWA(u32, required);
+			u32* grownFormatting = KLBNEWA(u32, required);
+			KLBDELETEA(s_textCodepoints);
+			KLBDELETEA(s_textFormatting);
+			s_textCodepoints = grownCodepoints;
+			s_textFormatting = grownFormatting;
+			s_textCapacity = required;
+		}
+		charCount = s_textCapacity;
+	}
+
+	for (u32 n=0; n < (u32)charCount; n++) {
+		u32 charcode = codepoints[n];
 		// DEBUG_PRINT("RENDERING; letter: %x(%c)", charcode, (char)charcode);
 
-		CharCache* pChar = CharDictionnary::getChar(charcode, this);
+		CharCache* pChar = CharDictionnary::getChar(charcode, this, fixedScaleX, fixedScaleY);
 		
 		if (pChar) {
 			//========================================
@@ -894,7 +1144,7 @@ void FontObject::renderText	(s32 x, s32 y, const char* text, u8* Buffer8888, u32
 			s32 Wwidth		= pChar->m_width;
 			s32 Wheight		= pChar->m_height;	// Number of line to process.
 
-			s32 px			= currX + pChar->m_offsetX;
+			s32 px			= (currX >> 6) + pChar->m_offsetX;
 			s32 py			= currY + pChar->m_offsetY;
 			u32 startX		= 0;
 			u32 startY		= 0;
@@ -906,7 +1156,7 @@ void FontObject::renderText	(s32 x, s32 y, const char* text, u8* Buffer8888, u32
 			{
 				Wwidth	+= px;
 				startX  -= px;
-				px		= 0;
+				px		= -(startX & 3);
 			}
 
 			if (py < 0) {
@@ -987,67 +1237,57 @@ void FontObject::renderText	(s32 x, s32 y, const char* text, u8* Buffer8888, u32
 				u32 roundX		= (((startX & 0x1F)>>2)<<2);
 				u8* pSrcL		= &buffSrc		[roundX + (startY * strideSrc) + slab];
 
-				if (use4444) {
-					u16* pDstL	= (u16*)(&Buffer8888	[(px<<1) + (py * strideByte) + (slab << 1)]);
-					u16* pDstE	= &pDstL[Wheight * (strideByte >> 1)];
-				
-					//
-					// Could do a fct ptr here if various rendering needed (ie alpha)
-					// fct(pDstL, pDstE, pSrcL, pMaskInfo, clipMask, roundX, rgb32)
-					//
-					while (pDstL < pDstE) {
-						//
-						// Render the slab
-						//
-						// 1. recompute roundX with start : roundX += roundX - start>roundX)
+				if (pixelBytes == 1) {
+					u8* pDstL	= &Buffer8888[px + (py * strideByte) + slab];
+					u8* pDstE	= &pDstL[Wheight * strideByte];
 
-	#ifdef PRESKIP
+					while (pDstL < pDstE) {
+#ifdef PRESKIP
 						s32 delta = pSrcL[-1] - roundX;
 						delta	= (delta < 0) ? 0 : (delta>>2)<<2;
 						roundX	+= delta;
-	#endif
+#endif
 						u32 mask = (*pMaskInfo++) & clipMask;
 						mask >>= roundX;
-	#ifdef PRESKIP
+#ifdef PRESKIP
 						u8* src = &pSrcL[delta];
-	#else
+#else
 						u8* src = pSrcL;
-	#endif
-						u16* dst = pDstL;
+#endif
+						u8* dst = pDstL;
 
 						while (mask) {
-							// Write RGBA then overwrite alpha.
-							// #define RGBA(idx,alpha)	dst[idx]=(rgb16 | ((src[idx] >>1)>>4))
-							#define RGBA(idx)	dst[idx]=(rgb16 | (src[idx]>>4))
+							#define ALPHA(idx) dst[idx] = src[idx]
 
 							switch (mask & 0xF) {
 							case 0x0: break;
-							case 0x1: RGBA(0); break;
-							case 0x2: RGBA(1); break;
-							case 0x3: RGBA(0); RGBA(1); break;
-							case 0x4: RGBA(2); break;
-							case 0x5: RGBA(0); RGBA(2); break;
-							case 0x6: RGBA(1); RGBA(2); break;
-							case 0x7: RGBA(0); RGBA(1); RGBA(2); break;
-							case 0x8: RGBA(3); break;
-							case 0x9: RGBA(0); RGBA(3); break;
-							case 0xA: RGBA(1); RGBA(3); break;
-							case 0xB: RGBA(0); RGBA(1); RGBA(3); break;
-							case 0xC: RGBA(2); RGBA(3); break;
-							case 0xD: RGBA(0); RGBA(2); RGBA(3); break;
-							case 0xE: RGBA(1); RGBA(2); RGBA(3); break;
-							case 0xF: RGBA(0); RGBA(1); RGBA(2); RGBA(3); break;
+							case 0x1: ALPHA(0); break;
+							case 0x2: ALPHA(1); break;
+							case 0x3: ALPHA(0); ALPHA(1); break;
+							case 0x4: ALPHA(2); break;
+							case 0x5: ALPHA(0); ALPHA(2); break;
+							case 0x6: ALPHA(1); ALPHA(2); break;
+							case 0x7: ALPHA(0); ALPHA(1); ALPHA(2); break;
+							case 0x8: ALPHA(3); break;
+							case 0x9: ALPHA(0); ALPHA(3); break;
+							case 0xA: ALPHA(1); ALPHA(3); break;
+							case 0xB: ALPHA(0); ALPHA(1); ALPHA(3); break;
+							case 0xC: ALPHA(2); ALPHA(3); break;
+							case 0xD: ALPHA(0); ALPHA(2); ALPHA(3); break;
+							case 0xE: ALPHA(1); ALPHA(2); ALPHA(3); break;
+							case 0xF: ALPHA(0); ALPHA(1); ALPHA(2); ALPHA(3); break;
 							}
-							#undef RGBA
+							#undef ALPHA
 							dst += 4;
 							src += 4;
 							mask >>= 4;
 						}
 
 						pSrcL += strideSrc;
-						pDstL += strideByte>>1;
+						pDstL += strideByte;
 					}
 				} else {
+					klb_assertNull(pixelBytes == 4, "INVALID PIXEL FORMAT");
 					u8* pDstL		= &Buffer8888	[(px<<2) + (py * strideByte) + (slab << 2)];
 					u8* pDstE		= &pDstL		[Wheight * strideByte];
 				
@@ -1116,45 +1356,144 @@ void FontObject::renderText	(s32 x, s32 y, const char* text, u8* Buffer8888, u32
 	}
 }
 
-void FontObject::getTextInfo(const char* text, STextInfo* result) {
-	s32 currX = 0;
-	s32 maxX  = 0;
-	u32 arrayUnicode[1500];
-	u32 charCount = 1500;
-	if (wind_utf8ucs4(text, arrayUnicode, &charCount) == 0) {
-		for (u32 n=0; n < charCount; n++) {
-			u32 charcode = arrayUnicode[n];
+void FontObject::getTextInfo(const char* text, STextInfo* result, float scaleX, float scaleY) {
+	s32 fixedScaleX = (s32)(scaleX * 16384.0f);
 
-			CharCache* pChar = CharDictionnary::getChar(charcode, this);
-		
-			if (pChar) {
-				s32 Wwidth		= pChar->m_width;
-				s32 px			= currX + pChar->m_offsetX;
-				s32 ex			= px + Wwidth;
-				if (ex > maxX) {
-					maxX = ex;
+	size_t charCount = s_textCapacity;
+	u32* codepoints;
+	u32* formatting;
+	s32 conversionResult;
+	for (;;) {
+		codepoints = s_textCodepoints;
+		formatting = s_textFormatting;
+		conversionResult = wind_utf8ucs4(text, codepoints, formatting, &charCount);
+		if (conversionResult == WIND_ERR_INVALID_UTF8) {
+			break;
+		}
+		if (conversionResult == 0) {
+			break;
+		}
+		ensureTextCapacity(strlen(text));
+		charCount = s_textCapacity;
+	}
+
+	if (conversionResult != 0) {
+		result->characterCount = 0;
+		result->height = 0.0f;
+		result->ascent = 0.0f;
+		result->descent = 0.0f;
+		result->top = 0.0f;
+		result->bottom = 0.0f;
+		result->outlineExtraHeight = 0.0f;
+		return;
+	}
+
+	FT_Size_Metrics* metrics = &m_face->size->metrics;
+	u32 resultCapacity = result->characterCount;
+	result->characterCount = 0;
+	s32 ascender26_6 = (s32)(metrics->ascender * scaleY);
+	s32 roundedAscender26_6 = ascender26_6 + 31;
+	s32 descender26_6 = (s32)(metrics->descender * scaleY);
+	s32 roundedDescender26_6 = descender26_6 + 31;
+
+	s32 currX = 0;
+	u32 baseFontCharacters = 0;
+	u32 fallbackCharacters = 0;
+	float fallbackHeight;
+	float fallbackAscent;
+	float fallbackDescent;
+	bool hasOutline = false;
+
+	for (u32 n = 0; n < (u32)charCount; n++) {
+		u32 charcode = codepoints[n];
+		if (charcode == '{' && result->parseInlineFormatting
+			&& codepoints[n + 1] == 'b') {
+			u8 format = (u8)codepoints[n + 2];
+			bool validFormat = ((format >= '0') && (format <= '9'))
+				|| ((format >= 'X') && (format <= 'Z'))
+				|| ((format >= 'x') && (format <= 'z'));
+			if (validFormat) {
+				hasOutline |= ((format >= 'x') && (format <= 'z'));
+				u32 close = n + 3;
+				if (codepoints[close] == '}') {
+					u32 formattingStart = n;
+					n += 3;
+					if (n < resultCapacity) {
+						result->characterCount = n + 1;
+						for (u32 skipped = 0; skipped < 3; skipped++) {
+							result->characterEndX26_6[formattingStart] = currX;
+							result->characterEndByteOffsets[formattingStart] = formatting[formattingStart];
+						}
+					}
+					continue;
 				}
-				currX 		   += pChar->m_advanceX;
 			}
 		}
 
-		// Unit in pixels -> OK.
-		result->width	= (float)currX;
+		CharCache* pChar = CharDictionnary::getChar(charcode, this, fixedScaleX, (s32)scaleY);
+		if (pChar) {
+			FontObject* renderFont = pChar->m_pRenderFont;
+			if (renderFont == this) {
+				baseFontCharacters++;
+			} else if (renderFont) {
+				FT_Size_Metrics* fallbackMetrics = &renderFont->m_face->size->metrics;
+				s32 fallbackAscender = (s32)(fallbackMetrics->ascender * scaleY);
+				s32 roundedFallbackAscender = fallbackAscender + 31;
+				s32 fallbackDescender = (s32)(fallbackMetrics->descender * scaleY);
+				s32 roundedFallbackDescender = fallbackDescender + 31;
+				fallbackHeight = (float)((roundedFallbackAscender - roundedFallbackDescender + 63) >> 6);
+				fallbackAscent = (float)(roundedFallbackAscender >> 6);
+				fallbackDescent = (float)(roundedFallbackDescender >> 6);
+				fallbackCharacters++;
+			}
 
-		FT_Size_Metrics* met = &this->m_face->size->metrics;
-		result->height	=(met->height	+ 63) >> 6;	// round up 1 pixel.
-		result->ascent  = met->ascender >> 6;
-		result->descent = met->descender>> 6;
-		result->top		= result->ascent + (result->height - (result->ascent - result->descent)) / 3.0f;
-		result->bottom	= result->top - result->height;
-	} else {
-		result->height	= 0.0f;
-		result->ascent  = 0.0f;
-		result->descent = 0.0f;
-		result->top		= 0.0f;
-		result->bottom	= 0.0f;
+			currX += pChar->m_advanceX;
+			if (n < resultCapacity) {
+				result->characterCount = n + 1;
+				result->characterEndX26_6[n] = currX;
+				result->characterEndByteOffsets[n] = formatting[n];
+			}
+		}
 	}
-	// DEBUG_PRINT("text info: height=%f, ascent=%f, descent=%f, top=%f, bottom=%f",
-	// 		result->height, result->ascent, result->descent, result->top, result->bottom);
+
+	result->width = (float)(currX >> 6);
+	if (fallbackCharacters) {
+		if (baseFontCharacters) {
+			result->height = (float)((roundedAscender26_6 - roundedDescender26_6 + 63) >> 6);
+			result->height = (result->height > fallbackHeight) ? result->height : fallbackHeight;
+			result->ascent = (float)(roundedAscender26_6 >> 6);
+			result->ascent = (result->ascent > fallbackAscent) ? result->ascent : fallbackAscent;
+			result->descent = (float)(roundedDescender26_6 >> 6);
+			result->descent = (result->descent > fallbackDescent) ? result->descent : fallbackDescent;
+		} else {
+			result->height = fallbackHeight;
+			result->ascent = fallbackAscent;
+			result->descent = fallbackDescent;
+		}
+	} else {
+		result->height = (float)((roundedAscender26_6 - roundedDescender26_6 + 63) >> 6);
+		result->ascent = (float)(roundedAscender26_6 >> 6);
+		result->descent = (float)(roundedDescender26_6 >> 6);
+	}
+
+	result->top = result->ascent + (result->height - (result->ascent - result->descent)) / 3.0f;
+	result->bottom = result->top - result->height;
+	float outlineExtraHeight = hasOutline ? 1.0f : 0.0f;
+	result->height += outlineExtraHeight;
+	result->outlineExtraHeight = outlineExtraHeight;
+}
+
+bool FontObject::ensureTextCapacity(u32 required) {
+	if (s_textCapacity < required) {
+		required++;
+		u32* codepoints = KLBNEWA(u32, required);
+		u32* formatting = KLBNEWA(u32, required);
+		KLBDELETEA(s_textCodepoints);
+		KLBDELETEA(s_textFormatting);
+		s_textCodepoints = codepoints;
+		s_textFormatting = formatting;
+		s_textCapacity = required;
+	}
+	return true;
 }
 

@@ -31,6 +31,7 @@ private:
     CiOSHttpStream();
 public:
     virtual ~CiOSHttpStream();
+    bool isUserEncrypted() { return false; }
 
     static CiOSHttpStream * openStream(const char * path, const char * home);
     static CiOSHttpStream * openAssets(const char * path, const char * home);

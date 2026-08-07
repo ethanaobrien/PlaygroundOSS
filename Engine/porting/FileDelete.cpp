@@ -44,11 +44,11 @@ void QueueList(SDelContext* pCtx, const char* path) {
 	u32 length = strlen(path) + 1; // Include zero.
 
 	// Index.
-	klb_assert(pCtx->m_deleteCountCount < MAX_SIZE_ENTRY_COUNT, "Reach limit");
+	klb_assertNull(pCtx->m_deleteCountCount < MAX_SIZE_ENTRY_COUNT, "Reach limit");
 
 	pCtx->m_deleteQueueIndex[pCtx->m_deleteCountCount++] = pCtx->m_deleteQueueStart - pCtx->m_deleteQueue;
 	
-	klb_assert(pCtx->m_deleteQueueIndex[pCtx->m_deleteCountCount-1] + length < MAX_SIZE_BUFFER_QUEUE_PATH,"Reach limit");
+	klb_assertNull(pCtx->m_deleteQueueIndex[pCtx->m_deleteCountCount-1] + length < MAX_SIZE_BUFFER_QUEUE_PATH,"Reach limit");
 
 	// Copy String.
 	memcpy(pCtx->m_deleteQueueStart, path, length); // Copy string
@@ -126,7 +126,7 @@ bool deleteFiles(const char* path) {
 		const char* pathNative;
 		if ((pathNative = getFullNativePath(path))) {
 			// Check if there is a "/" at the end, if so remove it.
-			u32 length = strlen(pathNative);
+			size_t length = strlen(pathNative);
 			if ((pathNative[length-1] == '/') || (pathNative[length-1] == '\\'))
 			{
 				const char* patchAdr = &pathNative[length-1];
@@ -139,12 +139,12 @@ bool deleteFiles(const char* path) {
 			res = true;
 
 			// Delete path after finishing using it.
-			delete pathNative;
+			delete[] pathNative;
 		}
 	}
 
 	// 3. Free buffer
-	delete ctx.m_deleteQueue;
-	delete ctx.m_deleteQueueIndex;
+	delete[] ctx.m_deleteQueue;
+	delete[] ctx.m_deleteQueueIndex;
 	return res;
 }

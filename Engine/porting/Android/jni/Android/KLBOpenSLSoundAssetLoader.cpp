@@ -18,46 +18,46 @@
 #include "ivorbisfile.h"
 #include <unistd.h>
 
-KLBOpenSLSoundAssetLoader::KLBOpenSLSoundAssetLoader()
+KLBOpenSLOldSoundAssetLoader::KLBOpenSLOldSoundAssetLoader()
 {
-	assets = (KLBOpenSLSoundAsset**) calloc(KLBOpenSLEngine::MAX_SOUND_ASSETS, sizeof(KLBOpenSLSoundAsset**));
+	assets = (KLBOpenSLOldSoundAsset**) calloc(KLBOpenSLOldEngine::MAX_SOUND_ASSETS, sizeof(KLBOpenSLOldSoundAsset**));
 }
 
-KLBOpenSLSoundAssetLoader::~KLBOpenSLSoundAssetLoader()
+KLBOpenSLOldSoundAssetLoader::~KLBOpenSLOldSoundAssetLoader()
 {
 	stopObservation();
 	free(assets);
 }
 
-KLBOpenSLSoundAsset* KLBOpenSLSoundAssetLoader::openFile(char const *path, bool isFullBuffered)
+KLBOpenSLOldSoundAsset* KLBOpenSLOldSoundAssetLoader::openFile(char const *path, bool isFullBuffered)
 {
     // DEBUG_PRINT("AUDIO; openFile");
     // DEBUG_PRINT("path: %s", path);
-    const char* target_path = CAndroidPathConv::getInstance().fullpath(path, ".ogg");
-	KLBOpenSLSoundAsset* asset = NULL;
+    const char* target_path = CKLBPathConv::getInstance().fullpath(path, ".ogg");
+	KLBOpenSLOldSoundAsset* asset = NULL;
 	if (access(target_path, F_OK) != -1) {
-		asset = new KLBOpenSLSoundAsset(path, isFullBuffered);
+		asset = new KLBOpenSLOldSoundAsset(path, isFullBuffered);
 	}
 	delete [] target_path;
 	return asset;
 }
 
-void KLBOpenSLSoundAssetLoader::startObservation() {
+void KLBOpenSLOldSoundAssetLoader::startObservation() {
 	if (observationThread == NULL)
 	{
-		observationThread = CPFInterface::getInstance().platform().createThread(KLBOpenSLSoundAssetLoader::FileObservationThreadParam, this);
+		observationThread = CPFInterface::getInstance().platform().createThread(KLBOpenSLOldSoundAssetLoader::FileObservationThreadParam, this);
 	}
 }
 
-int KLBOpenSLSoundAssetLoader::FileObservationThreadParam(void * hThread, void * data)
+int KLBOpenSLOldSoundAssetLoader::FileObservationThreadParam(void * hThread, void * data)
 {
-	KLBOpenSLSoundAssetLoader* me = (KLBOpenSLSoundAssetLoader*)data;
+	KLBOpenSLOldSoundAssetLoader* me = (KLBOpenSLOldSoundAssetLoader*)data;
 	while( 1 )
 	{
-		for (int i = 0; i < KLBOpenSLEngine::MAX_SOUND_ASSETS; ++i)
+		for (int i = 0; i < KLBOpenSLOldEngine::MAX_SOUND_ASSETS; ++i)
 		{
 			// TODO: reuse unregistered assets
-			KLBOpenSLSoundAsset* targetPtr = *(me->assets + i);
+			KLBOpenSLOldSoundAsset* targetPtr = *(me->assets + i);
 			if (targetPtr != NULL)
 			{
 				// DEBUG_PRINT("targetPtr: %d", targetPtr);
@@ -70,11 +70,11 @@ int KLBOpenSLSoundAssetLoader::FileObservationThreadParam(void * hThread, void *
 	return 0; // exit
 }
 
-void KLBOpenSLSoundAssetLoader::registerAsset(KLBOpenSLSoundAsset *pAsset) {
-	for (int i = 0; i < KLBOpenSLEngine::MAX_SOUND_ASSETS; ++i)
+void KLBOpenSLOldSoundAssetLoader::registerAsset(KLBOpenSLOldSoundAsset *pAsset) {
+	for (int i = 0; i < KLBOpenSLOldEngine::MAX_SOUND_ASSETS; ++i)
 	{
 		// TODO: reuse unregistered assets
-		KLBOpenSLSoundAsset* targetPtr = *(assets + i);
+		KLBOpenSLOldSoundAsset* targetPtr = *(assets + i);
 		if (targetPtr == NULL)
 		{
 			targetPtr = pAsset;
@@ -85,7 +85,7 @@ void KLBOpenSLSoundAssetLoader::registerAsset(KLBOpenSLSoundAsset *pAsset) {
 	// TODO: remove unused asset from memory and retry
 }
 
-void KLBOpenSLSoundAssetLoader::stopObservation() {
+void KLBOpenSLOldSoundAssetLoader::stopObservation() {
 	if (observationThread != NULL)
 	{
 		CPFInterface::getInstance().platform().deleteThread(observationThread);
@@ -93,11 +93,11 @@ void KLBOpenSLSoundAssetLoader::stopObservation() {
 	}
 }
 
-void KLBOpenSLSoundAssetLoader::unregisterAsset(KLBOpenSLSoundAsset *pAsset) {
-	for (int i = 0; i < KLBOpenSLEngine::MAX_SOUND_ASSETS; ++i)
+void KLBOpenSLOldSoundAssetLoader::unregisterAsset(KLBOpenSLOldSoundAsset *pAsset) {
+	for (int i = 0; i < KLBOpenSLOldEngine::MAX_SOUND_ASSETS; ++i)
 	{
 		// TODO: reuse unregistered assets
-		KLBOpenSLSoundAsset* targetPtr = *(assets + i);
+		KLBOpenSLOldSoundAsset* targetPtr = *(assets + i);
 		if (targetPtr != NULL && targetPtr == pAsset)
 		{
 			targetPtr = NULL;

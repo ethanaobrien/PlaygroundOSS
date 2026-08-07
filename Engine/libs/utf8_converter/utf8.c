@@ -106,6 +106,7 @@ int utf8toutf32(const unsigned char **pp, uint32_t *out)
  * wind_utf8ucs4_length() long.  If out is NULL, the function will
  * calculate the needed space for the out variable (just like
  * wind_utf8ucs4_length()).
+ * @param positions optional byte index of each code point's final UTF-8 byte.
  * @param out_len before processing out_len should be the length of
  * the out variable, after processing it will be the length of the out
  * string.
@@ -114,7 +115,7 @@ int utf8toutf32(const unsigned char **pp, uint32_t *out)
  * @ingroup wind
  */
 
-int wind_utf8ucs4(const char *in, unsigned *out, unsigned *out_len)
+int wind_utf8ucs4(const char *in, unsigned *out, unsigned *positions, size_t *out_len)
 {
 	const unsigned char *p;
 	size_t o = 0;
@@ -131,6 +132,11 @@ int wind_utf8ucs4(const char *in, unsigned *out, unsigned *out_len)
 			if (o >= *out_len)
 				return WIND_ERR_OVERRUN;
 			out[o] = u;
+		}
+		if (positions) {
+			if (o >= *out_len)
+				return WIND_ERR_OVERRUN;
+			positions[o] = p - (const unsigned char *)in;
 		}
 		o++;
 	}
@@ -151,7 +157,7 @@ int wind_utf8ucs4(const char *in, unsigned *out, unsigned *out_len)
 
 int wind_utf8ucs4_length(const char *in, size_t *out_len)
 {
-	return wind_utf8ucs4(in, NULL, out_len);
+	return wind_utf8ucs4(in, NULL, NULL, out_len);
 }
 
 /**
@@ -181,7 +187,7 @@ int wind_utf8ucs4_copy(const char *in, uint32_t **out, size_t *out_len)
 		return ENOMEM;
 	}
 
-	ret = wind_utf8ucs4(in, *out, out_len);
+	ret = wind_utf8ucs4(in, *out, NULL, out_len);
 	if (ret) {
 		free(*out);
 		*out = NULL;

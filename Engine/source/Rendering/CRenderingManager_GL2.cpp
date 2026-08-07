@@ -19,32 +19,30 @@
 
 #include "shaderSource.inl"
 
+const static char sh_brightnessPS[] = "varying lowp vec4 col_var;\n"
+	"varying mediump vec2 uv_var;\n"
+	"uniform lowp sampler2D texture;\n"
+	"uniform lowp vec4 colorize;\n"
+	"void main()\n"
+	"{\n"
+	"\tgl_FragColor        = colorize + (texture2D(texture,uv_var) * col_var);\n}";
+
 const char* CKLBOGLWrapper::patch(const char* shader, const char* glslTransform) {
 	return NULL;
 }
 
-CShader*	CKLBOGLWrapper::createShader(SRenderState::RENDER_MODE mode, SHADER_TYPE type, const SParam* listParam) {
+const char*	CKLBOGLWrapper::getShaderSource(SRenderState::RENDER_MODE mode, SHADER_TYPE type) {
 	const char* src = null;
-
 	if (type == VERTEX_SHADER) {
 		switch (mode) {
-		case SRenderState::ONLY_COLOR:
-			src = s_vertColorOnly;
-			break;
-		case SRenderState::ONLY_TEXTURE:
-			src = s_vertTexture;
-			break;
-		case SRenderState::TEXTURE_MUL_COLOR:
-			src = sh_vertColTexture;
-			break;
+		case SRenderState::ONLY_COLOR: src = s_vertColorOnly; break;
+		case SRenderState::ONLY_TEXTURE: src = s_vertTexture; break;
+		case SRenderState::TEXTURE_MUL_COLOR: src = sh_vertColTexture; break;
 		case SRenderState::ES2_BRIGHTNESS:
-			src = sh_brightNessVS;
-			break;
 		case SRenderState::ES2_COLORIZE:
 		case SRenderState::ES2_SATURATE:
 		case SRenderState::ES2_RAMP:
-			src = sh_vertColTexture;
-			break;
+			src = sh_vertColTexture; break;
 		case SRenderState::ES2_TONE:
 			if (this->support3DTexture()) {
 				src = sh_toneVS_3D;
@@ -52,33 +50,17 @@ CShader*	CKLBOGLWrapper::createShader(SRenderState::RENDER_MODE mode, SHADER_TYP
 				src = sh_toneVS_2D;
 			}
 			break;
-		case SRenderState::ES2_MOSAIC:
-			src = sh_mosaicVS;
-			break;
+		case SRenderState::ES2_MOSAIC: src = sh_mosaicVS; break;
 		}
 	} else {
 		switch (mode) {
-		case SRenderState::ONLY_COLOR:
-			src = s_fragColorOnly;
-			break;
-		case SRenderState::ONLY_TEXTURE:
-			src = s_fragTexture;
-			break;
-		case SRenderState::TEXTURE_MUL_COLOR:
-			src = sh_fragColTexture;
-			break;
-		case SRenderState::ES2_BRIGHTNESS:
-			src = sh_fragColTexture;
-			break;
-		case SRenderState::ES2_COLORIZE:
-			src = sh_colorizePS;
-			break;
-		case SRenderState::ES2_SATURATE:
-			src = sh_saturatePS;
-			break;
-		case SRenderState::ES2_RAMP:
-			src = sh_curvePS;
-			break;
+		case SRenderState::ONLY_COLOR: src = s_fragColorOnly; break;
+		case SRenderState::ONLY_TEXTURE: src = s_fragTexture; break;
+		case SRenderState::TEXTURE_MUL_COLOR: src = sh_fragColTexture; break;
+		case SRenderState::ES2_BRIGHTNESS: src = sh_brightnessPS; break;
+		case SRenderState::ES2_COLORIZE: src = sh_colorizePS; break;
+		case SRenderState::ES2_SATURATE: src = sh_saturatePS; break;
+		case SRenderState::ES2_RAMP: src = sh_curvePS; break;
 		case SRenderState::ES2_TONE:
 			if (this->support3DTexture()) {
 				src = sh_tonePS_3D;
@@ -86,13 +68,15 @@ CShader*	CKLBOGLWrapper::createShader(SRenderState::RENDER_MODE mode, SHADER_TYP
 				src = sh_tonePS_2D;
 			}
 			break;
-		case SRenderState::ES2_MOSAIC:
-			src = sh_mosaicPS;
-			break;
+		case SRenderState::ES2_MOSAIC: src = sh_mosaicPS; break;
 		}
 	}
 
-	return createShader(src, type, listParam);
+	return src;
+}
+
+CShader*	CKLBOGLWrapper::createShader(SRenderState::RENDER_MODE mode, SHADER_TYPE type, const SParam* listParam) {
+	return createShader(getShaderSource(mode, type), type, listParam);
 }
 
 // Shaders.
@@ -108,7 +92,6 @@ CShader*	CKLBOGLWrapper::createShader		(const char* source, SHADER_TYPE type, co
 			dglCompileShader(shaderID);
 			// Check the compile status
 			dglGetShaderiv(shaderID, GL_COMPILE_STATUS, &compiled);
-
 			if (compiled) {
 				//
 				// Parse the list of parameters
@@ -174,6 +157,11 @@ CShader*	CKLBOGLWrapper::createShader		(const char* source, SHADER_TYPE type, co
 
 					return pNewShader;
 				}
+			} else {
+				GLsizei length;
+				GLchar log[1000];
+				dglGetShaderInfoLog(shaderID, sizeof(log), &length, log);
+				klb_assert(false, "Shader Compile Error : %s.", log);
 			}
 			dglDeleteShader(shaderID);
 		}
@@ -231,7 +219,11 @@ CShaderSet*	CKLBOGLWrapper::createShaderSet	(CShader* pVertexShader, CShader* pP
 						iterator = 0;
 						while (iterator < pShader->countUniform) {
 							// Becomes UniformID
-							pNewShaderSet->locationArray[uniformIndex++] = dglGetUniformLocation(progID, pParam->param.name);
+							GLint location = dglGetUniformLocation(progID, pParam->param.name);
+							pNewShaderSet->locationArray[uniformIndex++] = location;
+							if (location == -1) {
+								CPFInterface::getInstance();
+							}
 							iterator++;
 							pParam++;
 						}
@@ -251,6 +243,14 @@ CShaderSet*	CKLBOGLWrapper::createShaderSet	(CShader* pVertexShader, CShader* pP
 					pNewShaderSet->enableColor		= pPixelShader->enableColor   | pVertexShader->enableColor;
 
 					return pNewShaderSet;
+				} else {
+					// Preserve the complete linker diagnostic before cleanup.
+					// The fixed buffer is explicitly terminated for safe logging.
+					GLsizei length;
+					GLchar log[1000];
+					dglGetProgramInfoLog(progID, sizeof(log), &length, log);
+					log[(sizeof(log) / sizeof(log[0])) - 1] = 0;
+					klb_assert(false, "Shader Linker Error : %s", log);
 				}
 				dglDeleteProgram(progID);
 			}
@@ -267,10 +267,11 @@ CShaderSet*	CKLBOGLWrapper::createShaderSet	(CShader* pVertexShader, CShader* pP
 void CKLBOGLWrapper::releaseShader(CShader* pShader) {
 	CShader* p = this->shaderList;
 	CShader* prev = null;
-	while (p != pShader) {
+	while (p && p != pShader) {
 		prev = p;
 		p = p->pNext;
 	}
+	if(!p) { return; }
 
 	//
 	// Remove from link list.
@@ -296,8 +297,7 @@ void CKLBOGLWrapper::releaseShader(CShader* pShader) {
 }
 
 void CKLBOGLWrapper::releaseShaderSet(CShaderSet* pFullShader) {
-	klb_assertc(pFullShader != nullptr,						"null shader set");
-
+	klb_assertNull(pFullShader != NULL,						"null shader set");
 	CShaderSet* p		= this->shaderSetList;
 	CShaderSet* pPrev	= null;
 
@@ -314,9 +314,7 @@ void CKLBOGLWrapper::releaseShaderSet(CShaderSet* pFullShader) {
 	// Release all instances.
 	pFullShader->releaseAllInstances();
 	// Release open GL associated program.
-
 	dglDeleteProgram(pFullShader->programObj);
-
 	if (pFullShader->locationArray) {
 		KLBDELETE(pFullShader->locationArray);
 	}
@@ -333,6 +331,10 @@ void CKLBOGLWrapper::releaseShaderSet(CShaderSet* pFullShader) {
 	}
 
 	KLBDELETE(pFullShader);
+}
+
+void CKLBOGLWrapper::resetShader() {
+	m_lastShaderInstance = NULL;
 }
 
 void CKLBOGLWrapper::draw(
@@ -536,14 +538,14 @@ void CKLBOGLWrapper::draw(
 					} else {
 						klb_assertAlways("No texture information when shader use texture");
 					}
-				} /*else {
+				} else {
 					// Assign texture to texture unit and apply parameters.
 					CTextureUsage* pUsage = pParam->pTexture;
 					pUsage->activate(countTexture);
 					// Link active texture unit to uniform
 					dglUniform1i(location, countTexture);
 					countTexture++;
-				}*/
+				}
 
 				break;
 			}

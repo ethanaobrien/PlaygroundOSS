@@ -23,7 +23,7 @@ typedef unsigned int uint32_t;
 #endif
 
 int utf8toutf32(const unsigned char **pp, uint32_t *out);
-int wind_utf8ucs4(const char *in, unsigned *out, unsigned *out_len);
+int wind_utf8ucs4(const char *in, unsigned *out, unsigned *positions, size_t *out_len);
 int wind_utf8ucs4_length(const char *in, size_t *out_len);
 int wind_utf8ucs4_copy(const char *in, uint32_t **out, size_t *out_len);
 

@@ -32,6 +32,7 @@ public:
 	bool	addString		(const char* id, const char* string);
 	void	removeString	(const char* id);
 	const char*	getString	(const char* id);
+	const char*	findString	(const char* id) const;
 
 	bool	setupDB			(const char* dbFile,
 							 const char* tableName, 

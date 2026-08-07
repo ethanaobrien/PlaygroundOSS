@@ -51,11 +51,14 @@ protected:
 	virtual ~CKLBUITask();
 public:
 	bool initScript		(CLuaState& lua);
+	bool initScriptSecondary(CLuaState& lua);
 	void die			();
 	int  commandScript	(CLuaState& lua);
 	virtual TASKTYPE getTaskType();
 
-	inline CKLBNode * getNode() { return m_pUINode; }
+	inline CKLBNode * getNode() { return m_pRootNode; }
+	inline u64 getRecordID() const { return m_recordID; }
+	inline void setRecordID(u64 recordID) { m_recordID = recordID; }
 
 	inline void setOtherParent(CKLBTask * pTask) { m_pRegParent = pTask; }
 
@@ -69,11 +72,11 @@ public:
 		UI_GENERIC_ANIM_PLAY,
 		UI_GENERIC_ANIM_STOP,
 		UI_GENERIC_IS_ANIM,
-
 		UI_GENERIC_SET_COLOR,
 		UI_GENERIC_SET_SCALE,
 		UI_GENERIC_SET_ROT,
 		UI_GENERIC_SET_VISIBLE,
+		UI_GENERIC_GET_RECORDID,
 
 		SPL_VALUE_INT = 0,
 		SPL_VALUE_NUM = 1
@@ -81,6 +84,8 @@ public:
 
 	inline
 	bool getVisible()	{ return m_visible; }
+
+	virtual void onResume();
 
 	inline virtual
 	void setVisible(bool visible) {
@@ -165,6 +170,7 @@ protected:
 	}
 	inline void  set_phase	(TASK_PHASE phase = P_NORMAL) { m_phase = phase; }
 	virtual bool initUI		(CLuaState& lua) = 0;
+	virtual bool initUISecondary(CLuaState& lua);
 	virtual int  commandUI	(CLuaState& lua, int argc, int cmd);
 	virtual void execute	(u32 deltaT) = 0;
 	virtual void dieUI		() = 0;
@@ -173,6 +179,7 @@ protected:
 
 	bool setupNode();
 	bool registUI(CKLBUITask * pParent, bool result, CKLBTask * pRegParent = 0);
+	const char ** replaceAssets(CLuaState& lua, int pos, int * retcnt);
 
 	enum {
 		PRG_ALPHA,
@@ -186,6 +193,7 @@ protected:
 	};
 
 	CKLBSplineNode	*	m_pUINode;
+	CKLBNode		*	m_pRootNode;
 private:
 	bool setGenericProperty	();
 	bool setSplineAnim		(CLuaState& lua, int pos);
@@ -196,6 +204,7 @@ private:
 
 
 	int					m_beginIndex;	// UI property start index
+	u64					m_recordID;
 
 	float				m_initX;
 	float				m_initY;

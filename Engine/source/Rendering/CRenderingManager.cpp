@@ -14,7 +14,13 @@
    limitations under the License.
 */
 #include "RenderingFramework.h"
+#include "CKLBDrawTask.h"
 #include "mem.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include "png.h"
+// PNG declarations stay private to the screenshot implementation.
+// RenderingFramework.h therefore does not expose libpng types.
 
 static int _x_getVertexSize() {
 	return 5;
@@ -55,21 +61,22 @@ CKLBOGLWrapper::~CKLBOGLWrapper() {
 }
 
 void CKLBOGLWrapper::_release() {
+	while (frameList) {
+		releaseFrame(frameList);
+	}
+
 	//
 	// Release all textures / usages / sub textures.
 	//
 	while (m_pTextureList) {
-		klb_assertAlways("Texture not freed yet");
 		releaseTexture(m_pTextureList);
 	}
-	
+
 	while (shaderSetList) {
-		klb_assertAlways("Shader set not freed yet");
 		releaseShaderSet(shaderSetList);
 	}
 
 	while (shaderList) {
-		klb_assertAlways("Shader not freed yet");
 		releaseShader(shaderList);
 	}
 
@@ -87,11 +94,16 @@ void CKLBOGLWrapper::_release() {
 	}
 }
 
+void CKLBOGLWrapper::onResume() {
+}
+
 //
 // Rendering Manager.
 //
 bool CKLBOGLWrapper::init(float displayMatrix[16]) {
 	memcpy32(displayMatrix2D, displayMatrix, 16*sizeof(float));
+	dglGetIntegerv(GL_FRAMEBUFFER_BINDING, (GLint*)&defaultFrame.frameBuffID);
+	defaultFrame.isDefaultFrame = true;
 
 	// Current GL state must be uninitialized.
 
@@ -381,7 +393,7 @@ static void convertPixels(u8* pBuffer, s32 width, s32 height, u32 channel, GLenu
 
 CTexture*	CKLBOGLWrapper::loadCompress(const char* filename, GLenum pixFormat, u32 w, u32 h, TEX_OPTION option) {
 	// open file and read data.
-	u32 fileLength;
+	long fileLength;
 	u8* pBuffer;
 	CKLBOGLWrapper::TEX_CHANNEL channel = CKLBOGLWrapper::RGBA;	// Value ignored anyway.
 	FILE* fp;
@@ -423,7 +435,16 @@ CTexture*	CKLBOGLWrapper::loadTGA(const char* filename, GLenum pixFormat, s32* r
 		convertPixels((u8*)pBuffer, w, h, channel, pixFormat);
 
 		if (res == null) {
-			res = createTexture(w,h, pixFormat, channel, pBuffer, w*h*channel, option);
+			s32 dataLength = w * h * channel;
+			TextureCreateInfo info;
+			info.width = w;
+			info.height = h;
+			info.pixelFormat = pixFormat;
+			info.channelCount = channel;
+			info.data = pBuffer;
+			info.dataLength = dataLength;
+			info.option = option;
+			res = createTexture(info);
 		} else {
 			res->updateTexture(x,y,w,h,pBuffer,w*h*channel);
 		}
@@ -434,10 +455,8 @@ CTexture*	CKLBOGLWrapper::loadTGA(const char* filename, GLenum pixFormat, s32* r
 	}
 }
 
-int g_CountRl = 0;
 void		CKLBOGLWrapper::releaseTexture	(CTexture* texture) {
 	if (texture) {
-		printf("Release Texture %p %i\n",texture, g_CountRl++);
 		// Remove texture usage. (FIRST)
 		texture->releaseUsage();
 
@@ -461,11 +480,13 @@ void		CKLBOGLWrapper::releaseTexture	(CTexture* texture) {
 		//
 		// Free on GL side.
 		//
-		dglDeleteTextures(1, &texture->texture);
-		texture->texture = 0;
-		if (texture->textureDoubleBuff != 0) {
-			dglDeleteTextures(1, &texture->textureDoubleBuff);
-			texture->textureDoubleBuff = 0;
+		if (!texture->isShell) {
+			dglDeleteTextures(1, &texture->texture);
+			texture->texture = 0;
+			if (texture->textureDoubleBuff != 0) {
+				dglDeleteTextures(1, &texture->textureDoubleBuff);
+				texture->textureDoubleBuff = 0;
+			}
 		}
 
 		KLBDELETE(texture);
@@ -515,7 +536,7 @@ CBuffer*	CKLBOGLWrapper::createVertexBuffer		(s32 vertexCount, const SVertexEntr
 		}
 		
 		pNewBuffer->fromOutside = (asOutsideBuffer != NULL);
-		klb_assert(!(pNewBuffer->fromOutside == true && pParse->isVBO == true), "VBO can not be outside buffer"); 
+		klb_assertNull(!(pNewBuffer->fromOutside == true && pParse->isVBO == true), "VBO can not be outside buffer");
 
 		SVertexEntry* list = KLBNEWA(SVertexEntry,cntDynVertex + cntVBOVertex);
 		if (list) {
@@ -611,16 +632,16 @@ CBuffer*	CKLBOGLWrapper::createVertexBuffer		(s32 vertexCount, const SVertexEntr
 				}
 				
 				if (vboLocal) {
-					KLBDELETE(vboLocal);
+					KLBDELETEA(vboLocal);
 				}
 
 				if (ptrBuff && (!asOutsideBuffer)) {
-					KLBDELETE(ptrBuff);
+					KLBDELETEA(ptrBuff);
 				}
 
 				dglDeleteBuffers(1, &pNewBuffer->vboID);
 			}
-			KLBDELETE(list);
+			KLBDELETEA(list);
 		}
 		KLBDELETE(pNewBuffer);
 		pNewBuffer = null;
@@ -634,7 +655,7 @@ CIndexBuffer* CKLBOGLWrapper::createIndexBuffer(s32 indexCount, bool asVBO, void
 		GLushort*	ptrBuff		= KLBNEWA(GLushort,indexCount);
 		pNewBuffer->vboID		= 0;
 		pNewBuffer->fromOutside = (asOutsideBuffer != NULL);
-		klb_assert(!(pNewBuffer->fromOutside == true && asVBO == true), "VBO can not be outside buffer"); 
+		klb_assertNull(!(pNewBuffer->fromOutside == true && asVBO == true), "VBO can not be outside buffer");
 
 		bool err = (ptrBuff == null);
 		if (asVBO) {
@@ -658,7 +679,7 @@ CIndexBuffer* CKLBOGLWrapper::createIndexBuffer(s32 indexCount, bool asVBO, void
 		}
 
 		if (ptrBuff != null && (!asOutsideBuffer)) {
-			KLBDELETE(ptrBuff);
+			KLBDELETEA(ptrBuff);
 		}
 
 		if (pNewBuffer->vboID) {
@@ -695,7 +716,7 @@ void CKLBOGLWrapper::releaseIndexBuffer(CIndexBuffer* pBuffer) {
 	dglDeleteBuffers(1, &pBuffer->vboID);
 
 	if (!p->fromOutside) {
-		KLBDELETE(p->ptrBuffer);
+		KLBDELETEA(p->ptrBuffer);
 	}
 	KLBDELETE(pBuffer);
 }
@@ -716,14 +737,14 @@ void CKLBOGLWrapper::releaseVertexBuffer(CBuffer* pBuffer) {
 
 	dglDeleteBuffers(1, &pBuffer->vboID);
 
-	KLBDELETE(p->structure);
+	KLBDELETEA(p->structure);
 
 	if (p->ptrBuffer && (!p->fromOutside)) {
-		KLBDELETE(p->ptrBuffer);
+		KLBDELETEA(p->ptrBuffer);
 	}
 
 	if (p->vboLocalCopy) {
-		KLBDELETE(p->vboLocalCopy);
+		KLBDELETEA(p->vboLocalCopy);
 	}
 	
 	KLBDELETE(pBuffer);
@@ -737,37 +758,103 @@ bool CKLBOGLWrapper::support3DTexture() {
 	return (_glTexImage3DOES != NULL);
 }
 
-CTexture*	CKLBOGLWrapper::createTexture	(	s32 width, 
-												s32 height, 
-												GLenum pixelFormat, 
-												TEX_CHANNEL channelCount,
-												void* data, 
-												s32 dataLength, 
-												TEX_OPTION option, 
-												s32 /*depth*/,
-												CTexture* reload) {
+CTexture* CKLBOGLWrapper::createTexture(s32 width, s32 height, GLenum pixelFormat,
+										TEX_CHANNEL channelCount, void* data,
+										s32 dataLength, TEX_OPTION option,
+										s32 /*depth*/, CTexture* reload) {
+	TextureCreateInfo info;
+	info.width = width;
+	info.height = height;
+	info.pixelFormat = pixelFormat;
+	info.channelCount = channelCount;
+	info.data = data;
+	info.dataLength = dataLength;
+	info.option = option;
+	return createTexture(info, reload);
+}
+
+CTexture* CKLBOGLWrapper::createTexture(const TextureCreateInfo& info, CTexture* reload) {
+	/*
+	 * Texture creation has two ownership modes.
+	 * A null reload pointer allocates and registers a new texture.
+	 * A non-null reload pointer keeps the existing engine object.
+	 * In either case, GL storage is rebuilt from TextureCreateInfo.
+	 *
+	 * Keep descriptor decoding at the front of the routine.  The values below
+	 * are used by both the engine bookkeeping and the eventual GL upload.
+	 */
+	s32 width = info.width;
+	s32 height = info.height;
+	GLenum pixelFormat = info.pixelFormat;
+	TEX_CHANNEL channelCount = info.channelCount;
+	void* data = info.data;
+	s32 dataLength = info.dataLength;
+	TEX_OPTION option = info.option;
 	CTexture* pTexture = reload ? reload : KLBNEW(CTexture);
 
 	if (pTexture) {
 		// Init to nothing.
 		pTexture->texture			= 0;
 		pTexture->textureDoubleBuff = 0;
-        
-        GLenum err = glGetError();
-		dglGenTextures(1, &pTexture->texture);
-		
+
 		pTexture->isDoubleBuffered	= ((option & TEX_OPT_DOUBLEBUFFERED_BIT	) != 0);
 		pTexture->isCompressed		= ((option & TEX_OPT_COMPRESSED_BIT		) != 0);
-		pTexture->isMipmapped		= ((option & TEX_OPT_MIPMAP_BIT			) != 0);
+		pTexture->isMipmapped		= (info.mipmapCount > 1);
 		pTexture->is3D				= ((option & TEX_OPT_3D					) != 0) && _glTexImage3DOES;
+		pTexture->isNoFilter		= ((option & TEX_OPT_NOFILTER_BIT		) != 0);
+		pTexture->isShell			= ((option & TEX_OPT_SHELL_BIT			) != 0);
 
-		klb_assert((!(((option & TEX_OPT_3D) != 0) && (_glTexImage3DOES==NULL))), "3D Texture not supported");
+		/*
+		 * Shell textures participate in the engine's texture and usage lists
+		 * without allocating a GL name.  They therefore need the same ownership
+		 * links as uploaded textures, but retain neutral dimensions and UV
+		 * conversion factors until a backing texture is attached.
+		 */
+		if (pTexture->isShell) {
+			pTexture->x = 0;
+			pTexture->y = 0;
+			pTexture->width = 0;
+			pTexture->height = 0;
+			pTexture->UPerPixel = 1.0f;
+			pTexture->VPerPixel = 1.0f;
+			pTexture->usageCount = 0;
+			pTexture->pMaster = pTexture;
+			pTexture->pParent = null;
+			pTexture->pChild = null;
+			pTexture->pBrother = null;
+			pTexture->pMgr = this;
+			pTexture->activeTexture = 0;
+			pTexture->usageList.init(pTexture);
+			pTexture->usageList.pMgr = this;
+			pTexture->format = 0;
+			pTexture->pNext = m_pTextureList;
+			m_pTextureList = pTexture;
+			return pTexture;
+		}
 
+		/*
+		 * Real textures own one GL name and may own a second name for the
+		 * engine's explicit double-buffering mode.  Generate the primary name
+		 * first so all subsequent error paths can use the common cleanup tail.
+		 */
+		dglGenTextures(1, &pTexture->texture);
+
+		klb_assertNull((!(((option & TEX_OPT_3D) != 0) && (_glTexImage3DOES==NULL))), "3D Texture not supported");
+
+		/*
+		 * Double buffering duplicates storage, not the CTexture bookkeeping.
+		 * Both names are initialized by the same upload loop below.
+		 */
 		if (pTexture->isDoubleBuffered) {
 			dglGenTextures(1, &pTexture->textureDoubleBuff);
 		}
-        err = dglGetError();
+		GLenum err = dglGetError();
 		if (err == GL_NO_ERROR) {
+			/*
+			 * These fields describe the master texture in engine coordinates.
+			 * Subtextures keep their own rectangles while sharing this object
+			 * as pMaster, so the reciprocal dimensions belong here.
+			 */
 			pTexture->x = 0;
 			pTexture->y = 0;
 
@@ -781,6 +868,7 @@ CTexture*	CKLBOGLWrapper::createTexture	(	s32 width,
 			pTexture->pChild			= null;
 			pTexture->pBrother			= null;
 			pTexture->pMgr				= this;
+			pTexture->channels			= 0;
 
 			pTexture->activeTexture 	= pTexture->texture;
 
@@ -792,7 +880,7 @@ CTexture*	CKLBOGLWrapper::createTexture	(	s32 width,
 			//
 			//
 			//
-			GLenum textureTarget = 
+			pTexture->textureTarget =
 #ifdef OPENGL2
                 GL_TEXTURE_2D
 				// pTexture->is3D ? GL_TEXTURE_3D_OES : GL_TEXTURE_2D
@@ -801,19 +889,30 @@ CTexture*	CKLBOGLWrapper::createTexture	(	s32 width,
 #endif
 				;
 
+			/*
+			 * Run the same allocation path for the primary and optional
+			 * secondary name.  The first iteration is unconditional; the
+			 * second exits immediately unless double buffering was requested.
+			 */
 			for (s32 n=0; n<2; n++) {
 				if ( n == 0) {
-					dglBindTexture(textureTarget, pTexture->texture);
+					dglBindTexture(GL_TEXTURE_2D, pTexture->texture);
 				} else {
 					if (!pTexture->isDoubleBuffered) {
 						break;
 					}
-					dglBindTexture(textureTarget, pTexture->textureDoubleBuff);
+					dglBindTexture(GL_TEXTURE_2D, pTexture->textureDoubleBuff);
 				}
 
 				if (pTexture->isCompressed) {
-					klb_assert((!pTexture->is3D), "Do not support compressed 3D textures");
-					dglCompressedTexImage2D(GL_TEXTURE_2D, 
+					/*
+					 * Compressed payloads already carry their GPU format.
+					 * The extension path only supports two-dimensional data,
+					 * and dataLength is the encoded byte count rather than a
+					 * pixel-derived size.
+					 */
+					klb_assertNull((!pTexture->is3D), "Do not support compressed 3D textures");
+					dglCompressedTexImage2D(GL_TEXTURE_2D,
 							0,	// TODO MIPMAP Level
 							pixelFormat,
 							width,
@@ -823,6 +922,11 @@ CTexture*	CKLBOGLWrapper::createTexture	(	s32 width,
 							data
 					);
 				} else {
+					/*
+					 * Uncompressed uploads translate the engine channel model
+					 * into the corresponding GL internal format.  Depth data
+					 * additionally selects the unsigned-short element type.
+					 */
 					GLint internalFormat;
 					switch (channelCount) {
 						case ALPHA		:	internalFormat = GL_ALPHA;			break;
@@ -830,6 +934,8 @@ CTexture*	CKLBOGLWrapper::createTexture	(	s32 width,
 						case LUMINANCE	:	internalFormat = GL_LUMINANCE;		break;
 						case LUMINANCE_ALPHA
 										:	internalFormat = GL_LUMINANCE_ALPHA;	break;
+						case DEPTH		:	internalFormat = GL_DEPTH_COMPONENT;
+											pixelFormat = GL_UNSIGNED_SHORT;		break;
 
 						default			:
 						case RGBA		:	internalFormat = GL_RGBA;			break;
@@ -838,12 +944,43 @@ CTexture*	CKLBOGLWrapper::createTexture	(	s32 width,
 					pTexture->channels			= internalFormat;
 
 					if (pTexture->is3D) {
+						/*
+						 * Three-dimensional texture support is split into two layers.
+						 *
+						 * The platform resolves the OES entry points during startup,
+						 * and support3DTexture() reports whether that resolution worked.
+						 * That capability check only proves that an entry point exists.
+						 *
+						 * This upload branch would still need to select and retain
+						 * a three-dimensional storage target, pass the descriptor depth,
+						 * upload every requested mip level, configure all three axes,
+						 * and apply the same rules when reloading an existing texture.
+						 *
+						 * None of those storage rules are implemented by this backend.
+						 * Falling through to the ordinary two-dimensional upload would
+						 * create a nominally valid object with the wrong GL storage.
+						 *
+						 * Keep the branch separate so diagnostics distinguish the
+						 * requested option, an unavailable extension, and this known
+						 * backend limitation.
+						 *
+						 * A future implementation must update CTexture::textureTarget,
+						 * route both upload and binding through the corresponding target,
+						 * and preserve the ownership and error behavior used above for
+						 * both double-buffer names and the common cleanup path.
+						 * The texture list must not observe a partially initialized name,
+						 * and reload must continue to retain the caller-owned CTexture
+						 * when allocation or upload reports an error.
+						 */
+						/*
+						 * The extension hooks are discovered at runtime, but
+						 * this GLES2 backend never implemented the 3D upload
+						 * itself.  Keep that limitation explicit and fatal.
+						 */
 						// ### TODO TEXTURE UPDATE FUNCTION ###
 						//PFNGLTEXSUBIMAGE3DOESPROC	_glTexSubImage3DOES;
 #ifdef OPENGL2
-                        /*
-						((PFNGLTEXIMAGE3DOESPROC)_glTexImage3DOES)(GL_TEXTURE_3D_OES, 0, internalFormat, width, height, depth, 0, pixelFormat, internalFormat, data);
-                        */
+						klb_assertAlways("OpenGL 2.x support for 3D Textures not done.");
 #else
 						klb_assertAlways("OpenGL 1.1 does not use 3D Textures.");
 #endif
@@ -860,7 +997,16 @@ CTexture*	CKLBOGLWrapper::createTexture	(	s32 width,
 						);
 					}
 
-					klb_assert(dglGetError()==GL_NO_ERROR,"Error creating OpenGL Texture.\n");
+					GLenum error = dglGetError();
+					klb_assertNull(error == GL_NO_ERROR,
+						"Error creating OpenGL Texture. Error code = %d\n", error);
+				}
+
+				if (pTexture->isNoFilter) {
+					dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+					dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+					dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+					dglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 				}
 
 				if (pTexture->isMipmapped) {
@@ -900,12 +1046,10 @@ error1:
 }
 
 bool CKLBOGLWrapper::supportFrame() {
-	klb_assertAlways("TODO");
-	return false;
+	return true;
 }
 
 void CKLBOGLWrapper::setRenderFrame(CFrame* pFrame) {
-	klb_assert(supportFrame(), "System does not support offscreen buffers");
 #ifndef OPENGL2
     pFrame = pFrame;
 	klb_assertAlways("TODO");
@@ -922,7 +1066,6 @@ void CKLBOGLWrapper::setRenderFrame(CFrame* pFrame) {
 
 CImageBuffer* CKLBOGLWrapper::createImageBuffer(s32 /*width*/, s32 /*height*/, GLenum /*internalformat*/) {
 	CImageBuffer* pBuffer;
-	klb_assert(supportFrame(), "System does not support offscreen buffers");
 #ifndef OPENGL2
 	klb_assertAlways("TODO");
 	pBuffer = NULL;
@@ -967,7 +1110,6 @@ void CKLBOGLWrapper::releaseImageBuffer(CImageBuffer* imageBuffer) {
 
 CFrame* CKLBOGLWrapper::createFrame() {
 	CFrame* pFrame;
-	klb_assert(supportFrame(), "System does not support offscreen buffers");
 #ifndef OPENGL2
 	klb_assertAlways("TODO");
 	pFrame = NULL;
@@ -981,14 +1123,24 @@ CFrame* CKLBOGLWrapper::createFrame() {
 			pFrame->frameBuffID	= buf;
 			pFrame->next	= frameList;
 			frameList		= pFrame;
+		} else {
+			KLBDELETE(pFrame);
+			pFrame = NULL;
 		}
-		KLBDELETE(pFrame);
 	}
 #endif
 	return pFrame;
 }
 
+CFrame* CKLBOGLWrapper::getDefaultFrame() {
+	return &defaultFrame;
+}
+
 void CKLBOGLWrapper::releaseFrame(CFrame* pFrame) {
+	if (pFrame->isDefaultFrame) {
+		return;
+	}
+
 	CFrame* p = this->frameList;
 	CFrame* prev = null;
 	while (p != pFrame) {
@@ -1015,16 +1167,46 @@ void CKLBOGLWrapper::releaseFrame(CFrame* pFrame) {
 }
 
 bool CKLBOGLWrapper::copyScreenRGB888(u32 srcx, u32 srcy, u32 width,u32 height,u8* buffer) {
-	dglReadPixels(srcx,srcy,width,height, GL_RGB, GL_UNSIGNED_BYTE, buffer);
+	dglReadPixels(srcx,srcy,width,height, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
 	if (dglGetError()) {
 		return false;
 	}
 	return true;
 }
 
+void CKLBOGLWrapper::screenshot(const char* path) {
+	FILE* file = fopen(path, "wb");
+	png_structp png = png_create_write_struct("1.6.16", NULL, NULL, NULL);
+	png_infop info = png_create_info_struct(png);
+	png_init_io(png, file);
+
+	CKLBDrawResource& draw = CKLBDrawResource::getInstance();
+	u32 width = draw.phisicalWidth();
+	u32 height = draw.phisicalHeight();
+	u8* pixels = KLBNEWA(u8, width * height * 4);
+	dglReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+	dglGetError();	// 読み出し後にGLのエラー状態を読み捨てる
+
+	png_set_IHDR(png, info, width, height, 8, PNG_COLOR_TYPE_RGBA,
+		PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+	png_bytepp rows = static_cast<png_bytepp>(malloc(height * sizeof(png_bytep)));
+	for (u32 y = 0; y < height; ++y) {
+		rows[height - y - 1] = pixels + png_get_rowbytes(png, info) * y;
+	}
+
+	png_write_info(png, info);
+	png_write_image(png, rows);
+	png_write_end(png, info);
+	png_destroy_write_struct(&png, &info);
+	fclose(file);
+	free(rows);
+	KLBDELETEA(pixels);
+}
+
 
 SRenderState::SRenderState()
-:blendEnable			(UNDEFINED_BOOL)
+:bEnableScissor			(UNDEFINED_BOOL)
+,blendEnable			(UNDEFINED_BOOL)
 ,blendSrcFactor			(0)
 ,blendDstFactor			(0)
 ,blendOp				(0xFF)
@@ -1033,7 +1215,7 @@ SRenderState::SRenderState()
 
 ,depthWriteEnable		(UNDEFINED_BOOL)
 ,depthTestEnable		(UNDEFINED_BOOL)
-,depthFunction			(0xFF)
+,depthFunction			(ALWAYS)
 
 ,stRefOpCW				(ALWAYS)
 ,stRefOpCCW				(ALWAYS)
@@ -1050,7 +1232,6 @@ SRenderState::SRenderState()
 	scY					= 0;
 	scW					= 0;
 	scH					= 0;
-	bEnableScissor		= false;
 	alphaFunction		= 0;
 	alphaValue			= 0;
 
@@ -1149,6 +1330,12 @@ void SRenderState::setBlend(BLEND_MODE mode) {
 		blendSrcFactor	= GL_SRC_ALPHA;
 		blendDstFactor	= GL_ONE;
 		blendOp			= ADD;
+		break;
+	case SUBTRACTIVE:
+		blendEnable		= true;
+		blendSrcFactor	= GL_SRC_ALPHA;
+		blendDstFactor	= GL_ONE;
+		blendOp			= REVSUB;
 		break;
     case ADDITIVE_ALPHA: 
 		blendEnable		= true;
@@ -1358,20 +1545,22 @@ void CKLBOGLWrapper::applyState(SRenderState* pState) {
 			dglDepthMask(rState.depthWriteEnable);
 		}
 
-		if ((pState->depthTestEnable != rState.depthTestEnable) && (pState->depthTestEnable != UNDEFINED_BOOL)) {
-			rState.depthTestEnable = pState->depthTestEnable;
-			if (rState.depthTestEnable) {
+		if (pState->depthTestEnable != UNDEFINED_BOOL) {
+			if (pState->depthTestEnable != rState.depthTestEnable) {
+				rState.depthTestEnable = pState->depthTestEnable;
+				if (rState.depthTestEnable) {
 
-				dglEnable(GL_DEPTH_TEST);
-			} else {
-				dglDisable(GL_DEPTH_TEST);
+					dglEnable(GL_DEPTH_TEST);
+				} else {
+					dglDisable(GL_DEPTH_TEST);
+				}
 			}
-		}
 
-		if (rState.depthFunction != pState->depthFunction) {
-			rState.depthFunction = pState->depthFunction;
 			if (rState.depthTestEnable) {
-				dglDepthFunc(rState.depthFunction);
+				if (rState.depthFunction != pState->depthFunction) {
+					rState.depthFunction = pState->depthFunction;
+					dglDepthFunc(rState.depthFunction);
+				}
 			}
 		}
 
@@ -1455,24 +1644,82 @@ void CKLBOGLWrapper::resetSampler(s32 sampler) {
 	samplerUnit[sampler].texture = 0; // No texture assigned.
 }
 
+void CKLBOGLWrapper::resetSamplers() {
+	memset(samplerUnit, 0, sizeof(samplerUnit));
+}
+
 void CKLBOGLWrapper::assignSampler(CTextureUsage* pTextureInstance, s32 sampler) {
-	GLuint textureID = pTextureInstance->pTexture->pMaster->activeTexture;
-	// Main draw loop setup outside.
-	// dglActiveTexture(GL_TEXTURE0 + sampler);
+	CTexture*	pMaster			= pTextureInstance->pTexture->pMaster;
+	GLuint		textureID		= pMaster->activeTexture;
+	GLenum		textureTarget	= pMaster->textureTarget;
+	GLuint		boundTexture	= samplerUnit[sampler].texture;
+	u8			samplingDone	= pTextureInstance->samplingSetupDone;
 
-	
-	if (samplerUnit[sampler].texture != textureID) {
-		samplerUnit[sampler].texture = textureID;
-		dglBindTexture(GL_TEXTURE_2D, textureID);
-	}
+	if (boundTexture != textureID || samplingDone != TRUE_BOOL_U8) {
+		dglActiveTexture(GL_TEXTURE0 + sampler);
 
-	if (pTextureInstance->samplingSetupDone == false) {
-		pTextureInstance->samplingSetupDone = true;
-		dglTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, pTextureInstance->minSampling);
-		dglTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, pTextureInstance->maxSampling);
+		if (boundTexture != textureID) {
+			samplerUnit[sampler].texture = textureID;
+			dglBindTexture(textureTarget, textureID);
+		}
 
-		dglTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, pTextureInstance->uMode);
-		dglTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, pTextureInstance->vMode);
+		if (samplingDone != TRUE_BOOL_U8) {
+			pTextureInstance->samplingSetupDone = TRUE_BOOL_U8;
+			dglTexParameteri (textureTarget, GL_TEXTURE_MIN_FILTER, pTextureInstance->minSampling);
+			dglTexParameteri (textureTarget, GL_TEXTURE_MAG_FILTER, pTextureInstance->maxSampling);
+
+			dglTexParameteri (textureTarget, GL_TEXTURE_WRAP_S, pTextureInstance->uMode);
+			dglTexParameteri (textureTarget, GL_TEXTURE_WRAP_T, pTextureInstance->vMode);
+		}
 	}
 }
 
+
+//! テクスチャターゲットを必要なものだけ有効にする。
+void
+CKLBOGLWrapper::enableTextureTarget(CTexture* pTexture)
+{
+	bool known = false;
+	for (int slot = 0; slot < textureTargetCount; slot++) {
+		bool enabled = textureTargetEnabled[slot];
+		GLenum wanted = pTexture->textureTarget;
+		GLenum target = textureTargets[slot];
+		if (wanted == target) {
+			known = true;
+			if (!enabled) {
+				dglEnable(wanted);
+				textureTargetEnabled[slot] = true;
+			}
+		} else if (enabled) {
+			dglDisable(target);
+			textureTargetEnabled[slot] = false;
+		}
+	}
+	if (!known) {
+		textureTargets[textureTargetCount] = pTexture->textureTarget;
+		textureTargetEnabled[textureTargetCount++] = true;
+		dglEnable(pTexture->textureTarget);
+	}
+}
+
+void
+CKLBOGLWrapper::disableTextureTargets()
+{
+	for (int slot = 0; slot < textureTargetCount; slot++) {
+		if (textureTargetEnabled[slot]) {
+			dglDisable(textureTargets[slot]);
+			textureTargetEnabled[slot] = false;
+		}
+	}
+}
+
+void
+CKLBOGLWrapper::readScreenPixels(u8** pixels, u32* width, u32* height)
+{
+	CKLBDrawResource& draw = CKLBDrawResource::getInstance();
+	*width  = draw.phisicalWidth();
+	*height = draw.phisicalHeight();
+	*pixels = KLBNEWA(u8, (*width) * (*height) * 4);
+	dglReadPixels(0, 0, *width, *height, GL_RGBA, GL_UNSIGNED_BYTE, *pixels);
+	dglGetError();
+}

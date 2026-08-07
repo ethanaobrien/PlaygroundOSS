@@ -82,16 +82,17 @@ public:
 
 	int commandUI   (CLuaState& lua, int argc, int cmd);
 
-	inline u32	getValue()				{ return m_value;		}
-	inline void setValue(u32 value)     {
+	inline u64	getValue()				{ return m_value;		}
+	inline void setValue(u64 value)     {
 		if (value != m_value) {
 			m_value = value;
+			resetStatusFlag(0x1 | 0x2);
 			REFRESH_A;
 		}
 	}
 
-	inline u32 getValueFloat()			{ return m_value;		}
-	inline void setValueFloat(float value, u32 prec)	{
+	inline u64 getValueFloat()			{ return m_value;		}
+	inline void setValueFloat(double value, u32 prec)	{
 		if ((value != m_fValue) || (prec != m_fPrec)) {
 			m_fValue = value;
 			m_fPrec  = prec;
@@ -171,8 +172,11 @@ public:
 	inline const char*  getTex9     ()  { return m_asset[9]; }
 	inline const char** getTextures ()  { return m_asset; 	 }
 
-	void setDot(const char* dotAsset, s32 width, s32 height);
+	void setDot(const char* dotAsset, s32 width, s32 height,
+				s32 offsetX = 0, s32 offsetY = 0);
 	const char* getDot();
+	void setComma(const char* commaAsset, s32 width, s32 height,
+				  s32 offsetX = 0, s32 offsetY = 0);
 
 	inline void setEnterAnimation(s32 milliSecondsPlayTime, s32 timeShift, bool onlyChange, u32 type, u32 affected, const float* arrayParam) {
 		m_pScoreNode->setEnterAnimation(milliSecondsPlayTime, timeShift, onlyChange, type, affected, arrayParam);
@@ -191,12 +195,14 @@ bool init(CKLBUITask * pParent, CKLBNode * pNode,
 					const char ** tex_table, float stepX, float stepY, int column, 
 					bool fillzero, bool anim_flag, u32 align, bool countclip);
 
-	int countColumn(u32 value);
+	int countColumn(u64 value);
 
-	u32		m_value;
-	float	m_fValue;
+	u64		m_value;
+	double	m_fValue;
 	s32		m_dotStepX;
 	s32		m_dotStepY;
+	s32		m_commaStepX;
+	s32		m_commaStepY;
 	u32		m_order;
 	u32		m_orderOffset;
 	s32		m_stepX;
@@ -207,6 +213,7 @@ bool init(CKLBUITask * pParent, CKLBNode * pNode,
 	bool	m_anim;
 	bool	m_bScoreUpdate;
 	bool	m_bCountClip;
+	bool	m_bComma;
 	u8		m_fPrec;
 
 	const char *        m_asset[10];
@@ -218,7 +225,7 @@ bool init(CKLBUITask * pParent, CKLBNode * pNode,
 	int					m_width;
 	int					m_height;
 
-	int					m_maxvalue;
+	u64					m_maxvalue;
 	
 	static PROP_V2 		ms_propItems[];
 };

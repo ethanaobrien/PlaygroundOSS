@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,9 +20,22 @@
 #include "klb_vararg.h"
 #include "CLuaState.h"
 #include "CKLBLuaEnv.h"
+#include "CKLBTask.h"
+
+#include "KLBBase64.h"
 
 namespace
 {
+
+const char*
+encodeLuaError(const char* message, size_t messageLength)
+{
+	u32 encodedCapacity = (messageLength + 1) * 2;
+	u32 encodedLength = encodedCapacity;
+	char* encoded = KLBNEWA(char, encodedCapacity);
+	KLBNetAPI_encodeBase64(message, messageLength + 1, encoded, &encodedLength);
+	return encoded;
+}
 
 int
 traceback(lua_State* L)
@@ -45,8 +58,8 @@ traceback(lua_State* L)
 
 } // noname namespace
 
-CLuaState::CLuaState(lua_State * L) 
-: m_L(L) 
+CLuaState::CLuaState(lua_State * L)
+: m_L(L)
 {
 }
 
@@ -132,6 +145,12 @@ CLuaState::call_luafunction(int retnum, const char *func, const char *argform, v
                     count++;
                     break;
                 }
+                case 'W': {
+                    CKLBTask * task = va_arg(ap, CKLBTask *);
+                    retPointer(reinterpret_cast<void *>(task->getTaskTrackHandle()));
+                    count++;
+                    break;
+                }
                 case 'G': {
                     const char * p = va_arg(ap, const char *);
                     retGlobal(p);
@@ -166,15 +185,16 @@ CLuaState::call(int args, const char * func, int nresults)
     	}
         // 呼び出しエラー: 指定の関数呼び出しに失敗
 		const char * errmsg = getString(-1);
-        int buff_len = strlen(msg) + strlen(errmsg) + strlen(func) + 1;
-        char* buffer = KLBNEWA(char, buff_len);
+        size_t buff_len = strlen(msg) + strlen(errmsg) + strlen(func);
+        char* buffer = KLBNEWA(char, buff_len + 1);
 #if defined(_WIN32)
-        sprintf_s(buffer, buff_len, msg, errmsg, func);
+		sprintf_s(buffer, buff_len + 1, msg, errmsg, func);
 #else
-        snprintf(buffer, buff_len, msg, errmsg, func);
+        snprintf(buffer, buff_len + 1, msg, errmsg, func);
 #endif // #if defined(_WIN32)
         CKLBLuaEnv::getInstance().errMsg(buffer);
-		klb_assertAlways("%s", buffer);
+		const char* encoded = encodeLuaError(buffer, buff_len);
+		klb_assertAlways("%s", encoded);
         KLBDELETEA(buffer); // assert発生するとここまで来ない予感はする.
         return false;
     }

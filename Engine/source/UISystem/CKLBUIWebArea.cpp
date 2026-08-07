@@ -25,6 +25,7 @@ enum {
     UI_WEBVIEW_SCALESPAGETOFIT,
     UI_WEBVIEW_SETBGCOLOR,      // 背景色の設定
 	UI_WEBVIEW_RESETCALLBACK,
+	UI_WEBVIEW_SET_WHITE_URL,
     
     WEBVIEW_LOCALLINK = 0,
     WEBVIEW_DIDSTARTLOAD,
@@ -38,6 +39,7 @@ static IFactory::DEFCMD cmd[] = {
     {"UI_WEBVIEW_SCALESPAGETOFIT",	UI_WEBVIEW_SCALESPAGETOFIT  },
     {"UI_WEBVIEW_SETBGCOLOR",		UI_WEBVIEW_SETBGCOLOR       },
 	{"UI_WEBVIEW_RESETCALLBACK",	UI_WEBVIEW_RESETCALLBACK    },
+	{"UI_WEBVIEW_SET_WHITE_URL",	UI_WEBVIEW_SET_WHITE_URL    },
     
     {"WEBVIEW_LOCALLINK",       WEBVIEW_LOCALLINK       },
     {"WEBVIEW_DIDSTARTLOAD",    WEBVIEW_DIDSTARTLOAD    },
@@ -77,10 +79,12 @@ enum {
 };
 
 CKLBUIWebArea::CKLBUIWebArea() 
-: CKLBUITask    ()
+: CKLBUITask    (P_UIAFTER)
+, m_text        (NULL)
+, m_width       (0)
+, m_height      (0)
 , m_pWebView    (NULL)
 , m_cmdCallback (NULL)
-, m_text        (NULL)
 {
 	m_newScriptModel = true;
 }
@@ -168,15 +172,16 @@ CKLBUIWebArea::initCore(bool mode, float x, float y,
     CKLBNetAPIKeyChain& keychain = CKLBNetAPIKeyChain::getInstance();
     const char * token  = keychain.getToken();
     const char * region = keychain.getRegion();
+    const char * bundleVersion = keychain.getBundleVersion();
     const char * client = keychain.getClient();
     const char * consumerKey = keychain.getConsumerKey();
     const char * appID  = keychain.getAppID();
 	const char * userID = keychain.getUserID();
-    
-	m_pWebView = KLBNEWC( CKLBUIWebView,(mode, str, token, region, client, consumerKey, appID, userID));
+	const char * language = keychain.getLanguage();
+
+	m_pWebView = KLBNEWC( CKLBUIWebView,(mode, str, token, region, bundleVersion, client, consumerKey, appID, userID, language));
 	getNode()->addNode(m_pWebView);
 
-	setText(str);
 	setWidth((int)width);
 	setHeight((int)height);
 
@@ -215,12 +220,14 @@ CKLBUIWebArea::execute(u32 /* deltaT */)
             }
             case IClientRequest::E_DIDLOADENDWEB:
             {
-                if(m_cmdCallback) { CKLBScriptEnv::getInstance().call_webTask(m_cmdCallback, this, WEBVIEW_DIDENDLOAD, ""); }
+                const char* url = (const char*)item->data1;
+                if(m_cmdCallback) { CKLBScriptEnv::getInstance().call_webTask(m_cmdCallback, this, WEBVIEW_DIDENDLOAD, url); }
                 break;
             }
             case IClientRequest::E_FAILEDLOADWEB:
             {
-                if(m_cmdCallback) { CKLBScriptEnv::getInstance().call_webTask(m_cmdCallback, this, WEBVIEW_FAILEDLOAD, ""); }
+                const char* error = item->size1 ? (const char*)item->data1 : "";
+                if(m_cmdCallback) { CKLBScriptEnv::getInstance().call_webTask(m_cmdCallback, this, WEBVIEW_FAILEDLOAD, error); }
                 break;
             }
             default:
@@ -311,6 +318,16 @@ CKLBUIWebArea::commandUI(CLuaState& lua, int argc, int cmd)
 				if (copy) {
 					KLBDELETEA(m_cmdCallback);
 					m_cmdCallback = copy;
+				}
+			}
+		}
+		break;
+	case UI_WEBVIEW_SET_WHITE_URL:
+		{
+			if(argc == 3 && lua.isString(3)) {
+				const char * whiteUrl = lua.getString(3);
+				if(whiteUrl) {
+					m_pWebView->getWidget()->cmd(IWidget::WEB_SET_WHITEURL, whiteUrl);
 				}
 			}
 		}

@@ -1,39 +1,19 @@
-/************************************************************************
- * Copyright (C) 2002-2009, Xiph.org Foundation
- * Copyright (C) 2010, Robin Watts for Pinknoise Productions Ltd
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- *
- *     * Redistributions of source code must retain the above copyright
- * notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above
- * copyright notice, this list of conditions and the following disclaimer
- * in the documentation and/or other materials provided with the
- * distribution.
- *     * Neither the names of the Xiph.org Foundation nor Pinknoise
- * Productions Ltd nor the names of its contributors may be used to
- * endorse or promote products derived from this software without
- * specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
- * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
- * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
- * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
- * OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
- * LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
- * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
- * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
- * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- ************************************************************************
+/********************************************************************
+ *                                                                  *
+ * THIS FILE IS PART OF THE OggVorbis 'TREMOR' CODEC SOURCE CODE.   *
+ *                                                                  *
+ * USE, DISTRIBUTION AND REPRODUCTION OF THIS LIBRARY SOURCE IS     *
+ * GOVERNED BY A BSD-STYLE SOURCE LICENSE INCLUDED WITH THIS SOURCE *
+ * IN 'COPYING'. PLEASE READ THESE TERMS BEFORE DISTRIBUTING.       *
+ *                                                                  *
+ * THE OggVorbis 'TREMOR' SOURCE CODE IS (C) COPYRIGHT 1994-2002    *
+ * BY THE Xiph.Org FOUNDATION http://www.xiph.org/                  *
+ *                                                                  *
+ ********************************************************************
 
  function: arm7 and later wide math functions
 
- ************************************************************************/
+ ********************************************************************/
 
 #ifdef _ARM_ASSEM_
 
@@ -84,7 +64,6 @@ static inline void XPROD32(ogg_int32_t  a, ogg_int32_t  b,
   *y = y1;
 }
 
-/* x = (a*t + b*v)>>31,    y = (b*t - a*v)>>31 */
 static inline void XPROD31(ogg_int32_t  a, ogg_int32_t  b,
 			   ogg_int32_t  t, ogg_int32_t  v,
 			   ogg_int32_t *x, ogg_int32_t *y)
@@ -103,7 +82,6 @@ static inline void XPROD31(ogg_int32_t  a, ogg_int32_t  b,
   *y = y1 << 1;
 }
 
-/* x = (a*t - b*v)>>31,     y = (b*t + a*v)>>31 */
 static inline void XNPROD31(ogg_int32_t  a, ogg_int32_t  b,
 			    ogg_int32_t  t, ogg_int32_t  v,
 			    ogg_int32_t *x, ogg_int32_t *y)
@@ -149,7 +127,7 @@ static inline void lsp_loop_asm(ogg_uint32_t *qip,ogg_uint32_t *pip,
 				ogg_int32_t *qexpp,
 				ogg_int32_t *ilsp,ogg_int32_t wi,
 				ogg_int32_t m){
-
+  
   ogg_uint32_t qi=*qip,pi=*pip;
   ogg_int32_t qexp=*qexpp;
 
@@ -157,16 +135,16 @@ static inline void lsp_loop_asm(ogg_uint32_t *qip,ogg_uint32_t *pip,
       "mov     r1,%5,asr#1;"
       "add     r0,r0,r1,lsl#3;"
       "1:"
-
+      
       "ldmdb   r0!,{r1,r3};"
       "subs    r1,r1,%4;"          //ilsp[j]-wi
       "rsbmi   r1,r1,#0;"          //labs(ilsp[j]-wi)
       "umull   %0,r2,r1,%0;"       //qi*=labs(ilsp[j]-wi)
-
+      
       "subs    r1,r3,%4;"          //ilsp[j+1]-wi
       "rsbmi   r1,r1,#0;"          //labs(ilsp[j+1]-wi)
       "umull   %1,r3,r1,%1;"       //pi*=labs(ilsp[j+1]-wi)
-
+      
       "cmn     r2,r3;"             // shift down 16?
       "beq     0f;"
       "add     %2,%2,#16;"
@@ -177,20 +155,20 @@ static inline void lsp_loop_asm(ogg_uint32_t *qip,ogg_uint32_t *pip,
       "0:"
       "cmp     r0,%3;\n"
       "bhi     1b;\n"
-
+      
       // odd filter assymetry
       "ands    r0,%5,#1;\n"
       "beq     2f;\n"
       "add     r0,%3,%5,lsl#2;\n"
-
+      
       "ldr     r1,[r0,#-4];\n"
       "mov     r0,#0x4000;\n"
-
+      
       "subs    r1,r1,%4;\n"          //ilsp[j]-wi
       "rsbmi   r1,r1,#0;\n"          //labs(ilsp[j]-wi)
       "umull   %0,r2,r1,%0;\n"       //qi*=labs(ilsp[j]-wi)
       "umull   %1,r3,r0,%1;\n"       //pi*=labs(ilsp[j+1]-wi)
-
+      
       "cmn     r2,r3;\n"             // shift down 16?
       "beq     2f;\n"
       "add     %2,%2,#16;\n"
@@ -198,13 +176,13 @@ static inline void lsp_loop_asm(ogg_uint32_t *qip,ogg_uint32_t *pip,
       "orr     %0,%0,r2,lsl #16;\n"
       "mov     %1,%1,lsr #16;\n"
       "orr     %1,%1,r3,lsl #16;\n"
-
+      
       //qi=(pi>>shift)*labs(ilsp[j]-wi);
       //pi=(qi>>shift)*labs(ilsp[j+1]-wi);
       //qexp+=shift;
-
+      
       //}
-
+	 
       /* normalize to max 16 sig figs */
       "2:"
       "mov     r2,#0;"
@@ -226,11 +204,11 @@ static inline void lsp_loop_asm(ogg_uint32_t *qip,ogg_uint32_t *pip,
       "mov     %0,%0,lsr r2;"
       "mov     %1,%1,lsr r2;"
       "add     %2,%2,r2;"
-
+      
       : "+r"(qi),"+r"(pi),"+r"(qexp)
       : "r"(ilsp),"r"(wi),"r"(m)
       : "r0","r1","r2","r3","cc");
-
+  
   *qip=qi;
   *pip=pi;
   *qexpp=qexp;

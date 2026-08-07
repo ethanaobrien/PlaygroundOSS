@@ -19,6 +19,7 @@
 //
 //
 #include <stdlib.h>
+#include <iostream>
 #include "CKLBGameApplication.h"
 
 #include "CKLBTouchPad.h"
@@ -27,8 +28,12 @@
 #include "CKLBLuaScript.h"
 #include "CKLBDrawTask.h"
 #include "CKLBTouchEventUI.h"
+#include "CKLBUISystem.h"
+#include "CKLBUITask.h"
+#include "CKLBUITextInput.h"
 #include "CKLBLabelNode.h"
 #include "MultithreadedNetwork.h"
+#include "CKLBUpdate.h"
 
 #ifdef DEBUG_MENU
 #include "CKLBDebugMenu.h"
@@ -51,35 +56,132 @@
 #include "CKLBLanguageDatabase.h"
 #include "CompositeManagement.h"
 #include "CKLBHTTPInterface.h"
+#include "CKLBUtility.h"
+#include "CKLBScriptEnv.h"
+#include "FontRendering.h"
+#include "TextureManagement.h"
+#include "encryptFile.h"
+#include "PlaygroundParticle.h"
 
 // Global Text rendering buffer.
 #include "CKLBTextTempBuffer.h"
+
+extern "C" void spAnimationState_disposeStatics();
+
+bool g_objectCleanupStarted = false;
+bool g_enableTextureBorderPatch = true;
+
+namespace {
+	void textureLoadCallback(u8* /*decodedData*/, u32 /*length*/, bool /*checksumValid*/) {
+	}
+}
 
 CKLBGameApplication::CKLBGameApplication()
 : IClientRequest    ()
 , m_bootFile        (NULL)
 , m_reboot          (false)
 , m_frameTime       (16)
+, m_freezeOnNextFrame(false)
 , m_outStream       (NULL)
 , m_useDefaultDB    (false)
 , m_useDefaultFont  (true)
+, m_languageFolder  (NULL)
+, m_stringCallback  (NULL)
+, m_callbackMutex   (NULL)
 {
+	KLBInitGlobalMutex();
 }
 
 CKLBGameApplication::~CKLBGameApplication() 
 {
 	if(m_bootFile ) KLBDELETEA(m_bootFile);	// 2012.12.12  finidhGame内でコメントアウトした物をここへ移動
+	if(m_languageFolder) KLBDELETEA(m_languageFolder);
+	if(m_stringCallback) KLBDELETEA(m_stringCallback);
 #if defined (DEBUG_MEMORY)
 	CTracker::End();
 #endif
 	// _CrtDumpMemoryLeaks();
 }
 
+bool
+CKLBGameApplication::getString(char* buffer, u32 bufferSize, const char* key,
+							   u32* charCount, const char* fallback)
+{
+	if (!buffer) {
+		return false;
+	}
+
+	CPFInterface::getInstance().platform().mutexLock(m_callbackMutex);
+	const char* string = m_stringCallback
+		? CKLBScriptEnv::getInstance().call_getString(m_stringCallback, key)
+		: CKLBLanguageDatabase::getInstance().findString(key);
+	if (!string) {
+		string = fallback;
+	}
+
+	bool result;
+	if (!string) {
+		buffer[0] = 0;
+		*charCount = 0;
+		result = true;
+	} else {
+		s32 length = strlen(string) + 1;
+		if (length > bufferSize) {
+			buffer[0] = 0;
+			*charCount = 0;
+			result = false;
+		} else {
+			memcpy(buffer, string, length);
+			*charCount = CKLBUtility::charCountUtf8(string);
+			result = true;
+		}
+	}
+
+	CPFInterface::getInstance().platform().mutexUnlock(m_callbackMutex);
+	return result;
+}
+
 /*virtual*/
 void 
 CKLBGameApplication::pauseGame(bool pause) 
 {
-	CKLBTaskMgr::getInstance().setFreeze(pause);
+	controlEvent(pause ? E_PAUSE : E_RESUME, NULL, 0, NULL, 0, NULL);
+	if (pause) {
+		m_freezeOnNextFrame = true;
+	} else {
+		resumeUITasks(CKLBDrawResource::getInstance().getRoot());
+		CKLBTouchPadQueue::getInstance().invalidateActiveTouchState();
+		CKLBRenderingManager::getInstance().onResume();
+		CKLBTaskMgr::getInstance().setFreeze(false);
+		m_freezeOnNextFrame = false;
+	}
+}
+
+void
+CKLBGameApplication::resumeUITasks(CKLBNode* node)
+{
+	CKLBUITask* task = node->getUITask();
+	if (task) {
+		task->onResume();
+	}
+
+	for (CKLBNode* child = node->getChild(); child; child = child->getBrother()) {
+		resumeUITasks(child);
+	}
+}
+
+void
+CKLBGameApplication::resumeTextInputTasks(CKLBNode* node)
+{
+	CKLBUITask* task = node->getUITask();
+	if (task && task->getClassID() == CLS_KLBUITEXTINPUT) {
+		static_cast<CKLBUITextInput*>(task)->CKLBUITextInput::onResume();
+		return;
+	}
+
+	for (CKLBNode* child = node->getChild(); child; child = child->getBrother()) {
+		resumeTextInputTasks(child);
+	}
 }
 
 /*virtual*/
@@ -116,9 +218,8 @@ CKLBGameApplication::getPhysicalScreenHeight()
 bool
 CKLBGameApplication::setFilePath(const char * strPath)
 {
-	int len = (!strPath) ? 0 : strlen(strPath);
-	const char * ptr = (!len) ? "start.lua" : strPath;
-	len = strlen(ptr) + sizeof("file://install/");
+	const char * ptr = (!strPath || !strPath[0]) ? "start.lua" : strPath;
+	size_t len = strlen(ptr) + sizeof("file://install/");
 	char * buf = KLBNEWA(char, len + 1);
 	sprintf(buf, "file://install/%s", ptr);
 	m_bootFile = (const char *)buf;
@@ -126,22 +227,86 @@ CKLBGameApplication::setFilePath(const char * strPath)
 }
 
 bool
+CKLBGameApplication::setLanguageFolder(const char * folder)
+{
+	const char* replacement = NULL;
+	if (folder && *folder) {
+		replacement = CKLBUtility::copyString(folder);
+		if (!replacement) {
+			return false;
+		}
+		klb_assertNull(folder[strlen(folder) - 1] != '/',
+			"Lang folder must not have a / at the end.");
+	}
+
+	KLBDELETEA(m_languageFolder);
+	m_languageFolder = replacement;
+	return true;
+}
+
+bool
+CKLBGameApplication::setStringCallback(const char * callback)
+{
+	const char* oldCallback = m_stringCallback;
+	bool result = false;
+	if (callback) {
+		const char* replacement = CKLBUtility::copyString(callback);
+		if (replacement) {
+			CPFInterface::getInstance().platform().mutexLock(m_callbackMutex);
+			m_stringCallback = replacement;
+			CPFInterface::getInstance().platform().mutexUnlock(m_callbackMutex);
+			result = true;
+		}
+	} else {
+		CPFInterface::getInstance().platform().mutexLock(m_callbackMutex);
+		m_stringCallback = NULL;
+		CPFInterface::getInstance().platform().mutexUnlock(m_callbackMutex);
+		result = true;
+	}
+
+	KLBDELETEA(oldCallback);
+	return result;
+}
+
+void
+CKLBGameApplication::lockCallbackMutex()
+{
+	CPFInterface::getInstance().platform().mutexLock(m_callbackMutex);
+}
+
+void
+CKLBGameApplication::unlockCallbackMutex()
+{
+	CPFInterface::getInstance().platform().mutexUnlock(m_callbackMutex);
+}
+
+bool
 CKLBGameApplication::initGame()
 {
-	bool res = true;
+	g_objectCleanupStarted = false;
+	g_enableTextureBorderPatch = true;
+	initNMAsset(0);
+	bool res;
 #if defined (DEBUG_MEMORY)
 	CTracker::Init("socket://127.0.0.1:6542",true);
 #endif
+	CKLBTask::initializeTaskRegistry();
 
 	AllocationSize allocSize;
 	allocSize.dictionnaryNodePoolSize	= 15000;
 	allocSize.handlerPoolSize			= 10000;
 	allocSize.maxAssetCount				= 1000;
 	allocSize.formTemplateNodeCount		= 10000;
-
+	m_callbackMutex = CPFInterface::getInstance().platform().allocMutex();
+	FontObject::disableHinting();
 	this->setupAllocation(&allocSize);
+	void* callbackMutex = m_callbackMutex;
+	res = true;
 
 	srand(3920567);
+	if (!callbackMutex) {
+		res = false;
+	}
 	if (res) {  res &= CKLBInnerDefManager::initManager(allocSize.formTemplateNodeCount); }
 
 	if (res) {	res &= CKLBTextTempBuffer::allocatorBuffer(200, 40, 4); } // Before InitialTasks !
@@ -161,6 +326,12 @@ CKLBGameApplication::initGame()
 	return res;
 }
 
+void
+CKLBGameApplication::allocateCallbackMutex()
+{
+	m_callbackMutex = CPFInterface::getInstance().platform().allocMutex();
+}
+
 bool
 CKLBGameApplication::frameFlip(u32 deltaT)
 {
@@ -171,8 +342,15 @@ CKLBGameApplication::frameFlip(u32 deltaT)
         // changeScreenMatrix(m_origin, m_width, m_height);
     }
 	bool bContinue = CKLBTaskMgr::getInstance().execute(deltaT);
+	if (m_freezeOnNextFrame) {
+		CKLBTaskMgr::getInstance().setFreeze(true);
+		m_freezeOnNextFrame = false;
+	}
+	CPFInterface::getInstance().platform().beginAudioFrame();
 	if(m_reboot) {
-		finishGame();
+		CKLBTaskMgr::getInstance().resetActiveTimeAccumulator();
+		finishGame(false);
+		CPFInterface::getInstance().platform().endAudioFrame();
 		initGame();
 		m_reboot = false;
 	}
@@ -202,6 +380,7 @@ CKLBGameApplication::inputPoint(int id, IClientRequest::INPUT_TYPE type, int x, 
 void
 CKLBGameApplication::inputDeviceKey(int keyId, char eventType)
 {
+    CKLBTouchPadQueue::getInstance().releaseAllTouches();
     CKLBDeviceKeyEventQueue::getInstance().addQueue(keyId, eventType);
 }
 
@@ -227,8 +406,7 @@ CKLBGameApplication::initSystem(AllocationSize* pSizes)
 	CKLBAssetManager& pAssetManager = CKLBAssetManager::getInstance();
 	pAssetManager.init(pSizes->maxAssetCount, pSizes->dictionnaryNodePoolSize);	// 2012.12.11  コンストラクタから外して明示的に行うように(Reboot時に呼ばれない為)
     
-	TexturePacker& p = TexturePacker::getInstance();
-	if (!p.init(2048,512,STARTUP_FORMAT)) { // If change needed, please modify the STARTUP_FORMAT define, not the code here.
+	if (!TexturePacker::initAll(2048,512,STARTUP_FORMAT,false)) { // If change needed, please modify the STARTUP_FORMAT define, not the code here.
 		return false;
 	}
 
@@ -238,8 +416,10 @@ CKLBGameApplication::initSystem(AllocationSize* pSizes)
 
 	CKLBCompositeAssetPlugin*
 							pCompositePlugin= KLBNEW(CKLBCompositeAssetPlugin);
-	KLBTextureAssetPlugin*	pTexturePlugin	= KLBNEW(KLBTextureAssetPlugin);
+	KLBTextureAssetPlugin*	pTexturePlugin	= KLBNEWC(KLBTextureAssetPlugin, (textureLoadCallback));
 	KLBFlashAssetPlugin*	pFlashPlugin	= KLBNEW(KLBFlashAssetPlugin);
+	CKLBParticleAssetPlugin*
+							pParticlePlugin	= KLBNEW(CKLBParticleAssetPlugin);
 	KLBBlendAnimationAssetPlugin*
 							pNodeAnimPlugin	= KLBNEW(KLBBlendAnimationAssetPlugin);
 	KLBAudioAssetPlugin*	pAudioPlugin	= KLBNEW(KLBAudioAssetPlugin);
@@ -247,6 +427,7 @@ CKLBGameApplication::initSystem(AllocationSize* pSizes)
 	if (pTexturePlugin && pFlashPlugin && pAudioPlugin) {
 		pAssetManager.registerAssetPlugIn(pNodeAnimPlugin);
 		pAssetManager.registerAssetPlugIn(pAudioPlugin);
+		pAssetManager.registerAssetPlugIn(pParticlePlugin);
 		pAssetManager.registerAssetPlugIn(pFlashPlugin);
 		pAssetManager.registerAssetPlugIn(pCompositePlugin);	// Form as second.
 		pAssetManager.registerAssetPlugIn(pTexturePlugin);		// Register last because most used.
@@ -266,23 +447,8 @@ CKLBGameApplication::callInitialTasks(int width, int height)
 	res &= (CKLBDeviceKeyEvent::create() != NULL);
     res &= (CKLBOSCtrlEvent::create() != NULL);
 	res &= (CKLBTouchEventUITask::create() != NULL);
-#ifdef DEBUG_MENU
-    //
-    // Was initialized in CKLBDebugMenu::Create but
-    // wanted to be able to load font in LUA first
-    // Before creating the menu.
-    //
-	CKLBDebugResource& dbgRes = CKLBDebugResource::getInstance();
-	dbgRes.init();
-#endif
 
 	res &= (CKLBScriptEnv::getInstance().boot(m_bootFile) != false);
-
-#ifdef DEBUG_MENU
-	if (m_useDefaultFont) {
-		res &= (CKLBDebugMenu::create() != NULL);
-	}
-#endif
     return res;
 }
  
@@ -320,35 +486,10 @@ CKLBGameApplication::changePointingMatrix(ORIGIN origin, int width, int height)
     CKLBTouchPadQueue::getInstance().setConvertMatrix(pad_matrix[origin]);    
 }
 
-void
-CKLBGameApplication::changeScreenMatrix(ORIGIN origin, int width, int height)
+bool
+CKLBGameApplication::changeScreenMatrix(ORIGIN /*origin*/, int /*width*/, int /*height*/)
 {
-    GLfloat proj_matrix[4][16] = {
-        // 0[deg]
-        {   (2.0f/width),       0.0f,					0.0f,	0.0f,
-            0.0f,               (-2.0f/height),         0.0f,	0.0f,
-            0.0f,               0.0f,					0.0f,	0.0f,
-            -1.0f,              1.0f,					1.0f,	1.0f, },
-        
-        // 90[deg]
-        {   0.0f,               (2.0f/height),			0.0f,	0.0f,
-            (2.0f/width),       0.0f,                   0.0f,	0.0f,
-            0.0f,               0.0f,					0.0f,	0.0f,
-            -1.0f,              -1.0f,					1.0f,	1.0f, },
-        
-        // 180[deg]
-        {   (-2.0f/width),      0.0f,					0.0f,	0.0f,
-            0.0f,               (2.0f/height),          0.0f,	0.0f,
-            0.0f,               0.0f,					0.0f,	0.0f,
-            1.0f,               -1.0f,					1.0f,	1.0f, },
-        
-        // 270[deg]
-        {   0.0f,               (-2.0f/height),         0.0f,	0.0f,
-            (-2.0f/width),      0.0f,                   0.0f,	0.0f,
-            0.0f,               0.0f,					0.0f,	0.0f,
-            1.0f,               1.0f,					1.0f,	1.0f, },
-    };
-    CKLBDrawResource::getInstance().changeProjectionMatrix(proj_matrix[origin], width, height);
+	return true;
 }
 
 bool
@@ -388,15 +529,30 @@ CKLBGameApplication::setupAllocation(AllocationSize* /*pStruct*/)
 }
 
 void
-CKLBGameApplication::finishGame()
+KLBRegisterObjectName(void* /* object */, const char* /* className */, int /* flags */)
 {
-#ifdef DEBUG_MENU
-	CKLBDebugResource::getInstance().release();
-#endif
+}
+
+void
+KLBUnregisterObjectName(void* /* object */, const char* /* className */)
+{
+	if(g_objectCleanupStarted) {
+		return;
+	}
+
+	g_objectCleanupStarted = true;
+	CPFInterface::getInstance().client().finishGame(true);
+}
+
+void
+CKLBGameApplication::finishGame(bool complete)
+{
+	g_objectCleanupStarted = true;
 
     CKLBTaskMgr::getInstance().clearTaskList();
+	teardownActiveConnectionList();
 
-	NetworkManager::stopNetworkManager();
+	NetworkManager::stopNetworkManager(complete);
 	CKLBHTTPInterface::releaseHTTPLib();
 
 	// project local system finish.
@@ -418,17 +574,38 @@ CKLBGameApplication::finishGame()
 	CKLBTextTempBuffer::freeBuffer();
 
 	CKLBNetAPIKeyChain::getInstance().release();
+	spAnimationState_disposeStatics();
 
 	// Free all singleton in OUR desired order.
 	// (final empty destruction of course done by CRT)
-	TexturePacker::getInstance().release(); // Release Texture BEFORE Rendering Mgr
-	CKLBRenderingManager::getInstance().release();
-	CKLBAssetManager::getInstance().release();
 	CKLBDataHandler::release();
+	CKLBAssetManager::getInstance().release();
+	TexturePacker::releaseAll(); // Release Texture BEFORE Rendering Mgr
+	CKLBRenderingManager::release();
 	CKLBInnerDefManager::releaseManager();
 
 	// KLBDELETEA(m_bootFile);	m_bootFile = NULL; // 2012.12.11  コメントアウト(Reboot時に再生成されない為)
 	CKLBScriptEnv::getInstance().finishScriptEnv();
+	if (complete) {
+		FontSystem::shutdown();
+		KLBFreeGlobalMutex();
+	} else {
+		FontSystem::reboot();
+	}
+	KLBDELETEA(m_stringCallback);
+	m_stringCallback = NULL;
+	if (m_callbackMutex) {
+		CPFInterface::getInstance().platform().freeMutex(m_callbackMutex);
+		m_callbackMutex = NULL;
+	}
+	releaseNMAsset();
+}
+
+void
+CKLBGameApplication::releaseCallbackMutex()
+{
+	CPFInterface::getInstance().platform().freeMutex(m_callbackMutex);
+	m_callbackMutex = NULL;
 }
 
 void
@@ -444,14 +621,26 @@ CKLBGameApplication::resetViewport()
   CKLBDrawResource::getInstance().ResetViewport();
 }
 
-FILE* 
-CKLBGameApplication::getShellOutput() 
+void
+CKLBGameApplication::changeProjectionMatrix()
+{
+	CKLBDrawResource::getInstance().changeProjectionMatrix();
+}
+
+FILE*
+CKLBGameApplication::getShellOutput()
 {
 	if (m_outStream) {
 		return m_outStream;
 	} else {
 		return stdout;
 	}
+}
+
+const char*
+CKLBGameApplication::getAssetDirPrefix()
+{
+	return m_languageFolder;
 }
 
 void 

@@ -315,7 +315,7 @@ static int readhexaesc (LexState *ls) {
 
 static int readdecesc (LexState *ls) {
   int c[3], i;
-  int r = 0;  /* result accumulator */
+  unsigned int r = 0;  /* result accumulator */
   for (i = 0; i < 3 && lisdigit(ls->current); i++) {  /* read up to 3 digits */
     c[i] = ls->current;
     r = 10*r + c[i] - '0';

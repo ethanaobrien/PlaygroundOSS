@@ -76,7 +76,7 @@ CKLBScrMgrPage::setMargin(int top, int bottom)
 void
 CKLBScrMgrPage::setInitial(int pos)
 {
-	setPosition(pos - m_offset, 0);
+	setPosition(pos, 0);
 	m_posTarget = loopRound(m_posTarget);
 	m_posNow    = m_posTarget;	// 初期位置に合わせる
 	m_initial   = true;
@@ -117,7 +117,7 @@ CKLBScrMgrPage::getBarPosition()
 void
 CKLBScrMgrPage::execute(u32 /* deltaT */)
 {
-	if((int)(abs(m_posTarget)) == (int)(abs(m_posNow) + 0.05f)) {
+	if((int)(abs(m_posTarget)) == (int)(abs(m_posNow) + 0.05)) {
 		m_posNow = m_posTarget;
 		m_mvDir  = 0;
 		m_speed  = 0.0f;
@@ -126,7 +126,8 @@ CKLBScrMgrPage::execute(u32 /* deltaT */)
 		return;
 	}
 	float target = m_posTarget;
-    if(m_mvDir < 0 && target > m_posNow) { target -= m_lenLoop; }
+	const int mvDir = m_mvDir;
+	if(target > m_posNow && mvDir < 0) { target -= m_lenLoop; }
 	if(m_mvDir > 0 && target < m_posNow) { target += m_lenLoop; }
 	float left = target - m_posNow;
 
@@ -137,6 +138,5 @@ CKLBScrMgrPage::execute(u32 /* deltaT */)
 
 bool 
 CKLBScrMgrPage::stillScrolling() {
-	// Less than 2 pix per second.
-	return fabs(m_speed) > 2.0f;
+	return false;
 }

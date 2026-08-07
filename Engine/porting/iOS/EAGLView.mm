@@ -414,7 +414,7 @@ static float _mainScreenScale = -1.0f;
     
     [self stopAnimation];
     
-    CPFInterface::getInstance().client().finishGame();
+    CPFInterface::getInstance().client().finishGame(true);
     
     // サウンド関係の終了
     CiOSAudioManager::GetInstance().Termination();

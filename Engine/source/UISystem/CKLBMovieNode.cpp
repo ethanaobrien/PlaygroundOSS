@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -39,9 +39,9 @@ CKLBMovieNode::CKLBMovieNode(const char * path, bool background)
 	nativeInputItem = pForm.createControl(type, 0, path, px, py, 0, 0);
 	if (nativeInputItem) {
 		nativeInputItem->visible(false);
+	} else {
+		klb_assertAlways("MoviePlayer allocation failed");
 	}
-
-	klb_assert(nativeInputItem, "MoviePlayer allocation failed");
 }
 
 CKLBMovieNode::~CKLBMovieNode() {

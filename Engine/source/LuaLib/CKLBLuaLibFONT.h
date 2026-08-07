@@ -29,11 +29,13 @@ public:
 		FONTOBJ	*	prev;
 		FONTOBJ	*	next;
 		int			size;
+		bool		native;
 		void	*	font;
 
 		u32 getClassID();
 	};
 	static FONTOBJ * create_font(int size, const char * fontname);
+	static FONTOBJ * create_native_font(int size, int type);
 
 	CKLBLuaLibFONT(DEFCONST * arrConstDef);
 	virtual ~CKLBLuaLibFONT();
@@ -52,7 +54,9 @@ private:
 	static int remove_all_font	();
 
 	static int luaFontLoad		(lua_State * L);
+	static int luaFontBind		(lua_State * L);
 	static int luaFontCreate	(lua_State * L);
+	static int luaFontCreateNative(lua_State * L);
 	static int luaFontRelease	(lua_State * L);
 	static int luaGetTextInfo	(lua_State * L);
 	static int luaSetDefaultLabelFont(lua_State * L);

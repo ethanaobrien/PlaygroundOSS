@@ -27,8 +27,9 @@
 class CKLBUIWebView : public CKLBUIElement {
 public:
 	CKLBUIWebView(bool isPageJump, const char * initialURL = NULL,
-                  const char * token = NULL, const char * region = NULL, const char * client = NULL,
-                  const char * consumerKey = NULL, const char * applicationID = NULL, const char * userID = NULL);
+                  const char * token = NULL, const char * region = NULL, const char * bundleVersion = NULL,
+                  const char * client = NULL, const char * consumerKey = NULL, const char * applicationID = NULL,
+                  const char * userID = NULL, const char * language = NULL);
 	~CKLBUIWebView();
 
 	// KLBObject::

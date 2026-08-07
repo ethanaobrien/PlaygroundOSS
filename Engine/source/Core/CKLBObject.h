@@ -80,7 +80,7 @@ protected:
 
 	inline
 	void MsgRegister(CKLBObject* listener)	{
-		klb_assert(!m_msgListener, "low level message listener already used by somebody else %8x", m_msgListener);
+		klb_assertNull(!m_msgListener, "low level message listener already used by somebody else %8x", m_msgListener);
 		m_msgListener = listener;
 	}	
 };

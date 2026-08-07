@@ -18,9 +18,28 @@
 #include <stdlib.h>
 #include <android/log.h>
 #include "CPFInterface.h"
+#include "BacktraceExtension.h"
+#include "CAndroidRequest.h"
 //#include <stdarg.h>
 
 extern "C" {
+//! The critical variant additionally hands control to the platform
+//! environment check, which terminates the process unless the running
+//! installation is one this build is allowed to run on.
+void assertFunctionCritical(int line, const char* file, const char* msg,...) {
+	va_list	argp;
+	char pszBuf [1024];
+	char buf[1024];
+
+	va_start(argp, msg);
+	vsprintf( pszBuf, msg, argp);
+	va_end(argp);
+
+	sprintf(buf, "Assert l.%i in %s : \n%s\n", line, file, pszBuf);
+	BacktraceExtension::getInstance().beforeAssertFunction(buf);
+	CAndroidRequest::getInstance()->validateEnvironment();
+}
+
 void assertFunction(int line, const char* file, const char* msg,...) {
 	va_list	argp;
 	char pszBuf [1024];
@@ -31,8 +50,7 @@ void assertFunction(int line, const char* file, const char* msg,...) {
 	va_end(argp);
 
 	sprintf(buf, "Assert l.%i in %s : \n%s\n", line, file, pszBuf);
-	DEBUG_PRINT(buf);
-	abort();
+	BacktraceExtension::getInstance().beforeAssertFunction(buf);
 }
 
 void msgBox(char * log)

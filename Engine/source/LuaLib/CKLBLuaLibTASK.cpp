@@ -16,6 +16,7 @@
 #include "CKLBLuaLibTASK.h"
 #include "CKLBBinArray.h"
 #include "CKLBLuaPropTask.h"
+#include "CKLBUITask.h"
 #include "CLuaState.h"
 #include "CKLBLuaEnv.h"
 ;
@@ -36,6 +37,7 @@ CKLBLuaLibTASK::addLibrary()
 	addFunction("TASK_kill",			CKLBLuaLibTASK::killTask);
 	addFunction("TASK_isKilled",		CKLBLuaLibTASK::isKill);
 	addFunction("TASK_registerkill",	CKLBLuaLibTASK::registerKill);
+	addFunction("TASK_isKillComplete",	CKLBLuaLibTASK::isKillComplete);
 
 	// ステージタスク操作
     addFunction("TASK_StageOnly",		CKLBLuaLibTASK::setStageTask);
@@ -46,6 +48,10 @@ CKLBLuaLibTASK::addLibrary()
 
 	// タスクマネージャレベルでpauseをかける
 	addFunction("TASK_ManagerPause",	CKLBLuaLibTASK::setManagerPause);
+
+	// UIタスクのノード状態設定
+	addFunction("TASKUI_setMatrix",		CKLBLuaLibTASK::setUIMatrix);
+	addFunction("TASKUI_setRenderState",	CKLBLuaLibTASK::setUIRenderState);
 }
 
 int
@@ -55,7 +61,7 @@ CKLBLuaLibTASK::getProperty(lua_State * L)
 	if(lua.numArgs() != 1) return 0;
     if(lua.isNil(1)) return 0;
 
-	CKLBLuaTask * pTask = (CKLBLuaTask *)lua.getPointer(1);
+	CKLBLuaTask * pTask = (CKLBLuaTask *)CKLBTask::getFromScriptHandle((size_t)lua.getPointer(1));
 	if(!pTask) return 0;
 
 	CHECKTASK(pTask);
@@ -75,7 +81,7 @@ CKLBLuaLibTASK::setProperty(lua_State * L)
 	if(lua.numArgs() != 2) return 0;
     if(lua.isNil(1)) return 0;
     
-    CKLBLuaTask * pTask = (CKLBLuaTask *)lua.getPointer(1);
+    CKLBLuaTask * pTask = (CKLBLuaTask *)CKLBTask::getFromScriptHandle((size_t)lua.getPointer(1));
     if(!pTask) return 0;
 
 	CHECKTASK(pTask);
@@ -94,7 +100,7 @@ CKLBLuaLibTASK::killTask(lua_State *L)
     CLuaState lua(L);
     if(lua.numArgs() != 1) return 0;
     if(!lua.isNil(1)) {
-        CKLBLuaTask * pTask = (CKLBLuaTask *)lua.getPointer(1);
+        CKLBLuaTask * pTask = (CKLBLuaTask *)lua.findScriptPtr(1);
         if(!pTask) return 0;
 		CHECKTASK(pTask);
         pTask->kill();
@@ -110,11 +116,12 @@ CKLBLuaLibTASK::isKill(lua_State * L)
 	if(lua.numArgs() != 1) return 0;
 	bool isRemove = true;
 	if(!lua.isNil(1)) {
-		CKLBLuaTask * pTask = (CKLBLuaTask *)lua.getPointer(1);
-		if(!pTask) return 0;
-		CHECKTASK(pTask);
-		CKLBTaskMgr& mgr = CKLBTaskMgr::getInstance();
-		isRemove = mgr.is_remove(pTask);
+		CKLBLuaTask * pTask = (CKLBLuaTask *)lua.findScriptPtr(1);
+		if(pTask) {
+			CHECKTASK(pTask);
+			CKLBTaskMgr& mgr = CKLBTaskMgr::getInstance();
+			isRemove = mgr.is_remove(pTask);
+		}
 	}
 	lua.retBool(isRemove);
 	return 1;
@@ -126,7 +133,7 @@ CKLBLuaLibTASK::registerKill(lua_State * L)
 	CLuaState lua(L);
 	bool bResult = false;
 	if(lua.numArgs() == 2) {
-		CKLBLuaTask * pTask = (CKLBLuaTask *)lua.getPointer(1);
+		CKLBLuaTask * pTask = (CKLBLuaTask *)lua.findScriptPtr(1);
 		if(!pTask) return 0;
 		CHECKTASK(pTask);
 
@@ -146,12 +153,26 @@ CKLBLuaLibTASK::registerKill(lua_State * L)
 }
 
 int
+CKLBLuaLibTASK::isKillComplete(lua_State * L)
+{
+	CLuaState lua(L);
+	if(lua.numArgs() != 1) return 0;
+	bool isComplete = true;
+	if(!lua.isNil(1)) {
+		const void* handle = lua.getPointer(1);
+		isComplete = CKLBTask::findFromScriptHandle(reinterpret_cast<size_t>(handle)) == NULL;
+	}
+	lua.retBool(isComplete);
+	return 1;
+}
+
+int
 CKLBLuaLibTASK::setStageTask(lua_State * L)
 {
     CLuaState lua(L);
     if(lua.numArgs() != 1) return 0;
     if(lua.isNil(1)) return 0;
-    CKLBLuaTask * pTask = (CKLBLuaTask *)lua.getPointer(1);
+    CKLBLuaTask * pTask = (CKLBLuaTask *)lua.getScriptPtr(1);
     if(!pTask) return 0;
 	CHECKTASK(pTask);
 
@@ -178,7 +199,7 @@ CKLBLuaLibTASK::setPause(lua_State * L)
 		return 1;
 	}
 
-    CKLBLuaTask * pTask = (CKLBLuaTask *)lua.getPointer(1);
+    CKLBLuaTask * pTask = (CKLBLuaTask *)lua.getScriptPtr(1);
     if(!pTask) return 0;
 	CHECKTASK(pTask);
 
@@ -205,4 +226,77 @@ CKLBLuaLibTASK::setManagerPause(lua_State * L)
 
 	lua.retBoolean(true);
 	return 1;
+}
+
+int
+CKLBLuaLibTASK::setUIMatrix(lua_State * L)
+{
+	CLuaState lua(L);
+	CKLBUITask * pTask = (CKLBUITask *)lua.getScriptPtr(1);
+	if(!pTask) return 0;
+
+	int argc = lua.numArgs();
+	if(argc >= 7) {
+		float * matrix = pTask->getNode()->setMatrix();
+		for(int idx = 0; idx < 6; idx++) {
+			matrix[idx] = lua.getFloat(idx + 2);
+		}
+	}
+
+	lua.retBoolean(argc >= 7);
+	return 1;
+}
+
+int
+CKLBLuaLibTASK::setUIRenderState(lua_State * L)
+{
+	CLuaState lua(L);
+	int argc = lua.numArgs();
+	int result = 0;
+	if(argc > 0) {
+		CKLBUITask * pTask = (CKLBUITask *)lua.getScriptPtr(1);
+		if(!pTask) return result;
+
+		SRenderState * pState = NULL;
+		int state = (lua.numArgs() >= 2) ? lua.getInt(2) : 0;
+		CKLBNode * nodeStack[40];
+		int nodeCount = 1;
+		nodeStack[0] = pTask->getNode();
+		switch(state) {
+		case 0:
+			pState = CKLBRenderingManager::getInstance().getNoAlphaState();
+			break;
+		case 1:
+			pState = CKLBRenderingManager::getInstance().getAlphaState();
+			break;
+		case 2:
+			pState = CKLBRenderingManager::getInstance().getAdditiveState();
+			break;
+		}
+
+		if(pState) {
+			while(nodeCount) {
+				CKLBNode * pNode = nodeStack[--nodeCount];
+				CKLBRenderCommand ** renderList = pNode->getRenderList();
+				for(size_t index = 0; index < pNode->getRenderCount(); index++) {
+					CKLBRenderCommand * pCommand = renderList[index];
+					if(pCommand->getCommandType() == RENDERCOMMAND_SPRITE) {
+						((CKLBSprite *)pCommand)->setRenderState(pState);
+					}
+				}
+
+				CKLBNode * pChild = pNode->getChild();
+				while(pChild) {
+					if(nodeCount < 40) {
+						nodeStack[nodeCount++] = pChild;
+					}
+					pChild = pChild->getBrother();
+				}
+			}
+		}
+	}
+
+	lua.retBoolean(argc > 0);
+	result = 1;
+	return result;
 }

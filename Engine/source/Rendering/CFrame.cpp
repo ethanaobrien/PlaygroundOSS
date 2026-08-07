@@ -16,7 +16,9 @@
 #include "RenderingFramework.h"
 
 CFrame::CFrame()
-:pColBufferBuf		(NULL)
+:frameBuffID			(0)
+,isDefaultFrame		(false)
+,pColBufferBuf		(NULL)
 ,pColBufferTex		(NULL)
 ,pDepthBufferBuf	(NULL)
 ,pDepthBufferTex	(NULL)
@@ -25,7 +27,6 @@ CFrame::CFrame()
 ,colorBuff			(0)
 ,depthBuff			(0)
 ,stencilBuff		(0)
-,frameBuffID		(0)
 {
 }
 
@@ -36,6 +37,8 @@ CFrame::~CFrame() {
 }
 
 bool CFrame::setColorBuffer(CImageBuffer*	pBuffer) {
+	if (isDefaultFrame) { return false; }
+
 	if (pColBufferBuf) {
 		pColBufferBuf->decrementRefCount();
 	}
@@ -62,6 +65,8 @@ bool CFrame::setColorBuffer(CImageBuffer*	pBuffer) {
 }
 
 bool CFrame::setColorBuffer(CTexture*		pTexture, u32 mipLevel) {
+	if (isDefaultFrame) { return false; }
+
 	if (pColBufferBuf) {
 		pColBufferBuf->decrementRefCount();
 	}
@@ -88,6 +93,8 @@ bool CFrame::setColorBuffer(CTexture*		pTexture, u32 mipLevel) {
 }
 
 bool CFrame::setDepthBuffer(CImageBuffer*	pBuffer) {
+	if (isDefaultFrame) { return false; }
+
 	if (pDepthBufferBuf) {
 		pDepthBufferBuf->decrementRefCount();
 	}
@@ -114,6 +121,8 @@ bool CFrame::setDepthBuffer(CImageBuffer*	pBuffer) {
 }
 
 bool CFrame::setDepthBuffer(CTexture*		pTexture, u32 mipLevel) {
+	if (isDefaultFrame) { return false; }
+
 	if (pDepthBufferBuf) {
 		pDepthBufferBuf->decrementRefCount();
 	}
@@ -140,6 +149,8 @@ bool CFrame::setDepthBuffer(CTexture*		pTexture, u32 mipLevel) {
 }
 
 bool CFrame::setStencilBuffer(CImageBuffer*	pBuffer) {
+	if (isDefaultFrame) { return false; }
+
 	if (pStencilBufferBuf) {
 		pStencilBufferBuf->decrementRefCount();
 	}
@@ -167,6 +178,8 @@ bool CFrame::setStencilBuffer(CImageBuffer*	pBuffer) {
 bool CFrame::use(bool /*check*/) {
 	#ifndef OPENGL2
 	#else
+		klb_assertNull(dglCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE,
+					   "PROBLEM WITH VALIDATION OF FRAME");
 	#endif	
-	return false;
+	return true;
 }

@@ -34,7 +34,7 @@ CKLBLibRegistrator::getInstance()
 CKLBLibRegistrator::LIBREGISTSTRUCT* 
 CKLBLibRegistrator::add(const char* name, u32 classID) 
 {
-	klb_assert(m_count < MAX_ELEM, "Reached maximum allocation space for lib registrator");
+	klb_assertNull(m_count < MAX_ELEM, "Reached maximum allocation space for lib registrator");
 	LIBREGISTSTRUCT	*		new_element = &m_list[m_count++];
 	new_element->name		= name;
 	new_element->classID	= classID;

@@ -32,12 +32,25 @@ public:
 
 	inline const int width      () const { return m_width;      }
 	inline const int height     () const { return m_height;     }
+	inline const int phisicalWidth () const { return m_phisical_width;  }
+	inline const int phisicalHeight() const { return m_phisical_height; }
+	inline const float scaleX   () const { return m_scaleX; }
+	inline const float scaleY   () const { return m_scaleY; }
+	inline const float uniformScaleSafeToUnsafe() const { return m_phisicalScaleMin; }
 
 	inline const int vp_width   () const { return m_vp_width;   }
 	inline const int vp_height  () const { return m_vp_height;  }
 
 	inline const int ox         () const { return m_ox;         }
 	inline const int oy         () const { return m_oy;         }
+	inline const float borderX  () const { return m_borderX;    }
+	inline const float borderY  () const { return m_borderY;    }
+	inline const int screenBorderX() const { return m_screenBorderX; }
+	inline const int screenBorderY() const { return m_screenBorderY; }
+	inline const float unsafeArea(int edge) const { return m_unsafeArea[edge]; }
+	bool isInSafeAreaCallback() const;
+	void registerSafeAreaChangeCallback(const char* callback);
+	void registerSafeAreaListener(bool enable, CKLBTask* task);
 
 	bool initResource(bool rotation, int width, int height);
 	void freeResource();
@@ -46,31 +59,32 @@ public:
 
 	inline
 	bool hasBorder() { return m_hasBorder; }
-	bool setLogicalResolution(int width, int height, float * other_matrix = 0);
+	bool setLogicalResolution(int width, int height);
 
 	inline void convPointing(int x, int y, int& cx, int& cy) {
-		cx = (int)((x - m_ox) / m_scale);
-		cy = (int)((y - m_oy) / m_scale);
+		cx = (int)((x - m_screenBorderX) / m_phisicalScale);
+		cy = (int)((y - m_screenBorderY) / m_phisicalScale);
 	}
 
 	// 論理座標系上の長さを物理座標系上の長さに変換する
-	inline float toPhisical(float logical) { return logical * m_scale; }
+	inline float toPhisical(float logical) { return logical * m_phisicalScale; }
 
 	// 物理座標系上の長さを論理座標系上の長さに変換する
-	inline float toLogical(float phisical) { return phisical / m_scale; }
+	inline float toLogical(float phisical) { return phisical / m_phisicalScale; }
 
 	// 論理座標を物理デバイス座標に変換する(OSコントロールの位置変換等に使用)
 	inline void toPhisicalPosition(int lx, int ly, int& px, int& py) {
-		px = (int)(lx * m_scale) + m_ox;
-		py = (int)(ly * m_scale) + m_oy;
+		px = (int)(lx * m_phisicalScale) + m_screenBorderX;
+		py = (int)(ly * m_phisicalScale) + m_screenBorderY;
 	}
 	// 論理座標系上のサイズを物理デバイス座標系上のサイズに変換する
 	inline void toPhisicalSize(int lw, int lh, int& pw, int& ph) {
-		pw = (int)(lw * m_scale);
-		ph = (int)(lh * m_scale);
+		pw = (int)(lw * m_phisicalScale);
+		ph = (int)(lh * m_phisicalScale);
 	}
 
     void changeProjectionMatrix(float * matrix, int width, int height);
+	void changeProjectionMatrix();
     
 	inline CKLBNode * getRoot() { return m_gpRootNode; }
     
@@ -78,9 +92,7 @@ public:
 		CKLBSystem::performAnimationUpdate(deltaT); 
 	}
 
-	inline void recompute() {
-		m_gpRootNode->recompute();
-	}
+	void recompute();
 
 	inline void draw() {
 		CKLBRenderingManager::getInstance().draw();
@@ -99,6 +111,8 @@ public:
 private:
 	bool		m_hasBorder;
 	bool		m_allowLog;
+	bool		m_safeAreaUpdatePending;
+	bool		m_inSafeAreaCallback;
 	u32			m_frameCount;
 	int			m_phisical_width;
 	int			m_phisical_height;
@@ -106,12 +120,25 @@ private:
 	int			m_height;
 	int			m_ox;
 	int			m_oy;
+	int			m_screenBorderX;
+	int			m_screenBorderY;
+	float		m_borderX;
+	float		m_borderY;
+	float		m_unsafeArea[4];
 	int			m_vp_width;
 	int			m_vp_height;
 	float		m_scale;	// 論理解像度に対する物理画面の倍率
+	float		m_phisicalScale;
+	float		m_invPhisicalScale;
 	float		m_scaleX;
 	float		m_scaleY;
+	float		m_phisicalScaleX;
+	float		m_phisicalScaleY;
+	float		m_phisicalScaleMin;
+	float		m_clearColor[4];
 	CKLBNode*	m_gpRootNode;
+	CKLBTask*	m_safeAreaListener;
+	const char*	m_safeAreaCallback;
 };
 
 

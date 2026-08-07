@@ -20,8 +20,31 @@
 #include "CKLBLabelNode.h"
 #include "CKLBUITextInput.h"
 #include "CKLBUILabel.h"
+#include "CKLBUIScale9Btn.h"
 #include "CKLBUIWebArea.h"
 ;
+
+namespace {
+
+struct NodeUpdateContext {
+	u32			classID;
+	CKLBUITask*	task;
+};
+
+typedef char AssertNodeUpdateClassIDOffset[(offsetof(NodeUpdateContext, classID) == 0) ? 1 : -1];
+typedef char AssertNodeUpdateTaskOffset[(offsetof(NodeUpdateContext, task) == 8) ? 1 : -1];
+typedef char AssertNodeUpdateContextSize[(sizeof(NodeUpdateContext) == 16) ? 1 : -1];
+
+// Every update helper receives &context.classID. Because classID is the first
+// member of this standard-layout record, that pointer also identifies the
+// complete context object without relying on byte-offset arithmetic.
+inline NodeUpdateContext& getNodeUpdateContext(u32* pClassID)
+{
+	return *reinterpret_cast<NodeUpdateContext*>(pClassID);
+}
+
+}
+
 CKLBFormIF::CKLBFormIF(CKLBTask * pOwner) : m_begin(NULL), m_end(NULL), m_pOwner(pOwner) {}
 CKLBFormIF::~CKLBFormIF()
 {
@@ -129,6 +152,9 @@ CKLBFormIF::removeAssetByHandle(void * /*item*/)
 bool
 CKLBFormIF::isExistNode(CKLBNode * pParent, const char * name)
 {
+	if (!pParent) {
+		return false;
+	}
 	CKLBNode * pNode = pParent->search(name);
 	return (pNode) ? true : false;
 }
@@ -142,7 +168,7 @@ CKLBFormIF::updateNode(CLuaState& lua, int argc, int base, CKLBNode * pParent, i
 		if (name) {
 			pNode = pParent->search(name);
 		}
-		klb_assert(pNode, "Node not found: name = \"%s\"", name);
+		klb_assertNull(pNode, "Node not found: name = \"%s\"", name);
 	} else {
 		pNode = (CKLBNode *)lua.getPointer(nodeIndex);
 	}
@@ -158,28 +184,31 @@ CKLBFormIF::updateNode(CLuaState& lua, int argc, int base, CKLBNode * pParent, i
 		return 1;
 	}
 
-	CKLBUITask* pTask		= pNode->getUITask();
-	u32 classID;
+	NodeUpdateContext context;
+	CKLBUITask* pTask = pNode->getUITask();
 	if (pTask) {
-		classID = pTask->getClassID();
+		context.classID = pTask->getClassID();
 	} else {
-		classID = pNode->getClassID();
+		context.classID = pNode->getClassID();
 	}
+	context.task = pTask;
+	u32& classID = context.classID;
 
 	// 対象のノードによって、可能な操作が異なる。
 	bool result;
 	switch(classID)
 	{
-	default:					result = updateStandardNode(lua, argc, base, subcmd, pNode, ret, item, index);	break;
-	case CLS_KLBUIELEMENT:		result = updateUIElement(lua, argc, base, subcmd, pNode, ret, item, index);		break;
-	case CLS_KLBUISELECTABLE:	result = updateUISelectable(lua, argc, base, subcmd, pNode, ret, item, index);	break;
-	case CLS_KLBUICONTAINER:	result = updateUIContainer(lua, argc, base, subcmd, pNode, ret, item, index);	break;
+	default:					result = updateStandardNode(&classID, lua, argc, base, subcmd, pNode, ret, item, index);	break;
+	case CLS_KLBUIELEMENT:		result = updateUIElement(&classID, lua, argc, base, subcmd, pNode, ret, item, index);		break;
+	case CLS_KLBUISELECTABLE:	result = updateUISelectable(&classID, lua, argc, base, subcmd, pNode, ret, item, index);	break;
+	case CLS_KLBUISCALE9BTN:	result = updateUISelectable(&classID, lua, argc, base, subcmd, pNode, ret, item, index);	break;
+	case CLS_KLBUICONTAINER:	result = updateUIContainer(&classID, lua, argc, base, subcmd, pNode, ret, item, index);	break;
 	case CLS_KLBUILABEL:
-	case CLS_KLBLABEL:			result = updateLabelNode(lua, argc, base, subcmd, pNode, ret, item, index);		break;
+	case CLS_KLBLABEL:			result = updateLabelNode(&classID, lua, argc, base, subcmd, pNode, ret, item, index);		break;
 	case CLS_KLBTEXTEDIT:
-	case CLS_KLBUITEXTINPUT:	result = updateUITextEdit(lua, argc, base, subcmd, pNode, ret, item, index);	break;
+	case CLS_KLBUITEXTINPUT:	result = updateUITextEdit(&classID, lua, argc, base, subcmd, pNode, ret, item, index);	break;
 	case CLS_KLBUIWEBVIEW:
-	case CLS_KLBWEBVIEW:		result = updateUIWebView(lua, argc, base, subcmd, pNode, ret, item, index);	break;
+	case CLS_KLBWEBVIEW:		result = updateUIWebView(&classID, lua, argc, base, subcmd, pNode, ret, item, index);	break;
 	}
 	// ここまでで処理されたコマンドが無い場合、標準コマンドを処理する。
 	if(!result) {
@@ -192,8 +221,13 @@ CKLBFormIF::updateNode(CLuaState& lua, int argc, int base, CKLBNode * pParent, i
 }
 
 bool
-CKLBFormIF::updateStandardNode(CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * /*item*/, int index)
+CKLBFormIF::updateStandardNode(u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * /*item*/, int index)
 {
+	NodeUpdateContext& context = getNodeUpdateContext(pClassID);
+	CKLBUITask* pTask = context.task;
+	if (context.classID == CLS_KLBSHADERTASK || context.classID == CLS_KLBRENDERBUFFERTASK) {
+		pTask = NULL;
+	}
 	bool result = true;
 	switch(subcmd)
 	{
@@ -234,7 +268,6 @@ CKLBFormIF::updateStandardNode(CLuaState& lua, int argc, int base, int subcmd, C
 			float x = lua.getFloat(base + 1);
 			float y = lua.getFloat(base + 2);
 
-			CKLBUITask* pTask = pNode->getUITask();
 			if (pTask) {
 				// Change next frame or current frame.
 				if(pTask->isNewScriptModel()) {
@@ -263,7 +296,6 @@ CKLBFormIF::updateStandardNode(CLuaState& lua, int argc, int base, int subcmd, C
 			float scaleX = lua.getFloat(base + 1);
 			float scaleY = lua.getFloat(base + 2);
 
-			CKLBUITask* pTask = pNode->getUITask();
 			if (pTask) {
 				if(pTask->isNewScriptModel()) {
 					pTask->setScaleX(scaleX);
@@ -289,7 +321,6 @@ CKLBFormIF::updateStandardNode(CLuaState& lua, int argc, int base, int subcmd, C
 			}
 			float rot = lua.getFloat(base + 1);
 
-			CKLBUITask* pTask = pNode->getUITask();
 			if (pTask) {
 				if(pTask->isNewScriptModel()) {
 					pTask->setRotation(rot);
@@ -315,7 +346,6 @@ CKLBFormIF::updateStandardNode(CLuaState& lua, int argc, int base, int subcmd, C
 			u32 alpha = lua.getInt(base + 1);
 			u32 rgb   = lua.getInt(base + 2);
 
-			CKLBUITask* pTask = pNode->getUITask();
 			if (pTask) {
 				if(pTask->isNewScriptModel()) {
 					pTask->setAlpha(alpha);
@@ -347,7 +377,6 @@ CKLBFormIF::updateStandardNode(CLuaState& lua, int argc, int base, int subcmd, C
 			}
 			bool visible = lua.getBool(base + 1);
 
-			CKLBUITask* pTask = pNode->getUITask();
 			if (pTask) {
 				pTask->setVisible(visible);
 			} else {
@@ -362,7 +391,6 @@ CKLBFormIF::updateStandardNode(CLuaState& lua, int argc, int base, int subcmd, C
 				break;
 			}
 			int order = lua.getInt(base + 1);
-			CKLBUITask* pTask = pNode->getUITask();
 			if (pTask) {
 				if(pTask->isNewScriptModel()) {
 					pTask->setOrder(order);
@@ -386,7 +414,6 @@ CKLBFormIF::updateStandardNode(CLuaState& lua, int argc, int base, int subcmd, C
 				break;
 			}
 			int order;
-			CKLBUITask* pTask = pNode->getUITask();
 			if (pTask) {
 				if(pTask->isNewScriptModel()) {
 					order = pTask->getOrder();
@@ -405,6 +432,36 @@ CKLBFormIF::updateStandardNode(CLuaState& lua, int argc, int base, int subcmd, C
 			ret = 1;
 		}
 		break;
+	case FORM_NODE_GET_TRANS:
+		{
+			if(argc != base) {
+				result = false;
+				break;
+			}
+			float x, y;
+			if (pTask) {
+				if(pTask->isNewScriptModel()) {
+					x = pTask->getX();
+					y = pTask->getY();
+				} else {
+					int idxX = pTask->findProperty("x");
+					x = 0.0f;
+					y = 0.0f;
+					if (idxX >= 0) {
+						int idxY = idxX + 1;
+						x = pTask->getNum(idxX);
+						y = pTask->getNum(idxY);
+					}
+				}
+			} else {
+				x = pNode->getTranslateX();
+				y = pNode->getTranslateY();
+			}
+			lua.retFloat(x);
+			lua.retFloat(y);
+			ret = 2;
+		}
+		break;
 
 	case FORM_NODE_TASK:
 		{
@@ -412,11 +469,11 @@ CKLBFormIF::updateStandardNode(CLuaState& lua, int argc, int base, int subcmd, C
 				result = false;
 				break;
 			}
-			CKLBUITask * pTask = pNode->getUITask();
-			if(!pTask) {
+			CKLBUITask* pContextTask = context.task;
+			if(!pContextTask) {
 				lua.retNil();
 			} else {
-				lua.retPointer(pTask);
+				lua.retScriptPtr(pContextTask);
 			}
 			ret = 1;
 		}
@@ -426,7 +483,7 @@ CKLBFormIF::updateStandardNode(CLuaState& lua, int argc, int base, int subcmd, C
 }
 
 bool
-CKLBFormIF::updateUIElement(CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index)
+CKLBFormIF::updateUIElement(u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index)
 {
 	CKLBUIElement * pElement = (CKLBUIElement *)pNode;
 	bool result = true;
@@ -434,7 +491,7 @@ CKLBFormIF::updateUIElement(CLuaState& lua, int argc, int base, int subcmd, CKLB
 	{
 	default:
 		{
-			result = updateStandardNode(lua, argc, base, subcmd, pNode, ret, item, index);
+			result = updateStandardNode(pClassID, lua, argc, base, subcmd, pNode, ret, item, index);
 		}
 		break;
 	case FORM_UIE_SET_ENABLED:
@@ -472,13 +529,25 @@ CKLBFormIF::updateUIElement(CLuaState& lua, int argc, int base, int subcmd, CKLB
 			ret = 1;
 		}
 		break;
+	case FORM_UIE_GET_ASSET_NAME:
+		{
+			if(argc != base + 1) {
+				result = false;
+				break;
+			}
+			int mode = lua.getInt(base + 1);
+			const char * name = pElement->getAssetName((CKLBUIElement::ASSET_TYPE)mode);
+			lua.retString(name);
+			ret = 1;
+		}
+		break;
 	}
 	return result;
 }
 
 
 bool
-CKLBFormIF::updateUISelectable(CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index)
+CKLBFormIF::updateUISelectable(u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index)
 {
 	CKLBUISelectable * pSelectable = (CKLBUISelectable *)pNode;
 	bool result = true;
@@ -487,7 +556,7 @@ CKLBFormIF::updateUISelectable(CLuaState& lua, int argc, int base, int subcmd, C
 	default:
 		{
 			// selectable専用コマンドに該当しなければ Element として処理する
-			result = updateUIElement(lua, argc, base, subcmd, pNode, ret, item, index);
+			result = updateUIElement(pClassID, lua, argc, base, subcmd, pNode, ret, item, index);
 		}
 		break;
 	case FORM_UIS_SET_CLICK:
@@ -551,12 +620,38 @@ CKLBFormIF::updateUISelectable(CLuaState& lua, int argc, int base, int subcmd, C
 			pSelectable->setLuaFunction(newFct);
 		}
 		break;
+	case FORM_LBL_SET_TEXT:
+		{
+			if (argc != base + 1) {
+				return false;
+			}
+			const char* text = lua.getString(argc);
+			if (pNode->getClassID() == CLS_KLBUISCALE9BTN) {
+				CKLBUIScale9Btn* button = (CKLBUIScale9Btn*)pNode;
+				button->setText(text);
+				button->rebuildText();
+			}
+			return true;
+		}
+	case FORM_LBL_SET_COLOR:
+		{
+			if (argc != base + 1) {
+				return false;
+			}
+			u32 color = lua.getInt(argc);
+			if (pNode->getClassID() == CLS_KLBUISCALE9BTN) {
+				CKLBUIScale9Btn* button = (CKLBUIScale9Btn*)pNode;
+				button->setTextColor(color);
+				button->rebuildText();
+			}
+			return true;
+		}
 	}
 	return result;
 }
 
 bool
-CKLBFormIF::updateUIContainer(CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index)
+CKLBFormIF::updateUIContainer(u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index)
 {
 	CKLBUIContainer * pCont = (CKLBUIContainer *)pNode;
 	bool result = true;
@@ -564,7 +659,7 @@ CKLBFormIF::updateUIContainer(CLuaState& lua, int argc, int base, int subcmd, CK
 	{
 	default:
 		{
-			result = updateUIElement(lua, argc, base, subcmd, pNode, ret, item, index);
+			result = updateUIElement(pClassID, lua, argc, base, subcmd, pNode, ret, item, index);
 		}
 		break;
 	case FORM_CONT_VIEWOFFSET:
@@ -595,7 +690,7 @@ CKLBFormIF::updateUIContainer(CLuaState& lua, int argc, int base, int subcmd, CK
 }
 
 bool
-CKLBFormIF::updateUITextEdit(CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index)
+CKLBFormIF::updateUITextEdit(u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index)
 {
 	CKLBUITask* pTask		= pNode->getUITask();
 	CKLBUITextBox * pText	= (CKLBUITextBox *)pNode;
@@ -612,7 +707,7 @@ CKLBFormIF::updateUITextEdit(CLuaState& lua, int argc, int base, int subcmd, CKL
 	{
 	default:
 		{
-			result = updateUIElement(lua, argc, base, subcmd, pNode, ret, item, index);
+			result = updateUIElement(pClassID, lua, argc, base, subcmd, pNode, ret, item, index);
 		}
 		break;
 	case FORM_LBL_GET_TEXT:	// Trick : label & text command backward compatible.
@@ -656,7 +751,7 @@ CKLBFormIF::updateUITextEdit(CLuaState& lua, int argc, int base, int subcmd, CKL
 }
 
 bool
-CKLBFormIF::updateUIWebView(CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index)
+CKLBFormIF::updateUIWebView(u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index)
 {
 	CKLBUITask* pTask		= pNode->getUITask();
 	bool result = true;
@@ -664,7 +759,7 @@ CKLBFormIF::updateUIWebView(CLuaState& lua, int argc, int base, int subcmd, CKLB
 	{
 	default:
 		{
-			result = updateUIElement(lua, argc, base, subcmd, pNode, ret, item, index);
+			result = updateUIElement(pClassID, lua, argc, base, subcmd, pNode, ret, item, index);
 		}
 		break;
 	case FORM_WEB_SET_URI:
@@ -707,7 +802,7 @@ CKLBFormIF::updateUIWebView(CLuaState& lua, int argc, int base, int subcmd, CKLB
 }
 
 bool
-CKLBFormIF::updateLabelNode(CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index)
+CKLBFormIF::updateLabelNode(u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index)
 {
 	CKLBLabelNode * pLabel = (CKLBLabelNode *)pNode;
 	CKLBUITask* pTask		= pNode->getUITask();
@@ -718,26 +813,33 @@ CKLBFormIF::updateLabelNode(CLuaState& lua, int argc, int base, int subcmd, CKLB
 		pTask = NULL;
 	}
 
-	bool result = true;
 	switch(subcmd)
 	{
 	default:
 		{
-			result = updateUIElement(lua, argc, base, subcmd, pNode, ret, item, index);
+			return updateUIElement(pClassID, lua, argc, base, subcmd, pNode, ret, item, index);
 		}
-		break;
 	case FORM_TEXT_SET:	// Trick : label & text command backward compatible.
 	case FORM_LBL_SET_TEXT:
+	case FORM_LBL_SET_TEXTELLIPSIS:
 		{
-			if(argc != base + 1) {
-				result = false;
-				break;
+			if(argc < base + 1) {
+				return false;
 			}
 			const char * text = lua.getString(base + 1);
+			// 省略記号は FORM_LBL_SET_TEXTELLIPSIS のときだけ受け付ける。
+			const char * ellipsis = NULL;
+			if((argc >= base + 2) && (subcmd == FORM_LBL_SET_TEXTELLIPSIS)) {
+				ellipsis = lua.getString(base + 2);
+			}
 			if (pTask) {
-				((CKLBUILabel*)pTask)->setText(text);
+				((CKLBUILabel*)pTask)->setText(text, ellipsis);
 			} else {
-				pLabel->setText((char *)text);
+				// 二度の再構築を避けるため、両方の文字列を設定する間はロックする。
+				pLabel->lock(true);
+				pLabel->setTextEllipsis(ellipsis);
+				pLabel->setText(text);
+				pLabel->lock(false);
 			}
 		}
 		break;
@@ -759,8 +861,36 @@ CKLBFormIF::updateLabelNode(CLuaState& lua, int argc, int base, int subcmd, CKLB
 			ret = 1;
 		}
 		break;
+	case FORM_LBL_SET_COLOR:
+		{
+			if(argc != base + 1) {
+				return false;
+			}
+			u32 color = lua.getInt(argc);
+			if (pTask) {
+				CKLBUILabel * pLabelTask = (CKLBUILabel *)pTask;
+				pLabelTask->setColor(color);
+				pLabelTask->setAlpha(255);
+			} else {
+				pLabel->setTextColor(color | 0xFF);
+			}
+		}
+		break;
+	case FORM_LBL_SET_FIT:
+		{
+			if(argc < base + 1) {
+				return false;
+			}
+			int active = lua.getInt(base + 1);
+			if (pTask) {
+				((CKLBUILabel*)pTask)->setMarqueeActive((u8)active);
+			} else {
+				pLabel->setMarquee(active, 0, 0, 0, 0);
+			}
+		}
+		break;
 	}
-	return result;
+	return true;
 }
 
 bool

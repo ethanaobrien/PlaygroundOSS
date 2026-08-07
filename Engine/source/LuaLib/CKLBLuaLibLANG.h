@@ -61,6 +61,9 @@ private:
 	static int luaRemoveString	(lua_State * L);
 	static int luaUseDB			(lua_State * L);
 	static int luaLoadGroup		(lua_State * L);
+	static int luaSetFolder		(lua_State * L);
+	static int luaSetStringGetCB(lua_State * L);
+	static int luaTestStringCB	(lua_State * L);
 };
 
 #endif // CKLBLiaLibUI_h

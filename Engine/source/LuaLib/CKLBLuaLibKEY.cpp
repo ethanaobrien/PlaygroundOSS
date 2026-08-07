@@ -43,6 +43,11 @@ CKLBLuaLibKEY::addLibrary()
 
     addFunction("KEY_delSecureID", 	CKLBLuaLibKEY::luaDelKeyChainID);
     addFunction("KEY_delSecurePW", 	CKLBLuaLibKEY::luaDelKeyChainPW);
+
+    addFunction("SBP_setUserDefaults", CKLBLuaLibKEY::luaSetUserDefaults);
+    addFunction("SBP_getUserDefaults", CKLBLuaLibKEY::luaGetUserDefaults);
+    addFunction("SSP_setUserDefaults", CKLBLuaLibKEY::luaSSPSetUserDefaults);
+    addFunction("SSP_getUserDefaults", CKLBLuaLibKEY::luaSSPGetUserDefaults);
 }
 
 int
@@ -187,6 +192,69 @@ CKLBLuaLibKEY::luaDelKeyChainPW(lua_State * L)
 	const char * service_name = lua.getString(1);
 	bool bResult = delSecurePW(service_name);
 	lua.retBool(bResult);
+	return 1;
+}
+
+int
+CKLBLuaLibKEY::luaSetUserDefaults(lua_State * L)
+{
+	CLuaState lua(L);
+	if(lua.numArgs() != 2) {
+		lua.retBool(false);
+		return 1;
+	}
+
+	const char * key = lua.getString(1);
+	bool value = lua.getBool(2);
+	CPFInterface::getInstance().platform().setUserDefaults(key, value);
+	lua.retBool(true);
+	return 1;
+}
+
+int
+CKLBLuaLibKEY::luaGetUserDefaults(lua_State * L)
+{
+	CLuaState lua(L);
+	if(lua.numArgs() != 1) {
+		lua.retBool(false);
+		return 1;
+	}
+
+	const char * key = lua.getString(1);
+	bool value = CPFInterface::getInstance().platform().getUserDefaults(key);
+	lua.retBool(value);
+	return 1;
+}
+
+int
+CKLBLuaLibKEY::luaSSPSetUserDefaults(lua_State * L)
+{
+	CLuaState lua(L);
+	if(lua.numArgs() != 2) {
+		lua.retBool(false);
+		return 1;
+	}
+
+	const char * key = lua.getString(1);
+	const char * value = lua.getString(2);
+	CPFInterface::getInstance().platform().setUserDefaults(key, value);
+	lua.retBool(true);
+	return 1;
+}
+
+int
+CKLBLuaLibKEY::luaSSPGetUserDefaults(lua_State * L)
+{
+	CLuaState lua(L);
+	if(lua.numArgs() != 1) {
+		lua.retString(NULL);
+		return 1;
+	}
+
+	const char * key = lua.getString(1);
+	char value[64] = { 0 };
+	CPFInterface::getInstance().platform().getUserDefaults(key, value, sizeof(value));
+	lua.retString(value);
 	return 1;
 }
 

@@ -40,10 +40,11 @@ public:
 
     void error			(const char * str, ...);
 	void errMsg			(const char* str);
+	void errMsgLua		(const char* str);
 public:
 	void destroy					(unsigned int handle);
 
-	void call_onDie					(const char* funcNAme, CKLBObjectScriptable* obj);
+	void call_onDie					(const char* funcNAme, CKLBObject* obj);
 
 	// Generic Task
 	void call_genTaskExecute		(const char* funcName, CKLBObjectScriptable* obj, u32 deltaT, const char* arrayIndex);
@@ -61,16 +62,25 @@ public:
 	// CKLBPauseCtrl
 	void call_pause					(const char* funcName, CKLBObjectScriptable* obj);
 	void call_resume				(const char* funcName, CKLBObjectScriptable* obj);
+	void call_safeAreaChanged		(const char* funcName);
+	const char* call_getString		(const char* funcName, const char* key);
 
 	// CKLBStoreService
 	void call_storeEvent			(const char* funcName, CKLBObjectScriptable* obj, u32 type, const char* itemID, const char* param2);
+	void call_assetNotFound		(const char* funcName, CKLBObjectScriptable* obj, const char* assetPath, const char* fileName);
 	
 	// Sinc VM for Unit
 	void call_fromSincVM			(const char* funcName, CKLBObjectScriptable* obj, u32 id, s32 param);
 	
 	// Virtual Doc
 	void call_eventVirtualDoc		(const char* funcName, CKLBObjectScriptable* obj, u32 type, s32 param1, s32 param2, s32 param3, s32 param4);
-	
+	void call_eventClippedMap		(const char* funcName, CKLBObjectScriptable* obj, u8 limitMask);
+	void call_eventClippedMap		(const char* funcName, CKLBObjectScriptable* obj);
+	void call_eventClippedMapTouch	(const char* funcName, CKLBObjectScriptable* obj, s32 x, s32 y, s32 focusIndex);
+
+	// Data Task
+	void call_eventDataTask			(const char* funcName, CKLBObjectScriptable* obj, s32 eventType, s32 index);
+
 	// Touch Pad
 	void call_touchPadCSharp		(CKLBObjectScriptable* obj, u32 m_execount, u32 type, u32 id, s32 x, s32 y);
 	void call_touchPad				(const char* funcName, CKLBObjectScriptable* obj);
@@ -89,6 +99,7 @@ public:
 	// UI List
 	void call_eventUIListDynamic	(const char* funcName, CKLBObjectScriptable* obj, u32 type, u32 itemID);
 	void call_eventUIList			(const char* funcName, CKLBObjectScriptable* obj, u32 type, u32 itemCnt, s32 listLength, s32 pos);
+	void call_eventUIListUpdate	(const char* funcName);
 	// TODO : pb with NULL funcName != behavior before call.
 	void call_eventUIListDrag		(const char* funcName, CKLBObjectScriptable* obj, u32 type, s32 x, s32 y, s32 param1, s32 param2);
 
@@ -127,14 +138,31 @@ public:
 
 	// World Task
 	void call_eventWorld			(const char* funcName, CKLBObjectScriptable* obj, s32 serial, s32 msg, s32 status);
+	void call_eventPhysicsObject	(const char* funcName, bool active, s32 objectID, s32 x, s32 y, double angle);
+
+	// Download and model callbacks
+	void call_eventMdlFinish		(const char* funcName, CKLBObjectScriptable* obj, const char* fileName, const char* url, bool success, s32 statusCode);
+	void call_eventDownloadClient	(const char* funcName, CKLBObjectScriptable* obj, s32 type, s32 index, s32 status, double speed, double progress);
+
+	// Typed generic callbacks used by optional engine services.
+	void call_eventSpineAnim		(const char* funcName, s32 trackID, const char* eventName, float value);
+	void call_shareCallback		(const char* funcName, const char* result, bool success);
+	void call_onKLabIdResult		(const char* funcName, s32 result, const char* keyValuePairs);
+	void call_locationEvent		(const char* funcName, s32 parameter, double latitude, double longitude, const char* message);
+	void call_adReward			(const char* funcName, s32 parameter, const char* message);
+	void call_notificationEvent		(const char* funcName, s32 parameter, const char* message);
+	void call_gridTextureDie		(const char* funcName, CKLBObject* object);
+	void call_cbINN				(const char* funcName, u32 eventType, float x, float y);
+	void call_cbInt				(const char* funcName, s32 value);
 
 	void call_eventUpdateDownload	(const char* funcName, CKLBObjectScriptable* obj, double progress, const char* progressStr);
 	void call_eventUpdateZIP		(const char* funcName, CKLBObjectScriptable* obj, int progress, int total);
 	void call_eventUpdateComplete	(const char* funcName, CKLBObjectScriptable* obj);
 	void call_eventUpdateError		(const char* funcName, CKLBObjectScriptable* obj);
+	void call_eventUpdateError		(const char* funcName, CKLBObjectScriptable* obj, s32 type, s32 status, s32 index);
 
 	// NetAPI
-	bool call_netAPI_callback		(const char* funcName, CKLBObjectScriptable* obj, int uniq, int msg, int status, CKLBJsonItem * pRoot);
+	bool call_netAPI_callback		(const char* funcName, CKLBObjectScriptable* obj, int uniq, int msg, int status, CKLBJsonItem * pRoot, int dataSize);
 	void call_netAPI_versionUp		(const char* funcName, CKLBObjectScriptable* obj, const char* clientVer, const char* serverVer);
 
 };

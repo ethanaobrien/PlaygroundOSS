@@ -230,20 +230,22 @@ CiOSPlatform::removeFileOrFolder(const char* filePath) {
 	}
 }
 
-void removeTmpFileNative(const char* filePath) {
-	remove(filePath);
+int removeTmpFileNative(const char* filePath) {
+	return remove(filePath);
 }
 
-void
+int
 CiOSPlatform::removeTmpFile(const char *tmpPath)
 {
 	const char * target = "file://external/";
 	int len = strlen(target);
 	if(!strncmp(tmpPath, target, len)) {
 		const char * fullpath = CiOSPathConv::getInstance().fullpath(tmpPath + 7);
-		remove(fullpath);
+		int result = remove(fullpath);
 		delete [] fullpath;
+		return result;
 	}
+	return -1;
 }
 
 u32
@@ -312,8 +314,9 @@ CiOSPlatform::excludePathFromBackup(const char * fullpath)
     }
 }
 	IReadStream *
-CiOSPlatform::openReadStream(const char *pathname, bool decrypt)
+CiOSPlatform::openReadStream(const char *pathname, bool decrypt, u32 mode)
 {
+	(void)mode;
 	// ファイル名の scheme で、どのファイルを開くべきかが決まる。
 	if(!strncmp(pathname, "file://", 7)) {
 		// ファクトリには scheme を除いたパスが渡される。

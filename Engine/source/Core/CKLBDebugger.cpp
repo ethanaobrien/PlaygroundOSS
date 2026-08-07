@@ -52,13 +52,13 @@ CKLBDebuggerContext::~CKLBDebuggerContext() {
 }
 
 void CKLBDebuggerContext::setupReceiver(IKLBDebuggerCommunicator* pCommunicator) {
-	klb_assert(pCommunicator, "NULL POINTER");
+	klb_assertNull(pCommunicator, "NULL POINTER");
 	m_pCommunicator = pCommunicator;
 	pCommunicator->assignDebugger(this);
 }
 
 void CKLBDebuggerContext::receiveCommand(u32 /*commandID*/, COMMAND_TYPE /*commandType*/, u8* /*data*/, u32 /*dataSize*/) {
-	klb_assert(m_pCommunicator, "Call setupReceiver first.");
+	klb_assertNull(m_pCommunicator, "Call setupReceiver first.");
 
 	//switch (commandType) {
 	// case xxxx:

@@ -1130,6 +1130,9 @@
     <ClCompile Include="..\..\source\HTTP\CUnZip.cpp">
       <Filter>Source Files\Network\Element</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\source\HTTP\CKLBSubThreadUnzip.cpp">
+      <Filter>Source Files\Network\Element</Filter>
+    </ClCompile>
     <ClCompile Include="Platform\CWin32TmpFile.cpp">
       <Filter>Platform</Filter>
     </ClCompile>
@@ -1170,6 +1173,9 @@
       <Filter>Source Files\Scripting</Filter>
     </ClCompile>
     <ClCompile Include="..\..\source\Core\encryptFile.cpp">
+      <Filter>Source Files\Core</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\source\Core\encryptFileAlgorithms.cpp">
       <Filter>Source Files\Core</Filter>
     </ClCompile>
     <ClCompile Include="..\..\libs\curl-7.29.0-minimal\src\tool_easysrc.c">

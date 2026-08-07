@@ -77,9 +77,11 @@ private:
 
     static taskList *	m_taskbegin;
     static int          m_taskId;
-    static int          ms_taskCounter;
+	static int          ms_taskCounter;
 
 	static void writeBlock(u8* buf, u32 length);
+	static void writeU8(u8 value);
+	static void writeU16(u16 value);
 
     static inline void setArrU32(u8 * p, u32 v) {
         p[0] = (v >> 24) & 0xff;

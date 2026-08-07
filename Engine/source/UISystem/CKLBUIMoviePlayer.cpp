@@ -76,7 +76,7 @@ enum {
 
 
 CKLBUIMoviePlayer::CKLBUIMoviePlayer() 
-: CKLBUITask    ()
+: CKLBUITask    (P_UIAFTER)
 , m_pMovieNode  (NULL)
 , m_cmdCallback (NULL)
 , m_url         (NULL) 

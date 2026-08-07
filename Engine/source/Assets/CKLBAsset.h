@@ -26,6 +26,8 @@
 #include "FileSystem.h"
 
 class CKLBAssetManager;
+class CKLBDynSprite;
+class CKLBTextureAsset;
 
 /* Create a 32 bit chunk header with FOUR letters*/
 #define	CHUNK_TAG(a,b,c,d)		((a<<24)|(b<<16)|(c<<8)|(d))
@@ -81,7 +83,13 @@ struct ASSET_ATTRIB {
 	static const int	zK3_OFFSET		= 13;
 
 	static const int	zK4_STRETCH_OR_SCALE	= 14;
-	// last used zK4_STRETCH_OR_SCALE, is Next free is 15. Please update if changes.
+
+	// Later texture formats reserve one key for each additional standard
+	// image-usage category. Their consumers are not part of the public OSS
+	// surface, so keep the format identities explicit without guessing a UI
+	// feature name.
+	static const int	zK5_STANDARD_USAGE	= 15;
+	static const int	zK6_STANDARD_USAGE	= 16;
 
 	// ====
 	static const int	zATTRIB_INT		= 0;
@@ -99,6 +107,8 @@ struct ASSET_ATTRIB {
 class CKLBAbstractAsset : public CKLBObject {
 	friend class CKLBAssetManager;
 	friend class CKLBDebuggerContext;
+	friend class CKLBDynSprite;
+	friend class CKLBTextureAsset;
 public:
 	CKLBAbstractAsset();
 	~CKLBAbstractAsset();
@@ -108,38 +118,58 @@ public:
 	/* NO DICO
 	virtual bool	include	(const char* name);*/
 	virtual void unloadRessource() { } /* Do nothing by default */
+	virtual void replaceAsset(const char* /*name*/, CKLBAbstractAsset* /*asset*/) { }
 
 	virtual void onRegisterSubAsset		()	{ /* Do nothing */ }
 	virtual void onUnregisterSubAsset	()	{ /* Do nothing */ }
+	virtual void destroy					()	{ KLBDELETE(this); }
+	virtual CKLBAbstractAsset* clone		()	{ return this; }
 
-	void			incrementRefCount		();
-	bool			decrementRefCount		();
+	virtual void	incrementRefCount		();
+	virtual bool	decrementRefCount		();
+	virtual void	onFirstReference		() { }
+	virtual void	onLastReference			() { }
+	virtual void	setDefaultImageName		(const char* /*name*/) { }
 
 	inline
 	u16				getRefCount				()  { return m_refCount; }
 
 	inline	
 	u16				getAssetID				()	{ return m_assetID; }
+	inline
+	void			resetAssetID			()	{ m_assetID = NULL_IDX; }
 	
 	bool			setNameDirect			(const char* name);
 
 	inline
 	const char*		getName					()	{ return m_pName; }
+	inline
+	const char* getFileSource() const { return m_fileSource; }
 protected:
+	const
+	char*				m_fileSource;
 	const
 	char*				m_pName;		/* Used by debugger    */
 	const
 	char*				m_pNameBuff;
-	const
-	char*				m_fileSource;
 	u16					m_assetID;		/* Runtime decided ID */
 	u16					m_refCount;
 	bool				m_marked;
+	// Allows reference-count transitions to control the backing resource while
+	// keeping the asset object itself alive.
+	bool				m_refCountControlsResource;
 protected:
 	char*	allocateName		(void* ptr, u32 size);
 };
 
 class CKLBNode;
+
+class CKLBFakeAsset : public CKLBAbstractAsset {
+public:
+	static const u32 INVALID_CLASS_ID = ~0U;
+	virtual u32 getClassID() { return INVALID_CLASS_ID; }
+	virtual ASSET_TYPE getAssetType() { return ASSET_UIFORM; }
+};
 
 /*!
 * \class CKLBAsset
@@ -238,7 +268,7 @@ public:
 				m_pReloadAsset = pAsset;
 			}
 	virtual void				setCurrentFileName(const char* currentFileName) { } /* Do nothing by default */
-	virtual CKLBAbstractAsset*	loadAsset(u8* stream, u32 streamSize)		= 0;
+	virtual CKLBAbstractAsset*	loadAsset(u8* stream, size_t streamSize)	= 0;
 	virtual CKLBAbstractAsset*	loadByFileName(const char* /*fileName*/)	{ /* Do nothing */ return NULL; }
 protected:
 	IKLBAssetPlugin();
@@ -258,6 +288,7 @@ class CKLBTextureAsset;
 * Supports all assets instance life cycle, and asset loader plugin.
 */
 class CKLBAssetManager {
+	friend class CKLBGridTextureObject;
 public:
 	//
 	// Async Loading related stuff...
@@ -286,6 +317,13 @@ private:
 public:
 	bool isAsyncLoading			();
 	void setAsyncLoading		(bool mode);
+	void setAssetNotFoundEnable(bool enable);
+	bool getAssetNotFoundEnable() const { return m_assetNotFoundEnable; }
+	void setKeepLinkStream		(bool enable);
+	bool setPlaceHolder			(const char* asset);
+	void setLastNotFoundName	(const char* asset);
+	const char* getLastNotFoundName();
+	bool setAssetNotFoundHandler	(const char* callback);
 	void setCurrentAsyncAsset	(CKLBAssetManager::SAsset* asset);
 	SAsset* getCurrentAsyncAsset();
 	void setMainThreadTexture	(CKLBTextureAsset* pTexAsset, GLenum pixelFormat, CKLBOGLWrapper::TEX_CHANNEL channel, u32 opt, u32 textureSize);
@@ -313,14 +351,17 @@ public:
 	void		freeAsset			(u16 assetID);
 
 	inline
-	CKLBAbstractAsset*		
+	CKLBAbstractAsset*
 				getAsset			(u16 assetID) {
-					klb_assert((assetID < m_maxAssetEntry), "invalid asset ID");
-					klb_assert(this->m_assetRecord[assetID].m_isFree == false, "already free");
+					klb_assertNull((assetID < m_maxAssetEntry), "invalid asset ID");
+					if (assetID == NULL_IDX) {
+						return NULL;
+					}
+					klb_assertNull(this->m_assetRecord[assetID].m_isFree == false, "already free");
 					return this->m_assetRecord[assetID].m_pAsset;
 				}
 
-	u16			getAssetIDFromName	(const char* name, char plugin, u32 retryCounter = 0);
+	u16			getAssetIDFromName	(const char* name, char plugin, u32 retryCounter = 0, CKLBAbstractAsset** ppLoadedAsset = NULL);
 	const char*	getAssetNameFromID	(u16 assetID);
 	
 	// TOO Slow, and not used for now.
@@ -339,21 +380,24 @@ public:
 	bool		loadAssetStream				(IReadStream* pStream, CKLBAbstractAsset** ppAsset, IKLBAssetPlugin* plugIn = NULL, bool useAsync = false);
 private:
 	void		checkAsync					(bool asyncMode);
+	bool		handleAssetNotFound			(const char* fileName, CKLBAbstractAsset** ppAsset);
 public:
 	void		unloadAsset					();
 	void		restoreAsset				();
 
-	CKLBAbstractAsset* 
+	CKLBAbstractAsset*
 				loadAssetByFileName	(const char* fileName, IKLBAssetPlugin* plugin = NULL, bool noStream = false, bool useAsync = false);
+	bool		reloadAssetByFileName	(const char* fileName);
 	void		addSearchSubEntry	(CKLBAbstractAsset* pAsset, const char* name);
 	void		removeSearchEntry	(const char* name);
+	const CKLBAbstractAsset* findAsset	(const char* name);
 
 	/**
 		This function does the real loading AND allocation of memory block in asset manager
 		For this reason, it should not be accessible to anybody but only from public "loadAsset" function
 		in this class.
 	 */
-	bool		loadAsset			(u8* stream, u32 streamSize, CKLBAbstractAsset** ppAsset, IKLBAssetPlugin* plugIn = NULL, bool useAsync = false);
+	bool		loadAsset			(u8* stream, size_t streamSize, CKLBAbstractAsset** ppAsset, IKLBAssetPlugin* plugIn = NULL, bool useAsync = false);
 
 	bool		init				(u32 maxAssetEntry, u32 dicoNodeMax);	// 2012.12.11  Reboot時に明示皁E��呼ぶ為に外へ出しました
 private:
@@ -377,8 +421,17 @@ private:
 	u16					m_freeList;
 	bool				m_bIsInit;
 	bool				m_unloaded;
+	bool				m_loadingNotFound;
+	bool				m_placeHolderActive;
+	bool				m_assetNotFoundEnable;
+	bool				m_keepLinkStream;
 	Dictionnary*		m_dictionnary;
 	const char*			m_currentLoadingFile;
+	char*				m_placeHolderAsset;
+	const char*			m_assetNotFoundCallback;
+	const char*			m_lastAssetPath;
+	u8*					m_loadBuffer;
+	u32					m_loadBufferSize;
 
 	CKLBAssetManager		(CKLBAssetManager const&);		// Dont implement.
 	void operator=			(CKLBAssetManager const&);		// Dont implement.
@@ -390,6 +443,7 @@ private:
 	CKLBAssetManager();
 	~CKLBAssetManager();
 	void _release();
+	u8* getLoadBuffer(u32 size);
 };
 
 #endif

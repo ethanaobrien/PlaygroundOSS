@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -59,11 +59,10 @@ enum {
 };
 
 CKLBUIScale9::CKLBUIScale9()
-: CKLBUITask    ()
+: CKLBUITask    (P_UIAFTER)
 , m_handle      (0)
-, m_texture     (NULL)
-, m_scale9      (NULL)
 , m_asset       (NULL)
+, m_scale9      (NULL)
 , m_width       (0)
 , m_height      (0)
 {
@@ -150,7 +149,7 @@ CKLBUIScale9::initCore(u32 order, float x, float y, s32 width, s32 height, const
 		CKLBImageAsset* pImage = (CKLBImageAsset*)pAsset;
 		bool isScale9 = (pImage->hasStandardAttribute(CKLBImageAsset::IS_SCALE9) != 0);		
 		if(isScale9) {
-			m_scale9 = (CKLBSpriteScale9*)CKLBRenderingManager::getInstance().allocateCommandSprite(pImage, order);
+			m_scale9 = (CKLBSpriteScale9*)CKLBRenderingManager::getInstance().allocateCommandSprite(pImage, order, true);
 		} else {
 			klb_assertAlways("Not scale 9 image associated to UIScale9 object (%s)",asset);
 		}
@@ -161,7 +160,7 @@ CKLBUIScale9::initCore(u32 order, float x, float y, s32 width, s32 height, const
 	}
 
 
-	klb_assert((((s32)order) >= 0), "Order Problem");
+	klb_assertNull((((s32)order) >= 0), "Order Problem");
 
 	setOrder(order);
 	setStrC(m_asset, asset);
@@ -170,6 +169,7 @@ CKLBUIScale9::initCore(u32 order, float x, float y, s32 width, s32 height, const
 	setInitPos(x, y);
 	setWidth(width);
 	setHeight(height);
+	m_scale9->endSizeUpdate();
 	m_bInit = true;
 	
 	return true;
@@ -190,6 +190,9 @@ CKLBUIScale9::setAsset(const char* asset)
 			// Release link on previous texture.
 			CKLBUtility::deleteNode(NULL, oldHandle);
 			return true;
+		} else {
+			CKLBUtility::deleteNode(NULL, m_handle);
+			m_handle = oldHandle;
 		}
 	}
 	return false;

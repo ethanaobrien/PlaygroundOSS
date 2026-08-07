@@ -38,8 +38,8 @@ protected:
 	virtual ~CKLBUITouchPad();
 
 public:
-	static CKLBUITouchPad* create(CKLBTask* pParentTask, const char * funcName, bool modal);
-	bool init(CKLBTask* pTask, const char* funcName, bool modal);
+	static CKLBUITouchPad* create(CKLBTask* pParentTask, const char * funcName, bool modal, bool exclusive = false);
+	bool init(CKLBTask* pTask, const char* funcName, bool modal, bool exclusive);
 
 	bool    initScript      (CLuaState& lua);
 	int     commandScript   (CLuaState& lua);
@@ -68,6 +68,7 @@ private:
 	SFormCtrlList		m_ctrlList;
 	CKLBModalStack		m_modalStack;
 
+	u32					m_fingerMask;
 	bool				m_modal;
 	bool				m_bAll;
 

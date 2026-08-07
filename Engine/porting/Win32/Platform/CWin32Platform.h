@@ -78,11 +78,11 @@ public:
     const char* getBundleVersion();
 
 	//! ストリーム取得
-	IReadStream* openReadStream(const char* fileName, bool decrypt);
+	IReadStream* openReadStream(const char* fileName, bool decrypt, u32 mode = 0);
 
 	//! テンポラリファイルオープン
 	ITmpFile *	openTmpFile			 (const char * filePath);
-	void		removeTmpFile		 (const char * filePath);
+	int			removeTmpFile		 (const char * filePath);
 	virtual bool removeFileOrFolder	 (const char * filePath);
 	virtual u32	 getFreeSpaceExternalKB();
 	virtual u32	 getPhysicalMemKB	 ();
@@ -203,8 +203,6 @@ public:
 	inline void forbidSleep(bool is_forbidden) {}
 
 private:
-	bool m_bNoDefaultFont;
-
 	static bool g_useDecryption;
 
 	struct PF_THREAD {

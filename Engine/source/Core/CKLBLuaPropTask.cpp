@@ -17,7 +17,6 @@
 #include "CKLBLuaEnv.h"
 #include "CKLBScriptEnv.h"
 #include "CKLBUtility.h"
-
 CKLBLuaPropTask::CKLBLuaPropTask()
 : CKLBLuaTask   ()
 , m_cntProp     (0)
@@ -26,7 +25,6 @@ CKLBLuaPropTask::CKLBLuaPropTask()
 , m_newScriptModel  (false) 
 {
 }
-
 CKLBLuaPropTask::~CKLBLuaPropTask()
 {
 	// 必ず破棄時にプロパティ領域を破棄する。
@@ -38,19 +36,16 @@ CKLBLuaPropTask::~CKLBLuaPropTask()
 	}
 	KLBDELETEA(m_arrProp);
 }
-
 CKLBTask::TASKTYPE
 CKLBLuaPropTask::getTaskType()
 {
     return TASK_LUA_PROPERTY;
 }
-
 u32
 CKLBLuaPropTask::getClassID()
 {
     return CLS_KLBLUAPROPTASK;
 }
-
 bool
 CKLBLuaPropTask::setupPropertyList(const char * name[], u32 length)
 {
@@ -62,10 +57,8 @@ CKLBLuaPropTask::setupPropertyList(const char * name[], u32 length)
 		// 要素の数を数える
 		int cnt = 0;
         while(name[cnt]) { cnt++; }
-
 		PROP * arr = KLBNEWA( PROP, cnt );
         if(!arr) { return false; }
-
 		for(int i = 0; i < cnt; i++) {
 			arr[i].name = CKLBUtility::copyString(name[i]);
 			arr[i].type = INTEGER;
@@ -80,13 +73,11 @@ CKLBLuaPropTask::setupPropertyList(const char * name[], u32 length)
 		return true;
 	}
 }
-
 bool
 CKLBLuaPropTask::addPropertyList(const char * name[])
 {
 	int cnt = 0;
 	while(name[cnt]) cnt++;
-
 	// 追加分のポインタバッファを作る
 	PROP * arr = KLBNEWA(PROP, cnt + m_cntProp);
     if(!arr) { return false; }
@@ -103,7 +94,6 @@ CKLBLuaPropTask::addPropertyList(const char * name[])
 	m_arrProp = arr;
 	return true;
 }
-
 int
 CKLBLuaPropTask::findProperty(const char * name)
 {
@@ -118,20 +108,22 @@ CKLBLuaPropTask::findProperty(const char * name)
 	}
 	return -1;
 }
-
 void
 CKLBLuaPropTask::preGetProp() {}
-
-// C -> lua (lua から見て "get")
+// Export C-side properties as a Lua table.
+// Typed entries dispatch their getter or copy the recorded member.
+// Legacy entries retain the values owned by the task.
+// Dynamic properties always use their generic getter contract.
+// Integer and pointer representations follow their declared property type.
+// The completed table is returned as the single Lua result.
 int
 CKLBLuaPropTask::getPropertyByScript(lua_State * L)
 {
+	s64 integer64Value;
     // 前処理があれば実行する
     preGetProp();
-    
 	// luaから配列として取得できるよう戻り値を作る。
 	lua_newtable(L);
-
 	if (m_newScriptModel) {
 		for(int i = 0; i < m_cntProp; i++) {
 			PROP_V2* prop = &m_arrPropV2[i];
@@ -178,6 +170,11 @@ CKLBLuaPropTask::getPropertyByScript(lua_State * L)
 					lua_pushnumber(L, f);
 				}
 				break;
+			case INTEGER64: {
+				if (prop->getter.i64) { getInt64T fct = prop->getter.i64; integer64Value = (*this.*fct)(); }
+				else { memcpy(&integer64Value, &(((u8*)this)[prop->offset]), sizeof(u32)); }
+				lua_pushnumber(L, (double)integer64Value);
+			} break;
 			case R_STRING:
 			case STRING:
 				{
@@ -223,6 +220,15 @@ CKLBLuaPropTask::getPropertyByScript(lua_State * L)
 			}
 			lua_settable(L, -3);
 		}
+		/*
+		 * Version-two properties keep their representation in a static table.
+		 * Getter callbacks expose computed values while direct entries copy
+		 * naturally typed members selected by the recorded field offset.
+		 *
+		 * Dynamic integers always use their generic getter contract.
+		 * The legacy property array below retains owned values for scripts
+		 * created before the typed callback model was introduced.
+		 */
 	} else {
 		for(int i = 0; i < m_cntProp; i++) {
 			lua_pushstring(L, m_arrProp[i].name);
@@ -234,15 +240,8 @@ CKLBLuaPropTask::getPropertyByScript(lua_State * L)
 			case NUMERIC:	lua_pushnumber  (L, m_arrProp[i].value.n);              break;
 			case STRING:	lua_pushstring  (L, m_arrProp[i].value.s);              break;
 			case POINTER:   lua_pushlightuserdata(L, m_arrProp[i].value.p);         break;
-            
-            case DYNAMIC_INT:   /* not handled */ break;
-            case TYPE_MASK:     /* not handled */ break;
-            case READ_ONLY:     /* not handled */ break;
-            case R_BOOLEANT:    /* not handled */ break;
-            case R_INTEGER:     /* not handled */ break;
-            case R_NUMERIC:     /* not handled */ break;
-            case R_STRING:      /* not handled */ break;
-            case R_POINTER:     /* not handled */ break;
+			case INTEGER64:	klb_assertAlways("Unknown property type");             break;
+			default:		break;
 			}
 			lua_settable(L, -3);
 		}
@@ -297,7 +296,7 @@ CKLBLuaPropTask::setPropertyByScript(lua_State * L)
 			case BOOLEANT:
 				{
 					bool v = lua_toboolean(L,-2) ? true : false;
-					klb_assert(prop->setter.b != NULL, "Must have setter !");
+					klb_assertNull(prop->setter.b != NULL, "Must have setter !");
 					setBoolT fct = prop->setter.b;
 					(*this.*fct)(v);
 				}
@@ -305,7 +304,7 @@ CKLBLuaPropTask::setPropertyByScript(lua_State * L)
 			case INTEGER:
 				{
 					s32 i = lua_tointeger(L, -2);
-					klb_assert(prop->setter.i != NULL, "Must have setter !");
+					klb_assertNull(prop->setter.i != NULL, "Must have setter !");
 					setIntT fct = prop->setter.i;
 					(*this.*fct)(i);
 				}
@@ -313,15 +312,23 @@ CKLBLuaPropTask::setPropertyByScript(lua_State * L)
 			case NUMERIC:
 				{
 					float f = (float)lua_tonumber(L, -2);
-					klb_assert(prop->setter.f != NULL, "Must have setter !");
+					klb_assertNull(prop->setter.f != NULL, "Must have setter !");
 					setFloatT fct = prop->setter.f;
 					(*this.*fct)(f);
+				}
+				break;
+			case INTEGER64:
+				{
+					s64 i = (s64)lua_tonumber(L, -2);
+					klb_assertNull(prop->setter.i64 != NULL, "Must have setter !");
+					setInt64T fct = prop->setter.i64;
+					(*this.*fct)(i);
 				}
 				break;
 			case STRING:
 				{
 					const char* str = lua_tostring(L, -2);
-					klb_assert(prop->setter.s != NULL, "Must have setter !");
+					klb_assertNull(prop->setter.s != NULL, "Must have setter !");
 					setStrT fct = prop->setter.s;
 					(*this.*fct)(str);
 				}
@@ -329,7 +336,7 @@ CKLBLuaPropTask::setPropertyByScript(lua_State * L)
 			case POINTER:
 				{
 					void* ptr = (void *)lua_touserdata(L, -2);
-					klb_assert(prop->setter.s != NULL, "Must have setter !");
+					klb_assertNull(prop->setter.p != NULL, "Must have setter !");
 					setPtrT fct = prop->setter.p;
 					(*this.*fct)(ptr);
 				}
@@ -436,7 +443,7 @@ CKLBLuaPropTask::setPropertyByScript(lua_State * L)
 void
 CKLBLuaPropTask::setNil(int idx)
 {
-	klb_assert(!m_newScriptModel, "Old Scripting model only");
+	klb_assertNull(!m_newScriptModel, "Old Scripting model only");
     if(m_arrProp[idx].type == STRING) { KLBDELETEA(m_arrProp[idx].value.s); }
 	m_arrProp[idx].type     = NIL;
 	m_arrProp[idx].value.p  = NULL;
@@ -445,7 +452,7 @@ CKLBLuaPropTask::setNil(int idx)
 void
 CKLBLuaPropTask::setBool(int idx, bool val)
 {
-	klb_assert(!m_newScriptModel, "Old Scripting model only");
+	klb_assertNull(!m_newScriptModel, "Old Scripting model only");
     if(m_arrProp[idx].type == STRING) { KLBDELETEA(m_arrProp[idx].value.s); }
 	m_arrProp[idx].type     = BOOLEANT;
 	m_arrProp[idx].value.b  = val;
@@ -454,7 +461,7 @@ CKLBLuaPropTask::setBool(int idx, bool val)
 void
 CKLBLuaPropTask::setInt(int idx, int val)
 {
-	klb_assert(!m_newScriptModel, "Old Scripting model only");
+	klb_assertNull(!m_newScriptModel, "Old Scripting model only");
     if(m_arrProp[idx].type == STRING) { KLBDELETEA(m_arrProp[idx].value.s); }
 	m_arrProp[idx].type     = INTEGER;
 	m_arrProp[idx].value.i  = val;
@@ -463,7 +470,7 @@ CKLBLuaPropTask::setInt(int idx, int val)
 void
 CKLBLuaPropTask::setNum(int idx, float val)
 {
-	klb_assert(!m_newScriptModel, "Old Scripting model only");
+	klb_assertNull(!m_newScriptModel, "Old Scripting model only");
     if(m_arrProp[idx].type == STRING) { KLBDELETEA(m_arrProp[idx].value.s); }
 	m_arrProp[idx].type     = NUMERIC;
 	m_arrProp[idx].value.n  = val;
@@ -472,7 +479,7 @@ CKLBLuaPropTask::setNum(int idx, float val)
 bool
 CKLBLuaPropTask::setStr(int idx, const char * val)
 {
-	klb_assert(!m_newScriptModel, "Old Scripting model only");
+	klb_assertNull(!m_newScriptModel, "Old Scripting model only");
 
 	const char * str = (val) ? CKLBUtility::copyString(val) : NULL;
 	if(val && !str) return false;

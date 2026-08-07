@@ -14,12 +14,15 @@
    limitations under the License.
 */
 #include "CKLBUtility.h"
+#include "CKLBDataTask.h"
 #include "CKLBNode.h"
 #include "CKLBTextInputNode.h"
 #include "CKLBWebViewNode.h"
 #include "CompositeManagement.h"
 #include "CKLBScriptEnv.h"
+#include "hash_sha1.h"
 #include <string.h>
+#include <stdio.h>
 
 void
 CKLBUtility::getNodePosition(CKLBNode * pNode, float * x, float * y)
@@ -189,25 +192,7 @@ CKLBUtility::safe_strcmp(const char* a, const char* b)
 	}
 }
 
-const char *
-CKLBUtility::copyString(const char * string)
-{
-	klb_assert(string, "copy string is NULL.");
-	char * buf = KLBNEWA(char, strlen(string) + 1);
-    if(!buf) { return NULL; }
-	strcpy(buf, string);
-	return (const char *)buf;
-}
-
-const char *
-CKLBUtility::copyMem(const char * src, u32 size)
-{
-	char * buf = KLBNEWA(char, size);
-    if(!buf) { return NULL; }
-	memcpy(buf, src, size);
-	return (const char *)buf;
-}
-
+// Numeric conversion helpers.
 char *
 CKLBUtility::numString64(char * buf, u64 value)
 {
@@ -236,18 +221,51 @@ CKLBUtility::stringNum64(const char * string)
 			p++;
 			continue;
 		}
-		val = val * 10LL;
-		val += *p - '0';
+		if ((*p >= '0') && (*p <= '9')) {
+			val = val * 10LL;
+			val += *p - '0';
+		}
 		p++;
 	}
 	val = val * sign;
 	return val;
 }
 
+const char *
+CKLBUtility::copyString(const char * string)
+{
+	klb_assert(string, "copy string is NULL.");
+	char * buf = KLBNEWA(char, strlen(string) + 1);
+    if(!buf) { return NULL; }
+	strcpy(buf, string);
+	return (const char *)buf;
+}
+
+const char *
+CKLBUtility::copyMem(const char * src, u64 size)
+{
+	char * buf = KLBNEWA(char, size);
+    if(!buf) { return NULL; }
+	memcpy(buf, src, size);
+	return (const char *)buf;
+}
+
+s64
+CKLBUtility::stringNum(const char * string)
+{
+	s64 value = 0;
+	char current = *string;
+	while(current) {
+		value = (value * 10LL) + (current - '0');
+		current = *++string;
+	}
+	return value;
+}
+
 char *
 CKLBUtility::quoated(const char * string)
 {
-	int size = (!string) ? 5 : (strlen(string) + 3);
+	size_t size = (!string) ? 5 : (strlen(string) + 3);
 	char * buf = KLBNEWA(char, size);
     if(!buf) { return NULL; }
 	if(!string) {
@@ -302,13 +320,13 @@ CKLBUtility::loadAssetScript(const char * asset, u32 * handle, IKLBAssetPlugin* 
 {
 	CKLBAsset * pAsset = loadAsset(asset, handle, plugIn, bSimple);
 	if(!pAsset) {
-		CKLBScriptEnv::getInstance().error("could not load asset: %s", asset);
+		CKLBScriptEnv::getInstance().error("CKLBUtility : could not load asset: %s", asset);
 	}
 	return pAsset;
 }
 
 CKLBAsset *
-CKLBUtility::readAsset(u8 * stream, u32 streamSize, u32 * handle, IKLBAssetPlugin * plugIn)
+CKLBUtility::readAsset(u8 * stream, size_t streamSize, u32 * handle, IKLBAssetPlugin * plugIn)
 {
 	CKLBAssetManager& pAssetManager = CKLBAssetManager::getInstance();
 	CKLBAsset * pAsset;
@@ -393,11 +411,19 @@ CKLBUtility::createNodeScript(const char * asset, u32 order, u32 * handle, IKLBA
 }
 
 CKLBNode *
-CKLBUtility::createCompositeNodeScript(CKLBUITask * pTask, const char * asset, u32 order, u32 * handle, IKLBAssetPlugin* plugIn)
+CKLBUtility::createCompositeNodeScript(CKLBUITask * pTask, const char * asset, u32 order, u32 * handle,
+	IKLBAssetPlugin* plugIn, u32 formWidth, u32 formHeight, CKLBDataTask* dataTask)
 {
 	CKLBAsset * pAsset = loadAssetScript(asset, handle, plugIn);
 	if(!pAsset) { return NULL; }
-	CKLBNode * pNode = ((CKLBCompositeAsset *)pAsset)->createSubTree(pTask, order);
+	CKLBCompositeAsset* pComposite = (CKLBCompositeAsset *)pAsset;
+	pComposite->setFormSize(formWidth, formHeight);
+	pComposite->setDirectComposite(false);
+	if(dataTask) {
+		IDataSourceUpdateNotifier* notifier = dataTask;
+		pComposite->setRecord(notifier->getDataSource());
+	}
+	CKLBNode * pNode = pComposite->createSubTree(pTask, order);
 
 	if(!pNode) {
 		CKLBScriptEnv::getInstance().error("Node create failed. [asset: %s ]", asset);
@@ -413,8 +439,80 @@ CKLBUtility::deleteNode(CKLBNode * pNode, u32 handle)
 	CKLBDataHandler::releaseHandle(handle);
 }
 
+void
+CKLBUtility::sha1File(const char* path, char* outBuf, int bufSize)
+{
+	*outBuf = '\0';
+	if (path) {
+		FILE* file = fopen(path, "rb");
+		if (file) {
+			unsigned char chunk[1024];
+			SHA1Context context;
+			SHA1Reset(&context);
+
+			size_t size = fread(chunk, 1, sizeof(chunk), file);
+			while ((int)size > 0) {
+				SHA1Input(&context, chunk, (unsigned)size);
+				size = fread(chunk, 1, sizeof(chunk), file);
+			}
+			fclose(file);
+
+			if (SHA1Result(&context)) {
+				unsigned char digest[20];
+				for (int i = 0; i < 5; i++) {
+					unsigned word = context.Message_Digest[i];
+					digest[i * 4 + 0] = (unsigned char)(word >> 24);
+					digest[i * 4 + 1] = (unsigned char)(word >> 16);
+					digest[i * 4 + 2] = (unsigned char)(word >> 8);
+					digest[i * 4 + 3] = (unsigned char)word;
+				}
+
+				if (bufSize == 20) {
+					memcpy(outBuf, digest, sizeof(digest));
+				} else if (bufSize == 40) {
+					char* output = outBuf;
+					for (int i = 0; i < 20; i++) {
+						sprintf(output, "%02x", digest[i]);
+						output += strlen(output);
+					}
+				} else {
+					klb_assertNull(false, "sha1 buf size must be 20 or 40");
+				}
+			}
+		}
+	}
+}
+
+bool
+CKLBUtility::isFileExist(const char * path)
+{
+	if(!path) { return false; }
+
+	IReadStream * stream = CPFInterface::getInstance().platform().openReadStream(path, false, (u32)-1);
+	if(stream) {
+		IReadStream::ESTATUS status = stream->getStatus();
+		KLBDELETE(stream);
+		if (status == IReadStream::NORMAL) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool
+CKLBUtility::endsWith(const char* string, u32 stringLength, const char* suffix, u32 suffixLength)
+{
+	if(!string || !suffix) {
+		return string == suffix;
+	}
+	if(stringLength < suffixLength) {
+		return false;
+	}
+	return strcmp(string + (stringLength - suffixLength), suffix) == 0;
+}
+
 const char *
-CKLBUtility::lua2json(CLuaState&lua, u32& streamSize, JSON_REPLACE * arrReplace)
+CKLBUtility::lua2json(CLuaState&lua, size_t& streamSize, JSON_REPLACE * arrReplace)
 {
 	JSON_BUF jsonBuf;	// 1 KB on stack.
 	jsonBuf.max = JSON_BLOCK_SIZE;
@@ -436,10 +534,221 @@ CKLBUtility::lua2json(CLuaState&lua, u32& streamSize, JSON_REPLACE * arrReplace)
 	return (const char *)jsonBuf.buf;
 }
 
+
+bool
+CKLBUtility::lua2json_rec(CLuaState& lua, JSON_BUF * jsonBuf)
+{
+	char reversedDigits[24];
+	switch(lua.getType(-1))
+	{
+	default:
+		return false;
+		break;
+	case LUA_TNIL:
+		{
+			const char * msg = "null";
+			return jsonBuf->add(msg);
+		}
+		break;
+	case LUA_TLIGHTUSERDATA:
+		{
+			const void * p = lua.getPointer(-1);
+			if(!p) {
+				const char * msg = "null";
+				return jsonBuf->add(msg);
+			}
+			char buf[64];
+			sprintf(buf, "%p", p);
+			return jsonBuf->add(buf);
+		}
+		break;
+	case LUA_TNUMBER:
+		{
+			/*
+			 * Preserve integral Lua numbers across the full signed 64-bit range.
+			 * Build magnitude digits in reverse, then emit most-significant first.
+			 * Handle the minimum signed value without overflowing during negation.
+			 * Emit zero explicitly because its division loop produces no digits.
+			 * This avoids narrowing through the platform integer formatter.
+			 */
+			char buf[64];
+			// 整数か実数か判定
+			s64     num_i   = (s64)lua.getDoubleUnchecked(-1);
+			double  num_f   = lua.getDouble(-1);
+			double  sub     = fabs((double)num_i - num_f);
+			if(sub < 0.00001) {	// 整数扱い
+				u32 digitCount = 0;
+				bool negative = false;
+				bool minimumValue = false;
+				s64 magnitude = num_i;
+				if(magnitude < 0) {
+					minimumValue = magnitude == (-9223372036854775807LL - 1);
+					magnitude += minimumValue;
+					magnitude = -magnitude;
+					negative = true;
+				}
+				while(magnitude) {
+					reversedDigits[digitCount++] = '0' + (magnitude % 10);
+					magnitude /= 10;
+				}
+				if(digitCount) {
+					if(minimumValue) { reversedDigits[0]++; }
+				} else {
+					reversedDigits[digitCount++] = '0';
+				}
+				char * output = buf;
+				if(negative) { *output++ = '-'; }
+				for(int i = digitCount - 1; i >= 0; i--) {
+					*output++ = reversedDigits[i];
+				}
+				*output = 0;
+			} else {					// 実数扱い
+				sprintf(buf, "%f", (float)num_f);
+			}
+			return jsonBuf->add(buf);
+		}
+		break;
+	case LUA_TBOOLEAN:
+		{
+			bool b = lua.getBool(-1);
+			return jsonBuf->add((b) ? "true":"false");
+		}
+		break;
+	case LUA_TSTRING:
+		{
+			const char * string = lua.getString(-1);
+			bool bResult = jsonBuf->add("\"");
+			const char * escape_string = escape(string);
+			bResult = jsonBuf->add(escape_string) && bResult;
+			KLBDELETEA(escape_string);
+			return  jsonBuf->add("\"") && bResult;
+		}
+		break;
+	case LUA_TTABLE:
+		{
+			// Lua table は JSON的に2種類の使用方法(map/array)があるため、
+			// PASS-1: 登場した table がどちらの扱いになるかを確認する
+			// PASS-2: 判定結果の方法で巡回する
+
+			// PASS-1: 文字列index付きの値があるか確認する
+
+			int min, max;
+			bool bMap = false;
+			min = -1;
+			max = 0;
+			bool bArrResult = true;
+
+			lua.retNil();
+			while(lua.tableNext()) {
+				lua.retValue(-2);
+
+				// この段階で、(-1) = index, (-2) = 値
+
+				// 数値index配列の場合は array 扱い
+				if(lua.isNum(-1)) {
+					int idx = lua.getInt(-1);
+                    if(min < 0 || idx < min) { min = idx; }
+                    if(max < idx)            { max = idx; }
+				} else {
+					bMap = true;
+				}
+				lua.pop(2);
+				if(bMap) {
+					lua.pop(1);
+					break;	// 結果が出たので PASS-2 へ
+				}
+			}
+
+			// PASS-2: bMap の値によって、この配列をmapまたはarrayとして取り扱う。
+			if(bMap) {
+				// Map として扱う
+				jsonBuf->add("{");
+
+				bool bFirst = false;
+
+				lua.retNil();
+				while(lua.tableNext()) {
+
+					// 2番目以降の項目であれば、前の値との区切りとして ','を入れる
+					if(bFirst) {
+						bArrResult = jsonBuf->add(",") && bArrResult;
+					}
+					bFirst = true;
+
+					// キーを出力
+					lua.retValue(-2);
+
+					// IT/KEY/VAL/KEYCOPY
+					const char * key = lua.getString(-1);
+					bArrResult = jsonBuf->add("\"") && bArrResult;
+					bArrResult = jsonBuf->add(key) && bArrResult;
+					bArrResult = jsonBuf->add("\":") && bArrResult;
+
+					lua.pop(1);
+
+					// 実際の Luaテーブル値を値として出力する前に、
+					// JSON_REPLACEの配列を確認し、値を置き換えるべきキーは
+					// 指定された値で置き換える。
+					bool bReplaced = false;
+					if(jsonBuf->arr_replace) {
+						for(int i = 0; jsonBuf->arr_replace[i].key; i++) {
+							if(!strcmp(key, jsonBuf->arr_replace[i].key)) {
+								bArrResult = jsonBuf->add(jsonBuf->arr_replace[i].value) && bArrResult;
+								bReplaced = true;
+								break;
+							}
+						}
+					}
+
+					if(!bReplaced) {
+						// 値を出力する
+						bArrResult = lua2json_rec(lua, jsonBuf) && bArrResult;
+					}
+
+					lua.pop(1);
+				}
+//				lua.pop(1);	// 巡回用indexを取り除く
+
+				bArrResult = jsonBuf->add("}") && bArrResult;
+
+			} else {
+				// Array の扱い
+				// lua.tableNext() による巡回はindexの順が保障されないので、
+				// 取得した min ～ max にかけて値を取得し、出力する。
+
+				bArrResult = jsonBuf->add("[") && bArrResult;
+
+				bool bFirst = false;
+
+				if(min != -1 || max) {
+					for(int i = min; i <= max; i++) {
+						lua.retInt(i);
+
+						// 2番目以降の項目であれば、前の値との区切りとして ','を入れる
+						if(bFirst) jsonBuf->add(",");
+						bFirst = true;
+
+						lua.tableGet();
+
+						// 値を出力する
+						bArrResult = lua2json_rec(lua, jsonBuf) && bArrResult;
+
+						lua.pop(1);
+					}
+				}
+				bArrResult = jsonBuf->add("]") && bArrResult;
+			}
+			return bArrResult;
+		}
+		break;
+	}
+	//return false; // Dead code
+}
+
 const char *
 CKLBUtility::escape(const char * string)
 {
-	int len = strlen(string);
+	size_t len = strlen(string);
 	char * buf = KLBNEWA(char, len * 2 + 1);
 	char * ptr = buf;
 	for(int i = 0; string[i]; i++) {
@@ -475,12 +784,12 @@ CKLBUtility::escape(const char * string)
 bool
 CKLBUtility::JSON_BUF::add(const char * msg)
 {
-	int len = strlen(msg);
+	size_t len = strlen(msg);
 
 	// 現在のバッファが足りないなら、足りるようになるまで追加する
 	
 	while(idx + len >= max) {
-		int size = max + (JSON_BLOCK_SIZE*2);
+		size_t size = max + (JSON_BLOCK_SIZE*2);
 		char * n_buf = KLBNEWA(char, size);
         if(!n_buf) { return false; }
 		memcpy(n_buf, buf, idx);
@@ -499,7 +808,7 @@ CKLBUtility::JSON_BUF::addU8(u8 byte)
 {
 	// 現在のバッファが足りないなら、足りるようになるまで追加する
 	while(idx + 1 >= max) {
-		int size = max + (JSON_BLOCK_SIZE*2);
+		size_t size = max + (JSON_BLOCK_SIZE*2);
 		char * n_buf = KLBNEWA(char, size);
         if(!n_buf) { return false; }
 		memcpy(n_buf, buf, idx);
@@ -512,9 +821,9 @@ CKLBUtility::JSON_BUF::addU8(u8 byte)
 }
 
 bool
-CKLBUtility::JSON_BUF::addPool(const char* str, int& idx) 
+CKLBUtility::JSON_BUF::addPool(const char* str, int& idx)
 {
-	int strL = strlen(str);
+	size_t strL = strlen(str);
 	u32 cnt = 0;
 	while (cnt < poolCount) {
 		if (poolEntries[cnt].size == strL) {
@@ -527,11 +836,21 @@ CKLBUtility::JSON_BUF::addPool(const char* str, int& idx)
 	}
 
 	// Add new entry.
-	poolEntries[poolCount].size = strL;
-	poolEntries[poolCount].string = str;
-	idx = poolCount++;
-	klb_assert(poolCount < 100, "Max Reached");
-	poolSize += strL;
+	if (poolCount <= (JSON_POOL_SIZE - 1)) {
+		poolEntries[poolCount].size = strL;
+		poolEntries[poolCount].string = str;
+		idx = poolCount++;
+		poolSize += strL;
+		return true;
+	}
+	klb_assertAlways("Max Reached");
+}
+
+bool
+CKLBUtility::JSON_BUF::addU64(u64 value)
+{
+	addU32((u32)(value >> 32));
+	addU32((u32)value);
 	return true;
 }
 
@@ -540,7 +859,7 @@ CKLBUtility::JSON_BUF::addU32(u32 value)
 {
 	// 現在のバッファが足りないなら、足りるようになるまで追加する
 	while(idx + 4 >= max) {
-		int size = max + (JSON_BLOCK_SIZE*2);
+		size_t size = max + (JSON_BLOCK_SIZE*2);
 		char * n_buf = KLBNEWA(char, size);
         if(!n_buf) { return false; }
 		memcpy(n_buf, buf, idx);
@@ -556,10 +875,11 @@ CKLBUtility::JSON_BUF::addU32(u32 value)
 	return true;
 }
 
+
 #include "../../libs/JSonParser/api/yajl_parse.h"
 
 const char *
-CKLBUtility::lua2BJson(CLuaState&lua, u32& streamSize, JSON_REPLACE * arrReplace)
+CKLBUtility::lua2BJson(CLuaState&lua, size_t& streamSize, JSON_REPLACE * arrReplace)
 {
 	JSON_BUF jsonBuf;	// 1 KB on stack.
 	jsonBuf.max = JSON_BLOCK_SIZE * 2;
@@ -655,19 +975,17 @@ CKLBUtility::lua2BJson_rec(CLuaState& lua, JSON_BUF * jsonBuf)
 		break;
 	case LUA_TNUMBER:
 		{
-			char buf[64];
 			// 整数か実数か判定
-			int num_i = lua.getInt(-1);
+			s64 num_i = (s64)lua.getDoubleUnchecked(-1);
 			double num_f = lua.getDouble(-1);
 
 			double sub = fabs((double)num_i - num_f);
 			bool result;
 			if(sub < 0.00001) {	// 整数扱い
-				sprintf(buf, "%d", num_i);
-				result  = jsonBuf->addU8(BJSN_NUMBER_I32);
-				result &= jsonBuf->addU32(num_i);
+				result  = jsonBuf->addU8(BJSN_NUMBER_I64);
+				result &= jsonBuf->addU32((u32)(((u64)num_i) >> 32));
+				result &= jsonBuf->addU32((u32)num_i);
 			} else {					// 実数扱い
-				sprintf(buf, "%f", (float)num_f);
 				float f = (float)num_f;
 				int* pI = (int*)&f;
 				result  = jsonBuf->addU8(BJSN_NUMBER_FLT);
@@ -813,191 +1131,18 @@ CKLBUtility::lua2BJson_rec(CLuaState& lua, JSON_BUF * jsonBuf)
 	//return false;	// Dead code.
 }
 
-bool
-CKLBUtility::lua2json_rec(CLuaState& lua, JSON_BUF * jsonBuf)
-{
-	switch(lua.getType(-1))
-	{
-	default:
-		return false;
-		break;
-	case LUA_TNIL:
-		{
-			const char * msg = "null";
-			return jsonBuf->add(msg);
-		}
-		break;
-	case LUA_TLIGHTUSERDATA:
-		{
-			const void * p = lua.getPointer(-1);
-			if(!p) {
-				const char * msg = "null";
-				return jsonBuf->add(msg);
-			} 
-			char buf[64];
-			sprintf(buf, "%p", p);
-			return jsonBuf->add(buf);
-		}
-		break;
-	case LUA_TNUMBER:
-		{
-			char buf[64];
-			// 整数か実数か判定
-			int     num_i   = lua.getInt(-1);
-			double  num_f   = lua.getDouble(-1);
-			double  sub     = fabs((double)num_i - num_f);
-			if(sub < 0.00001) {	// 整数扱い
-				sprintf(buf, "%d", num_i);
-			} else {					// 実数扱い
-				sprintf(buf, "%f", (float)num_f);
-			}
-			return jsonBuf->add(buf);
-		}
-		break;
-	case LUA_TBOOLEAN:
-		{
-			bool b = lua.getBool(-1);
-			return jsonBuf->add((b) ? "true":"false");
-		}
-		break;
-	case LUA_TSTRING:
-		{
-			const char * string = lua.getString(-1);
-			bool bResult = jsonBuf->add("\"");
-			const char * escape_string = escape(string);
-			bResult = jsonBuf->add(escape_string) && bResult;
-			KLBDELETEA(escape_string);
-			return  jsonBuf->add("\"") && bResult;
-		}
-		break;
-	case LUA_TTABLE:
-		{
-			// Lua table は JSON的に2種類の使用方法(map/array)があるため、
-			// PASS-1: 登場した table がどちらの扱いになるかを確認する
-			// PASS-2: 判定結果の方法で巡回する
-
-			// PASS-1: 文字列index付きの値があるか確認する
-
-			int min, max;
-			bool bMap = false;
-			min = -1;
-			max = 0;
-			bool bArrResult = true;
-
-			lua.retNil();
-			while(lua.tableNext()) {
-				lua.retValue(-2);
-
-				// この段階で、(-1) = index, (-2) = 値
-
-				// 数値index配列の場合は array 扱い
-				if(lua.isNum(-1)) {
-					int idx = lua.getInt(-1);
-                    if(min < 0 || idx < min) { min = idx; }
-                    if(max < idx)            { max = idx; }
-				} else {
-					bMap = true;
-				}
-				lua.pop(2);
-				if(bMap) {
-					lua.pop(1);
-					break;	// 結果が出たので PASS-2 へ
-				}
-			}
-
-			// PASS-2: bMap の値によって、この配列をmapまたはarrayとして取り扱う。
-			if(bMap) {
-				// Map として扱う
-				jsonBuf->add("{");
-
-				bool bFirst = false;
-
-				lua.retNil();
-				while(lua.tableNext()) {
-
-					// 2番目以降の項目であれば、前の値との区切りとして ','を入れる
-					if(bFirst) {
-						bArrResult = jsonBuf->add(",") && bArrResult;
-					}
-					bFirst = true;
-
-					// キーを出力
-					lua.retValue(-2);
-
-					// IT/KEY/VAL/KEYCOPY
-					const char * key = lua.getString(-1);
-					bArrResult = jsonBuf->add("\"") && bArrResult;
-					bArrResult = jsonBuf->add(key) && bArrResult;
-					bArrResult = jsonBuf->add("\":") && bArrResult;
-
-					lua.pop(1);
-
-					// 実際の Luaテーブル値を値として出力する前に、
-					// JSON_REPLACEの配列を確認し、値を置き換えるべきキーは
-					// 指定された値で置き換える。
-					bool bReplaced = false;
-					if(jsonBuf->arr_replace) {
-						for(int i = 0; jsonBuf->arr_replace[i].key; i++) {
-							if(!strcmp(key, jsonBuf->arr_replace[i].key)) {
-								bArrResult = jsonBuf->add(jsonBuf->arr_replace[i].value) && bArrResult;
-								bReplaced = true;
-								break;
-							}
-						}
-					}
-
-					if(!bReplaced) {
-						// 値を出力する
-						bArrResult = lua2json_rec(lua, jsonBuf) && bArrResult;
-					}
-
-					lua.pop(1);
-				}
-//				lua.pop(1);	// 巡回用indexを取り除く
-
-				bArrResult = jsonBuf->add("}") && bArrResult;
-
-			} else {
-				// Array の扱い
-				// lua.tableNext() による巡回はindexの順が保障されないので、
-				// 取得した min ～ max にかけて値を取得し、出力する。
-
-				bArrResult = jsonBuf->add("[") && bArrResult;
-
-				bool bFirst = false;
-				
-				if(min != -1 || max) {
-					for(int i = min; i <= max; i++) {
-						lua.retInt(i);
-	
-						// 2番目以降の項目であれば、前の値との区切りとして ','を入れる
-						if(bFirst) jsonBuf->add(",");
-						bFirst = true;
-
-						lua.tableGet();
-		
-						// 値を出力する
-						bArrResult = lua2json_rec(lua, jsonBuf) && bArrResult;
-
-						lua.pop(1);
-					}
-				}
-				bArrResult = jsonBuf->add("]") && bArrResult;
-			}
-			return bArrResult;
-		}
-		break;
-	}
-	//return false; // Dead code
-}
 
 // JSON文字列をLuaテーブルに変換し、Luaスタックに積む
 void
 CKLBUtility::json2lua(CLuaState& lua, const char * json, u32 json_size)
 {
 	CKLBJsonItem * pRoot = CKLBJsonItem::ReadJsonData(json, json_size);
-	jsonItem2lua(lua, pRoot);
-	KLBDELETE(pRoot);
+	if(pRoot) {
+		jsonItem2lua(lua, pRoot);
+		KLBDELETE(pRoot);
+	} else {
+		lua.retNil();
+	}
 }
 
 // CKLBJsonItemのツリーをLuaテーブルに変換し、Luaスタックに積む
@@ -1047,7 +1192,7 @@ CKLBUtility::json2lua_rec(CLuaState& lua, CKLBJsonItem * pItem)
 		break;
 	case CKLBJsonItem::J_INT:
 		{
-			lua.retInt(pItem->getInt());
+			lua.retDouble(pItem->getInt64());
 		}
 		break;
 	case CKLBJsonItem::J_DOUBLE:
@@ -1069,8 +1214,153 @@ CKLBUtility::json2lua_rec(CLuaState& lua, CKLBJsonItem * pItem)
 	}
 }
 
+const char*
+CKLBUtility::insertAssetDirPrefix(const char* fullPath, const char* subFolder, size_t logicalPathLength)
+{
+	klb_assertNull(subFolder, "Do not support empty subFolder");
+	size_t subFolderLength = strlen(subFolder);
+	klb_assertNull(subFolderLength, "Do not support empty subFolder");
+	size_t fullPathLength = strlen(fullPath);
+	char* result = KLBNEWA(char, fullPathLength + subFolderLength + 2);
+	size_t basePathLength = fullPathLength - logicalPathLength;
+
+	memcpy(result, fullPath, basePathLength);
+	memcpy(result + basePathLength, subFolder, subFolderLength);
+	size_t outputOffset = basePathLength + subFolderLength;
+	result[outputOffset++] = fullPath[fullPathLength - (logicalPathLength + 1)];
+	memcpy(result + outputOffset,
+		   fullPath + basePathLength,
+		   logicalPathLength);
+	result[outputOffset + logicalPathLength] = 0;
+	return result;
+}
+
+bool
+CKLBUtility::hasAssetDirPrefix(const char* fullPath, const char* subFolder, size_t logicalPathLength)
+{
+	bool hasPrefix = true;
+	if (subFolder) {
+		size_t subFolderLength = strlen(subFolder);
+		if (subFolderLength && subFolderLength < logicalPathLength) {
+			size_t fullPathLength = strlen(fullPath);
+			size_t basePathLength = fullPathLength - logicalPathLength;
+			const char* logicalPath = fullPath + basePathLength;
+			char separator = logicalPath[subFolderLength];
+			bool hasSeparator = separator == '/' || separator == '\\';
+			hasPrefix = !strncmp(subFolder, logicalPath, subFolderLength) & hasSeparator;
+		}
+	}
+	return hasPrefix;
+}
+
+s32
+CKLBUtility::numStringS64(char * buf, s64 value)
+{
+	// 符号付き64bit整数を数列文字列に変換し、符号を含む桁数を返す。
+	const s64	MINIMUM_VALUE	= (s64)0x8000000000000000LL;
+
+	char	digits[32];
+	s32		length		= 0;
+	bool	negative	= false;
+	bool	minimum		= false;
+
+	if (value < 0) {
+		// INT64_MIN は符号反転できないので、1 を足してから反転し最後に戻す。
+		minimum		= (value == MINIMUM_VALUE);
+		value		= -(value + (minimum ? 1 : 0));
+		negative	= true;
+	}
+	while (value) {
+		digits[length++] = (char)('0' + (value % 10));
+		value /= 10;
+	}
+	if (length) {
+		if (minimum) { digits[0]++; }
+	} else {
+		digits[0] = '0';
+		length = 1;
+	}
+	if (negative) { *buf++ = '-'; }
+	s32 source = length;
+	s32 output = 0;
+	while (--source >= 0) { buf[output++] = digits[source]; }
+	buf[length] = 0;
+	return length + (negative ? 1 : 0);
+}
+
+char *
+CKLBUtility::replaceString(const char * string, const char * find, const char * replace)
+{
+	// 置換位置を先にすべて集めてから必要な長さを確定し、バッファを一度だけ確保する。
+	const size_t	GROWTH_START	= 16;
+	const size_t	GROWTH_LIMIT	= 1024 * 1024;
+
+	size_t			findLength	= strlen(find);
+	const char *	found		= strstr(string, find);
+	const char *	rest		= string;
+	size_t *		positions	= NULL;
+	size_t			count		= 0;
+	size_t			capacity	= 0;
+	size_t			growth		= GROWTH_START;
+	char *			result		= NULL;
+	bool			outOfMemory	= false;
+
+	while (found) {
+		if (capacity < count + 1) {
+			capacity += growth;
+			positions = (size_t *)realloc(positions, sizeof(size_t) * capacity);
+			if (!positions) {
+				outOfMemory = true;
+				break;
+			}
+			growth *= 3;
+			if (growth > GROWTH_LIMIT) { growth = GROWTH_LIMIT; }
+		}
+		positions[count] = found - string;
+		count++;
+		rest = found + findLength;
+		found = strstr(rest, find);
+	}
+
+	if (!outOfMemory) {
+		size_t sourceLength	= rest - string;
+		size_t length		= strlen(rest);
+		sourceLength += length;
+		size_t resultLength	= sourceLength;
+		if (count) {
+			length = strlen(replace);
+			resultLength = sourceLength + (length - findLength) * count;
+		}
+		char * buffer = (char *)malloc(resultLength + 1);
+		if (buffer) {
+			if (count) {
+				memcpy(buffer, string, positions[0]);
+				char *			out			= buffer + positions[0];
+				const char *	tail		= NULL;
+				size_t			end			= 0;
+				size_t			tailLength	= 0;
+				for (size_t i = 0; i < count; i++) {
+					memcpy(out, replace, length);
+					out += length;
+					tail		= string + positions[i] + findLength;
+					end			= (i == count - 1) ? sourceLength : positions[i + 1];
+					tailLength	= end - positions[i] - findLength;
+					memcpy(out, tail, tailLength);
+					out += tailLength;
+				}
+				buffer[resultLength] = 0;
+			} else {
+				strcpy(buffer, string);
+			}
+			result = buffer;
+		}
+	}
+	free(positions);
+	return result;
+}
+
 /*static*/
-char * 
+char *
 CKLBUtility::URLencode(char * retbuf, int maxlen, const char ** postForm)
 {
 	// 指定された postForm から、POST文字列を生成する。
@@ -1123,4 +1413,196 @@ CKLBUtility::URLencode(char * retbuf, int maxlen, const char ** postForm)
 	}
 	*ptr = 0;
 	return basebuf;
+}
+
+bool
+CKLBUtility::saveBMP(const char * path, u32 width, u32 height, const char * pixels)
+{
+	FILE * file = fopen(path, "wb");
+	if (!file) { return false; }
+
+	u32 fileSize = 14 + 40 + (width * height) * 4;
+
+	u8 fileHeader[14] = { 0 };
+	fileHeader[ 0]	= 'B';
+	fileHeader[ 1]	= 'M';
+	fileHeader[ 2]	= (u8)(fileSize      );
+	fileHeader[ 3]	= (u8)(fileSize >>  8);
+	fileHeader[ 4]	= (u8)(fileSize >> 16);
+	fileHeader[ 5]	= (u8)(fileSize >> 24);
+	fileHeader[10]	= 14 + 40;
+
+	u8 infoHeader[40] = { 0 };
+	infoHeader[ 0]	= 40;
+	infoHeader[ 4]	= (u8)(width       );
+	infoHeader[ 5]	= (u8)(width  >>  8);
+	infoHeader[ 6]	= (u8)(width  >> 16);
+	infoHeader[ 7]	= (u8)(width  >> 24);
+	infoHeader[ 8]	= (u8)(height      );
+	infoHeader[ 9]	= (u8)(height >>  8);
+	infoHeader[10]	= (u8)(height >> 16);
+	infoHeader[11]	= (u8)(height >> 24);
+	infoHeader[12]	= 1;	// plane count
+	infoHeader[14]	= 32;	// bit per pixel
+
+	fwrite(fileHeader, 1, sizeof(fileHeader), file);
+	fwrite(infoHeader, 1, sizeof(infoHeader), file);
+
+	// BMP は最下段の走査線から順に格納するため、行を逆順に書き出す。
+	for (s32 y = height - 1; y >= 0; y--) {
+		const char * src = pixels + (y * width) * 4;
+		for (u32 x = 0; x < width; x++) {
+			u8 bgra[4];
+			bgra[0] = src[2];
+			bgra[1] = src[1];
+			bgra[2] = src[0];
+			if (src[3] >= 0) {
+				// 半透明以下のピクセルは色を反転させて可視化する
+				bgra[0] = ~bgra[0];
+				bgra[1] = ~bgra[1];
+				bgra[2] = ~bgra[2];
+			}
+			bgra[3] = 0xFF;
+			fwrite(bgra, sizeof(bgra), 1, file);
+			src += 4;
+		}
+	}
+	fclose(file);
+	return true;
+}
+
+// The shipped codec follows Apache APR-util's apr_base64.c implementation.
+static const u8 s_base64DecodeTable[256] = {
+	64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 62, 64, 64, 64, 63,
+	52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 64, 64, 64, 64, 64, 64,
+	64,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,
+	15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 64, 64, 64, 64, 64,
+	64, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+	41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+	64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64
+};
+
+static const char s_base64EncodeTable[] =
+	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+int Base64decode_len(const char* bufcoded)
+{
+	int nbytesdecoded;
+	register const unsigned char* bufin;
+	register int nprbytes;
+
+	bufin = reinterpret_cast<const unsigned char*>(bufcoded);
+	while (s_base64DecodeTable[*(bufin++)] <= 63);
+
+	nprbytes = bufin - reinterpret_cast<const unsigned char*>(bufcoded) - 1;
+	nbytesdecoded = ((nprbytes + 3) / 4) * 3;
+
+	return nbytesdecoded + 1;
+}
+
+int Base64decode(char* bufplain, const char* bufcoded)
+{
+	int nbytesdecoded;
+	register const unsigned char* bufin;
+	register unsigned char* bufout;
+	register int nprbytes;
+
+	bufin = reinterpret_cast<const unsigned char*>(bufcoded);
+	while (s_base64DecodeTable[*(bufin++)] <= 63);
+	nprbytes = bufin - reinterpret_cast<const unsigned char*>(bufcoded) - 1;
+	nbytesdecoded = ((nprbytes + 3) / 4) * 3;
+
+	bufout = reinterpret_cast<unsigned char*>(bufplain);
+	bufin = reinterpret_cast<const unsigned char*>(bufcoded);
+
+	while (nprbytes > 4) {
+		*(bufout++) = static_cast<unsigned char>(
+			s_base64DecodeTable[*bufin] << 2
+			| s_base64DecodeTable[bufin[1]] >> 4);
+		*(bufout++) = static_cast<unsigned char>(
+			s_base64DecodeTable[bufin[1]] << 4
+			| s_base64DecodeTable[bufin[2]] >> 2);
+		*(bufout++) = static_cast<unsigned char>(
+			s_base64DecodeTable[bufin[2]] << 6
+			| s_base64DecodeTable[bufin[3]]);
+		bufin += 4;
+		nprbytes -= 4;
+	}
+
+	if (nprbytes > 1) {
+		*(bufout++) = static_cast<unsigned char>(
+			s_base64DecodeTable[*bufin] << 2
+			| s_base64DecodeTable[bufin[1]] >> 4);
+	}
+	if (nprbytes > 2) {
+		*(bufout++) = static_cast<unsigned char>(
+			s_base64DecodeTable[bufin[1]] << 4
+			| s_base64DecodeTable[bufin[2]] >> 2);
+	}
+	if (nprbytes > 3) {
+		*(bufout++) = static_cast<unsigned char>(
+			s_base64DecodeTable[bufin[2]] << 6
+			| s_base64DecodeTable[bufin[3]]);
+	}
+
+	*bufout = 0;
+	nbytesdecoded -= (4 - nprbytes) & 3;
+	return nbytesdecoded;
+}
+
+int Base64encode_len(int len)
+{
+	return ((len + 2) / 3 * 4) + 1;
+}
+
+int Base64encode(char* encoded, const char* string, int len)
+{
+	int i;
+	char* p;
+
+	p = encoded;
+	for (i = 0; i < len - 2; i += 3) {
+		*p++ = s_base64EncodeTable[(string[i] >> 2) & 0x3f];
+		*p++ = s_base64EncodeTable[((string[i] & 3) << 4)
+								| ((string[i + 1] & 0xf0) >> 4)];
+		*p++ = s_base64EncodeTable[((string[i + 1] & 0xf) << 2)
+								| ((string[i + 2] & 0xc0) >> 6)];
+		*p++ = s_base64EncodeTable[string[i + 2] & 0x3f];
+	}
+	if (i < len) {
+		*p++ = s_base64EncodeTable[(string[i] >> 2) & 0x3f];
+		if (i == (len - 1)) {
+			*p++ = s_base64EncodeTable[((string[i] & 3) << 4)];
+			*p++ = '=';
+		} else {
+			*p++ = s_base64EncodeTable[((string[i] & 3) << 4)
+									| ((string[i + 1] & 0xf0) >> 4)];
+			*p++ = s_base64EncodeTable[((string[i + 1] & 0xf) << 2)];
+		}
+		*p++ = '=';
+	}
+
+	*p++ = 0;
+	return p - encoded;
+}
+
+void
+KLBNetAPI_encodeBase64(const char* source, int sourceLength, char* destination, u32* outputLength)
+{
+	*outputLength = Base64encode(destination, source, sourceLength);
+}
+
+void
+KLBNetAPI_decodeBase64(const char* source, char* destination, u32* outputLength)
+{
+	*outputLength = Base64decode(destination, source);
 }

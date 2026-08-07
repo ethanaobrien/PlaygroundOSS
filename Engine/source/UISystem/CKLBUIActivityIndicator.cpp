@@ -71,7 +71,7 @@ enum {
 
 
 CKLBUIActivityIndicator::CKLBUIActivityIndicator() 
-: CKLBUITask    ()
+: CKLBUITask    (P_UIAFTER)
 , m_pActivityIndicator  (NULL) 
 {
 }
@@ -156,8 +156,7 @@ CKLBUIActivityIndicator::initCore(
 	m_pActivityIndicator = KLBNEWC( CKLBActivityIndicatorNode,(show_type));
     
 	getNode()->addNode(m_pActivityIndicator);
-	m_pActivityIndicator->setWidth(getInt(PR_WIDTH));
-	m_pActivityIndicator->setHeight(getInt(PR_HEIGHT));
+	m_pActivityIndicator->setSize(width, height);
     
 	return true;
 }
@@ -167,8 +166,7 @@ CKLBUIActivityIndicator::execute(u32 /* deltaT */)
 {
 	updateUIProperty();
 	if(getUpdateFlag()) {
-		m_pActivityIndicator->setWidth(getInt(PR_WIDTH));
-		m_pActivityIndicator->setHeight(getInt(PR_HEIGHT));
+		m_pActivityIndicator->setSize(getInt(PR_WIDTH), getInt(PR_HEIGHT));
 		clearUpdateFlag();
 	}
 }

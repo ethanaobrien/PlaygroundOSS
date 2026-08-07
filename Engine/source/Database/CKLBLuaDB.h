@@ -72,5 +72,36 @@ private:
 	static	CKLBLuaDB	*	ms_end;
 };
 
+// 同時に開けるDBを固定数のスロットで管理する表。
+// 登録時に返す通し番号は登録の度に単調増加する。
+class CKLBDBHandleTable
+{
+public:
+	enum { MAX_HANDLE = 30 };
+
+	// 空きスロットにDBを登録し、その通し番号を返す。空きが無ければ -1。
+	static s32			registerDB		(CKLBLuaDB * db);
+
+	// スロットを未使用状態に戻す。
+	static void			unregisterDB	(u32 slot);
+
+	// 使用中スロットのDBを返す。未使用・範囲外ならば NULL。
+	static CKLBLuaDB *	getDB			(u32 slot);
+
+private:
+	struct Entry {
+		bool			m_free;
+		CKLBLuaDB	*	m_db;
+		s32				m_serial;
+	};
+
+	// 全スロットを空きにする。最初の登録時に一度だけ行う。
+	static void			initTable		();
+
+	static Entry		ms_table[MAX_HANDLE];
+	static s32			ms_nextSerial;
+	static bool			ms_tableReady;
+};
+
 
 #endif // CKLBLuaDB_h

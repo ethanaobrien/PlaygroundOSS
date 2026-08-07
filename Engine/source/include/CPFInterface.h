@@ -40,16 +40,33 @@
 #include "FileSystem.h"
 #include "OSWidget.h"
 #include "ITmpFile.h"
+#include "KLBAudioSystem.h"
+#include <list>
 
 
-typedef struct {
-	float   width;
-	float   height;
-	float   ascent;
-	float   descent;
-	float   top;
-	float   bottom;
-} STextInfo;
+struct STextInfo {
+	STextInfo()
+	: characterEndX26_6(NULL)
+	, characterEndByteOffsets(NULL)
+	, characterCount(0)
+	, parseInlineFormatting(false)
+	{}
+
+	s32*  characterEndX26_6;       // cumulative pen X after each character
+	u32*  characterEndByteOffsets; // inclusive final UTF-8 byte per character
+	u32   characterCount;          // input array capacity, output entry count
+	float width;
+	float height;
+	float ascent;
+	float descent;
+	float top;
+	float bottom;
+	float outlineExtraHeight;
+	bool  parseInlineFormatting;    // recognize inline {b...} formatting tokens
+};
+
+class CurlObjectInternal;
+class IMovieInterface;
 
 
 //! ゲーム側設定関数
@@ -89,8 +106,6 @@ public:
 	};
 
 	enum EVENT_TYPE {
-		E_PAUSE,		// プロセスがポーズ状態になった
-		E_RESUME,		// プロセスがレジュームされた
 		E_TEXTCHANGE,   // TextBox の文字列が変更された
 		E_URLJUMP,      // Webのコマンドリンクが指定された
 
@@ -98,16 +113,19 @@ public:
 		E_DIDLOADENDWEB,	// Webのロードが終了した
 		E_FAILEDLOADWEB,    // Webのロードが失敗した
 
-		E_STORE_BAD_ITEMID,         // アイテムIDが無効
-		E_STORE_PURCHASHING,        // 購入処理中
-		E_STORE_PURCHASHED,         // 購入処理終了
-		E_STORE_FAILED,             // 購入処理失敗
+		E_STORE_BAD_ITEMID,                   // アイテムIDが無効
+		E_STORE_PURCHASHING,                  // 購入処理中
+		E_STORE_PURCHASHED,                   // 購入処理終了
+		E_STORE_DEFERRED,                     // 購入処理が保留中
+		E_STORE_FAILED,                       // 購入処理失敗
+		E_STORE_CANCELED,                     // 購入処理がキャンセルされた
 
 		E_STORE_RESTORE,            // リストア終了
 		E_STORE_RESTORE_FAILED,     // リストア失敗
 		E_STORE_RESTORE_COMPLETED,  // 全リストア終了
 
 		E_STORE_GET_PRODUCTS, // ProductListの取得.
+		E_STORE_GET_PRODUCTS_FAILED, // ProductListの取得に失敗.
 
 		// サウンドステータス
 		E_SOUND_STATE_PLAY,             // サウンド再生中
@@ -119,6 +137,9 @@ public:
 		E_SOUND_MULTIPROCESS_MUSIC_CUT,     // ゲームサウンドが再生される際に、iPodミュージックを停止
 		E_SOUND_MULTIPROCESS_SOUND_CUT,     // iPodミュージックが再生されている際に、ゲーム中のサウンドを全カット
 		E_SOUND_MULTIPROCESS_SOUND_BGM_CUT, // iPodミュージックが再生されている際に、ゲーム中のBGMサウンドを全カット
+
+		E_PAUSE,		// プロセスがポーズ状態になった
+		E_RESUME,		// プロセスがレジュームされた
 	};
 
 	static const u32 KEY_BACK = 0x00000001;
@@ -148,10 +169,12 @@ public:
 
 	//! ゲーム終了処理
 	/*!
+	  \param complete   true for final process shutdown; false when preparing an in-process reboot.
+
 	  ゲーム起動中に確保されたリソースをすべて破棄する。
 	  アプリケーション終了のタイミングでプラットフォーム側から呼び出される。
 	  */
-	virtual void finishGame() = 0;
+	virtual void finishGame(bool complete) = 0;
 
 	//! 画面情報通知
 	/*!
@@ -271,6 +294,21 @@ public:
 
 	virtual FILE* getShellOutput() = 0;
 	virtual void  setShellOutput(FILE* file) = 0;
+	virtual const char* getAssetDirPrefix() = 0;
+	virtual bool getString(char* buffer, u32 bufferSize, const char* key,
+	                       u32* charCount, const char* fallback) = 0;
+};
+
+class IFontIF {
+public:
+	virtual void* getFont(int size, u32 type) = 0;
+	virtual void deleteFont(void* font) = 0;
+	virtual bool renderText(const char* text, void* font, u32 color,
+							u16 width, u16 height, u8* buffer,
+							s16 stride, s16 baseX, s16 baseY, u32 pixelBytes,
+							float scaleX, float scaleY) = 0;
+	virtual bool getTextInfo(const char* text, void* font, STextInfo* info,
+							 float scaleX, float scaleY) = 0;
 };
 
 //! プラットフォーム側インタフェースクラス
@@ -281,9 +319,13 @@ public:
 class IPlatformRequest
 {
 public:
+	typedef std::list<const char*> ExtensionEventArgs;
 	IPlatformRequest();
 	virtual ~IPlatformRequest();
 
+	virtual bool init();
+	virtual void shutdownAudioSystem();
+	KLBAudioImplementation* getAudioSystem() const { return m_audio; }
 	virtual bool useEncryption() = 0;
 
     // ゲーム側からプラットフォーム機能を呼び出す必要があるインタフェースは、
@@ -299,8 +341,21 @@ public:
 	virtual void detailedLogging(const char * basefile, const char * functionName, int lineNo, const char * format, ...) = 0;
 	virtual void logging(const char * format, ...) = 0;
     
-    // バンドルバージョン取得
+    // Validate the shipped application environment before normal startup.
+    virtual void validateEnvironment() = 0;
+
+	virtual void*		ifopen	(const char* name, const char* mode) = 0;
+	virtual void		ifclose	(void* file) = 0;
+	virtual int			ifseek	(void* file, long int offset, int origin) = 0;
+	virtual u32			ifread	(void* ptr, u32 size, u32 count, void* file ) = 0;
+	virtual u32			ifwrite	(const void * ptr, u32 size, u32 count, void* file) = 0;
+	virtual int			ifflush	(void* file) = 0;
+	virtual long int	iftell	(void* file) = 0;
+	virtual bool		icreateEmptyFile(const char* name) = 0;
+	virtual int			irename(const char* oldName, const char* newName) = 0;
+
     virtual const char* getBundleVersion() = 0;
+    virtual const char* getBundleId() = 0;
 
 	//! ナノ秒時刻取得
 	/*!
@@ -345,24 +400,30 @@ public:
 	  例) http://www.google.co.jp/
 	  .
 	  */
-	virtual IReadStream* openReadStream(const char* fileName, bool decrypt) = 0;
+	virtual IReadStream* openReadStream(const char* fileName, bool decrypt, u32 mode = 0) = 0;
+	virtual IReadStream* openWriteStream(const char* fileName, bool encrypt, u32 mode = 0) = 0;
+	virtual void beforeAssertFunction(const char* functionName, bool request = false) = 0;
+	virtual void addExtMsg(const char* key, const char* value, bool sendImmediately) = 0;
+	virtual void sendException(const char* message) = 0;
+	virtual void leaveBreadcrumb(const char* message) = 0;
+	virtual char* createRequestIdHeader() = 0;
+	virtual void copyToClipboard(const char* text) = 0;
+	virtual double getUsedMemorySize() = 0;
+	virtual double getFreeMemorySize() = 0;
+	virtual bool getSMode() = 0;
+	virtual void getDateTimeNow(char* buffer, int bufferSize) = 0;
+	virtual double getUNIXTimeNow() = 0;
+	virtual void requestExtensionEvent(const char* eventName, ExtensionEventArgs* arguments) = 0;
+	virtual void savePng2Album(const char* path) = 0;
+	virtual void setIdleTimerActivity(bool active) = 0;
 
 
 	virtual ITmpFile *	openTmpFile				(const char * filePath) = 0;
-	virtual void		removeTmpFile			(const char * filePath) = 0;
+	virtual int			removeTmpFile			(const char * filePath) = 0;
 	virtual bool		removeFileOrFolder		(const char * filePath) = 0;
     virtual void		excludePathFromBackup	(const char * path)		= 0;
 	virtual u32			getFreeSpaceExternalKB	() = 0;
 	virtual u32			getPhysicalMemKB		() = 0;
-
-	virtual void*		ifopen	(const char* name, const char* mode) = 0;
-	virtual void		ifclose	(void* file) = 0;
-	virtual int			ifseek	(void* file, long int offset, int origin) = 0;
-	virtual u32			ifread	(void* ptr, u32 size, u32 count, void* file ) = 0;
-	virtual u32			ifwrite	(const void * ptr, u32 size, u32 count, void* file) = 0;
-	virtual int			ifflush	(void* file) = 0;
-	virtual long int	iftell	(void* file) = 0;
-	virtual bool		icreateEmptyFile(const char* name) = 0;
 
     //! オーディオデータのロード
     /*!
@@ -376,7 +437,6 @@ public:
      オーディオデータはプラットフォーム側が管理し、その管理領域にアクセスするためのポインタのみが返されます。
      ポインタの先で示される領域の実装についてはプラットフォーム側に依存し、ゲーム側でその実装に依存するコードを書くことは推奨されません。
      */
-    virtual void*   loadAudio(const char* url, bool is_se = false) = 0;
     
     //! オーディオデータのオンメモリ化
     /*!
@@ -388,7 +448,6 @@ public:
      再生開始まで時間がかかることがあります。こうしたSEデータをあらかじめメモリ上に展開し、
      いつでも即時再生できるよう準備するために使用されます。
      */
-    virtual bool    preLoad(void* handle) = 0;
     
     
     //! BGMオーディオデータのバッファサイズ指定
@@ -401,7 +460,6 @@ public:
      指定されたサイズが具体的にどのように用いられるかはプラットフォームによって異なります。
      これを指定しない場合のデフォルトバッファサイズは 1(中)と同等でなければなりません。
      */
-    virtual bool    setBufSize(void * handle, int level) = 0;
     
     //! オーディオデータの再生
     /*!
@@ -409,7 +467,6 @@ public:
 
      handleで指定されたオーディオデータの再生を開始します。
      */
-    virtual void    playAudio(void* handle, s32 _msec=0, float _tgtVol=1.0f, float _startVol=1.0f) = 0;
     
     //! 再生中オーディオ再生の停止
     /*!
@@ -418,7 +475,6 @@ public:
      handleで指定されたオーディオデータが現在再生中の場合、そのデータの再生を停止します。
      再生中でなければ何もしません。
      */
-    virtual void    stopAudio(void* handle, s32 _msec=0, float _tgtVol=0.0f) = 0;
 
     
     //! オーディオ全体のボリューム設定
@@ -435,16 +491,13 @@ public:
      SEmode が true の場合、SEに対するボリューム設定となり、
      preLoad() でオンメモリ化されたオーディオデータのみが影響を受けます。
      */
-    virtual void    setMasterVolume(float volume, bool SEmode) = 0;
     
     
     //! 各オーディオハンドル単位のボリューム設定
     /*!
      */
-    virtual void    setAudioVolume(void * handle, float volume) = 0;
     
     //! オーディオのパン設定
-    virtual void    setAudioPan(void * handle, float pan) = 0;
 
     
     //! オーディオデータの解放
@@ -452,28 +505,24 @@ public:
      \param handle  loadAudio()で取得されたオーディオデータ管理領域
      handleで指定された、現在ロードされているオーディオデータを解放します。
      */
-    virtual void    releaseAudio(void* handle) = 0;
 
     //! オーディオ一時停止
     /*
      \param handle  loadAudio()で取得されたオーディオデータ管理領域
      handleで指定された、現在ロードされているオーディオデータ再生を一時停止します。
      */
-    virtual void pauseAudio(void * handle, s32 _msec=0, float _tgtVol=0.0f) = 0;
     
     //! オーディオ再生再開
     /*
      \param handle  loadAudio()で取得されたオーディオデータ管理領域
      handleで指定された、現在ロードされているオーディオデータが一時停止しているときに再生を再開します。
      */
-    virtual void resumeAudio(void * handle, s32 _msec=0, float _tgtVol=1.0f) = 0;
 
     //! オーディオ再生時刻移動
     /*
      \param handle  loadAudio()で取得されたオーディオデータ管理領域
      handleで指定された、現在ロードされているオーディオデータが一時停止しているときに再生を再開します。
      */
-    virtual void seekAudio(void * handle, s32 millisec) = 0;
 
     
     //! オーディオ再生時刻取得
@@ -482,7 +531,6 @@ public:
      handleで指定された、現在ロードされているオーディオデータにおける現在の再生位置時刻をミリ秒単位で取得します。
      ただし、環境によって取得できる時刻の分解能は異なり、原則「再生系によって検知された最新の時刻」を返します。
      */
-    virtual s32  tellAudio(void * handle) = 0;
     
     
     //! オーディオ合計演奏取得
@@ -490,14 +538,12 @@ public:
      \param handle  loadAudio()で取得されたオーディオデータ管理領域
      handleで指定された、現在ロードされているオーディオデータにおける現在の合計演奏時間をミリ秒単位で取得します。
      */
-    virtual s32  totalTimeAudio(void * handle) = 0;
     
     //! オーディオステータス取得
     /*
      \param handle  loadAudio()で取得されたオーディオデータ管理領域
      handleで指定された、現在ロードされているオーディオデータの状態を取得します。
      */
-    virtual s32  getState(void * handle) = 0;
     
     //! オーディオにフェードステータスを設定
     /*
@@ -506,37 +552,32 @@ public:
      \param _msec       フェードにかかる時間(ミリ秒)
      handleで指定された、現在ロードされているオーディオデータにフェード処理を追加
      */
-    virtual void setFadeParam(void * _handle, float _tgtVol, u32 _msec) = 0;
     
     //! サウンドとミュージックの並行処理タイプ設定
-    virtual void setAudioMultiProcessType( s32 _processType ) = 0;
     
     //! サウンドの割り込み処理をOSに依存するかどうか
-    virtual void setPauseOnInterruption(bool _bPauseOnInterruption) = 0;
+
+	virtual char* getDeviceIntegrityInfo(const char* request) = 0;
+	virtual void decompressBGM(bool decompress) = 0;
+	virtual void beginAudioFrame();
+	virtual void endAudioFrame();
     
     //! OS起動からの経過時間を取得
     virtual s64 getElapsedTime( void ) = 0;
     
-	virtual	bool registerFont(const char* logicalName, const char* physFile, bool default_) = 0;
+		//! フォントオブジェクト取得
+	    virtual void * getFontSystem() = 0;
+	    
+	    //! フォントオブジェクト破棄
+	    virtual void deleteFontSystem(void * pFont) = 0;
+	    virtual void * getFont(int size, const char * fontName = 0) = 0;
+	    virtual void deleteFont(void * pFont) = 0;
 
-    //! フォントオブジェクト取得
-    virtual void * getFont(int size, const char * fontName = 0, float* pAscent = NULL) = 0;
-    
-    //! フォントオブジェクト破棄
-    virtual void deleteFont(void * pFont) = 0;
-
-	//! フォントオブジェクト取得
-    virtual void * getFontSystem(int size, const char * fontName = 0) = 0;
-    
-    //! フォントオブジェクト破棄
-    virtual void deleteFontSystem(void * pFont) = 0;
-    
-    //! フォントテクスチャ描画
-    virtual bool renderText(const char* utf8String, void * pFont, u32 color,    //!< 描画する文字列とフォントの指定
-                            u16 width, u16 height, u8 * pBuffer8888,            //!< 描画対象とするテクスチャバッファとそのピクセルサイズ
-                            s16 stride, s16 base_x, s16 base_y, bool use4444 = false) = 0;            //!< baseline起点とするテクスチャ内の位置
-
-    virtual bool getTextInfo(const char* utf8String, void * pFont, STextInfo* pReturnInfo) = 0;
+	void setNativeFont(bool native);
+	void* getFont(int size, const char* fontName, u32 type);
+	void deleteFontResource(void* font);
+	bool getTextInfo(const char* text, void* font, STextInfo* info,
+					 float scaleX, float scaleY);
 
 
 	//! 指定アセットパスを各プラットフォーム上のフルパスに変換した文字列を返す。
@@ -548,6 +589,11 @@ public:
 
 	//! eglGetProcAddress() 相当の処理を行う
 	virtual void * getGLExtension(const char * ext) = 0;
+	virtual const char* getShaderExtension(int shaderType) = 0;
+	virtual bool isSafeAreaScreen();
+	virtual bool setFrameRate(int frameRate) = 0;
+	virtual int getMaxFrameRate() = 0;
+	virtual void getSafeAreaInset(float* insets);
 
 	//! OS機能によるコントロール配置
 	/*!
@@ -579,6 +625,11 @@ public:
 		APP_MAIL,
 		APP_BROWSER,
 		APP_UPDATE,		// アプリケーションのアップデートが可能なアプリ(iOSならAppStore)
+		APP_MAP,
+		APP_SETTINGS,
+		APP_COLLABORATION,
+		APP_SHARE_CONTENTS,
+		APP_ATT,
 	};
 
 	//! OSアプリケーションの起動
@@ -588,6 +639,20 @@ public:
 	  createControl()で生成したコントロールを破棄します。
 	  */
 	virtual bool callApplication(APP_TYPE type, ... ) = 0;
+	virtual void clearCookies() = 0;
+	virtual bool readyDevID() = 0;
+	virtual int getDevID(char* buffer, int maxLength) = 0;
+	virtual void exitGame() = 0;
+	virtual bool setSecureDataID(const char* serviceName, const char* userId) = 0;
+	virtual bool setSecureDataPW(const char* serviceName, const char* password) = 0;
+	virtual int getSecureDataID(const char* serviceName, char* buffer, int maxLength) = 0;
+	virtual int getSecureDataPW(const char* serviceName, char* buffer, int maxLength) = 0;
+	virtual bool delSecureDataID(const char* serviceName) = 0;
+	virtual bool delSecureDataPW(const char* serviceName) = 0;
+	virtual void setUserDefaults(const char* key, bool value) = 0;
+	virtual bool getUserDefaults(const char* key) = 0;
+	virtual void setUserDefaults(const char* key, const char* value) = 0;
+	virtual void getUserDefaults(const char* key, char* buffer, int maxLength) = 0;
 
 
 	//! スレッド起動
@@ -602,15 +667,7 @@ public:
 
 	virtual int		genUserID		(char * retBuf, int maxlen) = 0;
 	virtual int		genUserPW		(const char * salt, char * retBuf, int maxlen) = 0;
-
-	virtual bool	readyDevID		() = 0;
-	virtual int		getDevID		(char * retBuf, int maxlen) = 0;
-	virtual bool	setSecureDataID	(const char * service_name, const char * user_id)		= 0;
-	virtual bool	setSecureDataPW	(const char * service_name, const char * passwd)		= 0;
-	virtual int		getSecureDataID	(const char * service_name, char * retBuf, int maxlen)  = 0;
-	virtual int		getSecureDataPW	(const char * service_name, char * retBuf, int maxlen)  = 0;
-	virtual bool	delSecureDataID	(const char * service_name) = 0;
-	virtual bool	delSecureDataPW	(const char * service_name) = 0;
+	virtual void registerScriptSource(const char* source, int sourceSize, const char* sourceName);
 
 	//! ストア機能
 	//! トランザクション監視開始
@@ -623,20 +680,92 @@ public:
 	virtual void getStoreProducts(const char* json, bool currency_mode) = 0;
 	//! サーバー通信後にトランザクションを閉じて購入処理を確定させる。
 	virtual void finishStoreTransaction(const char* receipt) = 0;
+	virtual bool publicKeyVerify(unsigned char* message, int messageLength,
+	                             unsigned char* signature, int signatureLength) = 0;
+	virtual int publicKeyEncrypt(unsigned char* input, int inputLength,
+	                             unsigned char* output, int outputLength) = 0;
+	virtual bool randomBytes(unsigned char* output, int length) = 0;
+	virtual int encryptAES128CBC(unsigned char* output, int outputLength,
+	                            const char* input, int inputLength,
+	                            const char* key, int keyLength) = 0;
+	virtual int decryptAES128CBC(unsigned char* output, int outputLength,
+	                            const char* input, int inputLength,
+	                            const char* key, int keyLength) = 0;
+	virtual bool initNetwork() = 0;
+	virtual void shutdownNetwork() = 0;
+	virtual CurlObjectInternal* createNetworkOperation() = 0;
+	virtual void resetNetworkOperation(CurlObjectInternal* operation) = 0;
+	virtual void cleanupNetworkOperation(CurlObjectInternal* operation) = 0;
+	virtual int performNetworkOperation(CurlObjectInternal* operation) = 0;
+	virtual void freeNetworkFormHeaders(CurlObjectInternal* operation) = 0;
+	virtual void destroyNetworkOperation(CurlObjectInternal* operation) = 0;
+	virtual void appendNetworkHeader(CurlObjectInternal* operation, const char* header) = 0;
+	virtual void setNetworkPostFields(CurlObjectInternal* operation) = 0;
+	virtual void setNetworkPostData(CurlObjectInternal* operation, long contentLength, const void* data) = 0;
+	virtual void addNetworkFormData(CurlObjectInternal* operation, const char* name,
+	                                long contentLength, const void* data) = 0;
+	virtual void setupNetworkConnection(CurlObjectInternal* operation, const char* url,
+	                                    const char* proxy, void* callbackContext,
+	                                    void* progressCallback, void* headerCallback,
+	                                    void* writeCallback) = 0;
+	virtual long getNetworkHttpCode(CurlObjectInternal* operation) = 0;
+	virtual IMovieInterface* createMoviePlayer(const char* url, int width, int height) = 0;
+	virtual void destroyMoviePlayer(IMovieInterface* player) = 0;
+	virtual void startAlertDialog(const char* title, const char* message) = 0;
+	virtual void forbidSleep(bool forbidden) = 0;
+	virtual float getDeviceScale() = 0;
+	virtual void quitGame() = 0;
+	virtual void* allocMutex() = 0;
+	virtual void freeMutex(void* mutex) = 0;
+	virtual void mutexLock(void* mutex) = 0;
+	virtual void mutexUnlock(void* mutex) = 0;
+	virtual void* allocEventLock() = 0;
+	virtual void freeEventLock(void* lock) = 0;
+	virtual void eventSleep(void* lock) = 0;
+	virtual void eventWakeup(void* lock) = 0;
+	virtual const char* getLangCodeRAW() = 0;
+	virtual const char* getCountryCodeRAW() = 0;
+	virtual const char* getPreferredLangCodeRAW() = 0;
+	virtual bool getGyroPolar(float* azimuth, float* elevation) = 0;
 
-	virtual void*	allocMutex		() = 0;
-	virtual void	freeMutex		(void* mutex) = 0;
-	virtual void	mutexLock		(void* mutex) = 0;
-	virtual void	mutexUnlock		(void* mutex) = 0;
+	// Compatibility calls now forward through the shared audio implementation.
+	void* loadAudio(const char* url, bool isSE = false, s32 mode = 0, s32 option = 0);
+	bool preLoad(void* handle);
+	bool setBufSize(void* handle, int level);
+	void playAudio(void* handle, s32 msec = 0, float targetVolume = 1.0f, float startVolume = 1.0f);
+	void stopAudio(void* handle, s32 msec = 0, float targetVolume = 0.0f);
+	void setMasterVolume(float volume, bool seMode);
+	void setAudioVolume(void* handle, float volume, bool formVolume = false);
+	void setAudioPan(void* handle, float pan);
+	void releaseAudio(void* handle);
+	void pauseAudio(void* handle, s32 msec = 0, float targetVolume = 0.0f);
+	void resumeAudio(void* handle, s32 msec = 0, float targetVolume = 1.0f);
+	void seekAudio(void* handle, s32 millisec);
+	s32 tellAudio(void* handle);
+	s32 totalTimeAudio(void* handle);
+	s32 getState(void* handle);
+	void setFadeParam(void* handle, float targetVolume, u32 msec);
+	void setAudioMultiProcessType(s32 processType);
+	void setPauseOnInterruption(bool pauseOnInterruption);
+	void setAudioLoop(void* handle, s32 start, s32 end);
+	void keepAudioSessions(void* handle, s32 count);
+	KLBAudioCommand* popAudioCommand();
 
-	virtual void*	allocEventLock	() = 0;
-	virtual void	freeEventLock	(void* lock) = 0;
-	virtual void	eventSleep		(void* lock) = 0;
-	virtual void	eventWakeup		(void* lock) = 0;
-	
-	virtual void	startAlertDialog( const char* title , const char* message ) = 0;
+	bool registerFont(const char* logicalName, const char* fallbackName);
+	bool registerFont(const char* logicalName, const char* physFile,
+					  bool defaultFont, bool useHinting = true);
+	virtual void* getFont(int size, const char* fontName, float* ascent) = 0;
+	virtual void* getFontSystem(int size, const char* fontName) = 0;
+	bool renderText(const char* utf8String, void* font, u32 color,
+	                u16 width, u16 height, u8* buffer,
+	                s16 stride, s16 baseX, s16 baseY, u32 pixelBytes = 4,
+	                float scaleX = 1.0f, float scaleY = 1.0f);
+	virtual bool getTextInfo(const char* utf8String, void* font, STextInfo* info) = 0;
 
-	virtual void	forbidSleep		(bool is_forbidden) = 0;
+protected:
+	KLBAudioImplementation* m_audio;
+	bool m_bNoDefaultFont;
+	bool m_audioFrameEnabled;
 };
 
 #ifdef DEBUG

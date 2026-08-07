@@ -16,6 +16,7 @@
 #include "CKLBNode.h"
 #include "string.h"
 #include "CKLBUITask.h"
+#include "CKLBDrawTask.h"
 
 #ifdef DEBUG_PERFORMANCE
 /*static*/ u32	CKLBNode::s_vertexRecomputeCount = 0;
@@ -62,6 +63,7 @@ CKLBNode::CKLBNode():
 	m_pRender			(NULL),
 	m_renderSlot		(NULL),
 	m_layer				(0),
+	m_maskLayer			(0xFFFF),
 	m_movieID			(0),
 	m_renderCount		(1),
 	m_deleteRender		(true),
@@ -72,6 +74,7 @@ CKLBNode::CKLBNode():
 	m_rot				(0.0f),
 	m_scaleX			(1.0f),
 	m_scaleY			(1.0f),
+	m_renderMode		(0),
 	m_bInternalNode		(true),
 	m_reject			(false)
 {
@@ -269,10 +272,12 @@ void CKLBNode::dump(u32 level, u32 mask) {
 		fprintf(pFile," [ID]");
 		break;
 	case MATRIX_T:
-		fprintf(pFile," [T]");
+		fprintf(pFile," [T][%i,%i]", (int)m_matrix.m_matrix[MAT_TX], (int)m_matrix.m_matrix[MAT_TY]);
 		break;
 	case MATRIX_TS:
-		fprintf(pFile," [TS]");
+		fprintf(pFile," [TS][%f,%f,TX:%i,TY:%i]",
+			m_matrix.m_matrix[MAT_A], m_matrix.m_matrix[MAT_D],
+			(int)m_matrix.m_matrix[MAT_TX], (int)m_matrix.m_matrix[MAT_TY]);
 		break;
 	case MATRIX_TG:
 		fprintf(pFile," [TG]");
@@ -309,9 +314,9 @@ void CKLBNode::dump(u32 level, u32 mask) {
 	}
 
 	if (mask & 1) {
+		fprintf(pFile,"\n       ");
 		for (int m=0; m < 4; m++) {
-			fprintf(pFile,"\n    ");
-			for (u32 n=0; n < level; n++) { printf("  "); }
+			printf("//");
 			fprintf(pFile,"%3i <- %3i",(int)(this->m_colorMatrix.m_vector[m] * 255), (int)(this->m_localColorMatrix.m_vector[m] * 255));
 		}
 	}
@@ -394,6 +399,31 @@ CKLBNode* CKLBNode::search(const char* name) {
 	*/
 }
 
+void CKLBNode::getWorldPosition(float x, float y, float* worldX, float* worldY) {
+	x += m_matrix.m_matrix[MAT_TX];
+	y += m_matrix.m_matrix[MAT_TY];
+
+	if (m_parent) {
+		CKLBNode* root = CKLBDrawResource::getInstance().getRoot();
+		CKLBNode* parent = m_parent;
+		while (parent && parent != root) {
+			const float localX = x;
+			x = localX * parent->m_matrix.m_matrix[MAT_A]
+			  + y      * parent->m_matrix.m_matrix[MAT_B]
+			  + parent->m_matrix.m_matrix[MAT_TX];
+			y = localX * parent->m_matrix.m_matrix[MAT_C]
+			  + y      * parent->m_matrix.m_matrix[MAT_D]
+			  + parent->m_matrix.m_matrix[MAT_TY];
+			parent = parent->m_parent;
+		}
+		*worldX = x;
+		*worldY = y;
+	}
+
+	*worldX = x;
+	*worldY = y;
+}
+
 CKLBNode* CKLBNode::searchFirstByTypeID(u32 typeID) {
 	if (typeID == m_uitask->getClassID()) {
 		return this;
@@ -434,29 +464,20 @@ void CKLBNode::releaseSlots() {
 }
 
 bool CKLBNode::setRenderSlotCount	(u32 slot) {
-	bool res = true;
 	releaseSlots();
-
-	if (slot != 1) {
-		CKLBRenderCommand**
-				newComm	= KLBNEWA(CKLBRenderCommand*,	slot);
-
-		if (newComm) {
-			m_renderCount = slot;
-			m_pRender	= newComm;
-			memset(newComm, NULL, sizeof(CKLBRenderCommand*) * slot);
-		} else {
-			slot = 1;
-			res = false;
-		}
-	}
 
 	if (slot == 1) {
 		m_pRender		= &m_renderSlot;
-		m_renderCount = 1;
+	} else {
+		CKLBRenderCommand**
+				newComm	= KLBNEWA(CKLBRenderCommand*,	slot);
+
+		m_renderCount = slot;
+		m_pRender	= newComm;
+		memset(newComm, 0, sizeof(CKLBRenderCommand*) * slot);
 	}
 
-	return res;
+	return true;
 }
 
 CKLBNode* CKLBNode::getNode(u16 layer) {
@@ -473,8 +494,7 @@ CKLBNode* CKLBNode::getNode(u16 layer) {
 }
 
 void CKLBNode::addNode(CKLBNode* pNode, u16 layer) {
-	klb_assertNull(pNode, "null node");
-	klb_assert((pNode != this), "Impossible to do this node tree operation");
+	klb_assertNull((pNode != this), "Impossible to do this node tree operation");
 
 	//
 	// Remove from previous parent.
@@ -715,7 +735,7 @@ CKLBNode* CKLBNode::searchCommand(CKLBRenderCommand* comm) {
 }
 
 void CKLBNode::setRender(CKLBRenderCommand* pRender, u32 indexRender) {
-	klb_assert((indexRender < m_renderCount), "wrong indexRender");
+	klb_assertNull((indexRender < m_renderCount), "wrong indexRender");
 	CKLBRenderingManager& pMgr = CKLBRenderingManager::getInstance();
 	if (m_pRender[indexRender] != NULL) {
 		m_pRender[indexRender]->decrementCount();
@@ -736,10 +756,62 @@ void CKLBNode::setRender(CKLBRenderCommand* pRender, u32 indexRender) {
 }
 
 void CKLBNode::setRenderRef(CKLBRenderCommand* pRender, u32 indexRender) {
-	klb_assert((indexRender < m_renderCount), "wrong indexRender");
+	klb_assertNull((indexRender < m_renderCount), "wrong indexRender");
 	m_pRender[indexRender] = pRender;
 	if (pRender) {
 		pRender->incrementCount();
+	}
+}
+
+void CKLBNode::propagateRenderMode(u8 inheritedMode) {
+	CKLBNode* child = m_pChild;
+	while (child) {
+		child->setInheritedRenderMode(inheritedMode);
+		child = child->m_pBrother;
+	}
+}
+
+void CKLBNode::applyRenderMode(u8 mode) {
+	switch (mode) {
+	case 2:
+		for (size_t index = 0; index < m_renderCount; index++) {
+			CKLBRenderCommand* command = m_pRender[index];
+			if (command && (command->getCommandType() & RENDERCOMMAND_SPRITE)) {
+				static_cast<CKLBSprite*>(command)->setRenderState(CKLBRenderingManager::getInstance().getAdditiveState());
+			}
+		}
+		break;
+	case 1:
+		for (size_t index = 0; index < m_renderCount; index++) {
+			CKLBRenderCommand* command = m_pRender[index];
+			if (command && (command->getCommandType() & RENDERCOMMAND_SPRITE)) {
+				static_cast<CKLBSprite*>(command)->setRenderState(CKLBRenderingManager::getInstance().getAlphaState());
+			}
+		}
+		break;
+	default:
+		for (size_t index = 0; index < m_renderCount; index++) {
+			CKLBRenderCommand* command = m_pRender[index];
+			if (command && (command->getCommandType() & RENDERCOMMAND_SPRITE)) {
+				static_cast<CKLBSprite*>(command)->setRenderState(NULL);
+			}
+		}
+		break;
+	}
+}
+
+void CKLBNode::setInheritedRenderMode(u8 inheritedMode) {
+	u8 previousMode = m_renderMode;
+	u8 previousInheritedMode = previousMode & 0xF0;
+	if (previousInheritedMode != inheritedMode) {
+		u8 localMode = previousMode & 0x0F;
+		m_renderMode = inheritedMode | localMode;
+		u8 previousEffectiveMode = previousInheritedMode ? (previousMode >> 4) : localMode;
+		u8 effectiveMode = inheritedMode ? (inheritedMode >> 4) : localMode;
+		if (previousEffectiveMode != effectiveMode) {
+			applyRenderMode(effectiveMode);
+		}
+		propagateRenderMode(effectiveMode << 4);
 	}
 }
 
@@ -991,7 +1063,7 @@ void CKLBNode::setPriorityL(u32 order) {
 
 u32 CKLBNode::getPriority()
 {
-	klb_assert(m_renderCount == 1, "The node has two or more commands. ");
+	klb_assertNull(m_renderCount == 1, "The node has two or more commands. ");
 
 	CKLBRenderCommand * pRender = m_pRender[0];
 	if (pRender) {

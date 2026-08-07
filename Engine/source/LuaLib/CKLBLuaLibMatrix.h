@@ -93,6 +93,11 @@ private:
 	static int luaMulMatVecArray	(lua_State * L);
 	static int luaMulMatVector		(lua_State * L);
 	static int luaTransposedMatrix	(lua_State * L);
+	static int luaSqrt				(lua_State * L);
+	static int luaISqrt				(lua_State * L);
+	static int luaSin				(lua_State * L);
+	static int luaCos				(lua_State * L);
+	static int luaPolar3D2Cartesian	(lua_State * L);
 
 	static MATRIX * newMatrix		();
 	static void		delMatrix		(MATRIX * pMat);

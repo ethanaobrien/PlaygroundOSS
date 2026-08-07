@@ -34,7 +34,7 @@ public:
 
 	void setInitParam	(u32 param, void* complexSetup);
 	bool initGame		();
-	void finishGame		();
+	void finishGame		(bool complete);
     
 	bool setScreenInfo	(bool rotate, int width, int height);
 	bool setFilePath	(const char * strPath);

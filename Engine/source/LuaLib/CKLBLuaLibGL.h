@@ -41,8 +41,26 @@ private:
 	static int luaGLGetHorizontalBorder	(lua_State * L);
 	static int luaGLGetVerticalBorder	(lua_State * L);
 	static int luaGLSetQuarter			(lua_State * L);
+	static int luaGLSetState			(lua_State * L);
+	static int luaGLSetFrameRate		(lua_State * L);
+	static int luaGLGetMaxFrameRate	(lua_State * L);
+	static int luaGLGetRenderingAPI	(lua_State * L);
+	static int luaGLRegisterSafeAreaChangeCallback(lua_State * L);
+	static int luaGLGetUnsafeAreaSize(lua_State * L);
 	static int luaGLReloadTexture		(lua_State * L);
 	static int luaGLUnloadTexture		(lua_State * L);
+	static int luaGLIsSafeAreaScreen	(lua_State * L);
+	static int luaGLGetResolution		(lua_State * L);
+	static int luaGLGetPhysicalSize		(lua_State * L);
+	static int luaGLGetCoordinate		(lua_State * L);
+	static int luaGLGetScreenScale		(lua_State * L);
+	static int luaGLGetUniformScaleFromSafeToUnsafe(lua_State * L);
+	static int luaGLComputeMatrixFromToRect(lua_State * L);
+	static int luaGLStackShaderParam(lua_State * L);
+	static int luaGLCreateShader(lua_State * L);
+	static int luaGLDestroyShader(lua_State * L);
+	static int luaGLBGBorder(lua_State * L);
+	static u16 createShader(const char* name, const char* vertexShaderCode, const char* pixelShaderCode);
 
 	
 		

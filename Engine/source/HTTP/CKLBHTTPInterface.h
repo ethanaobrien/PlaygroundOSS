@@ -28,6 +28,7 @@
 
 #ifdef USE_NEW_CURL_WRAPPER
 class ConnectionEntry;
+class CKLBNetAPI;
 
 /*!
 * \class CKLBHTTPInterface
@@ -37,7 +38,9 @@ class ConnectionEntry;
 */
 class CKLBHTTPInterface
 {
+	friend class NetworkManager;
 	friend class ConnectionEntry;
+	friend class CKLBNetAPI;
 private:
 	CKLBHTTPInterface();
 	virtual ~CKLBHTTPInterface();
@@ -51,10 +54,11 @@ public:
 	char * setForm(const char ** postForm);
 
 	// GET発行
-	bool httpGET(const char * url, bool isProxy);
+	bool httpGET(const char * url, bool isProxy, const char* connectionName = NULL);
+	static bool isConnectionAvailable(const char* connectionName);
 
 	// POST発行
-	bool httpPOST(const char * url, bool isProxy);
+	bool httpPOST(const char * url, bool isProxy, const char* connectionName = NULL, bool connectionProxy = false);
 
 	// ダウンロード保存パス名を指定し、ダウンロードモードでの動作を開始する。
 	// NULL指定で通常のオンメモリモードでの動作に戻る
@@ -62,18 +66,22 @@ public:
 
 	// 受信ステータス
 	bool httpRECV();
+	void stop();
 
 	// 現在の受信サイズ
-	s64 getSize();
+	inline s64 getSize()		{ return m_receivedSize; }
 	inline s64 getDwnldSize()	{ return m_receivedSize; }
+	bool isDataComplete();
 
 	// 受信リソースの取得
 	u8 * getRecvResource();
 
+	int getHttpStatus();
+
     // httpのstate取得 2013.2.13  追加
 	int getHttpState();
 
-	bool isMaintenance()										{ return this->m_maintenance; }
+	bool isMaintenance()										{ return this->m_update; }
 	bool hasHeader(const char* header, const char** value);
 private:
 	void clear();
@@ -83,21 +91,23 @@ private:
 	static int	progress_func		(void* ctx, double t, double d, double ultotal, double ulnow);
 	static size_t write_func		(char *ptr, size_t size, size_t nmemb, void *userdata); 
 	static size_t headerReceive_func(void *ptr, size_t size, size_t nmemb, void *userdata);
+	static void	formatMessageCode	(const u8 digest[20], char messageCode[41]);
 
 	void		progress(u64 total, u64 download);
 	size_t		write	(char *ptr, size_t size, size_t nmemb);
 	void		download();
+	bool		startConnection(const char* connectionName, bool isProxy);
 
-	// HTTP Error Code
-	int			m_errorCode;
-	int			m_tmpErrorCode;
+	void*		m_thread;
+	s64			m_tmpErrorCode;
 	bool		m_bDataComplete;
 	bool		m_bDownload;
 	bool		m_bothFileAndMem;
 	bool		m_post;
-	bool		m_maintenance;
+	bool		m_update;		// Maintenance response header
+	bool		m_maintenance;	// Client-Update response header
+	s64			m_errorCode;
 	const char*	m_url;
-	void*		m_pCurl;
 	const char*	m_pServerVersion;
 
 	ITmpFile*	m_pTmpFile;
@@ -105,14 +115,12 @@ private:
 	s64			m_writeIndex;
 	u8*			m_receivedData;
 	u8*			m_buffer;
-	void*		m_thread;
-public:
-	volatile u32 m_threadStop;
-private:
+	u8*			m_pMessageSign;
+	u32			m_messageSignLen;
 	bool		m_stopThread;
 
 	// 追加HTTPヘッダ
-	const char*	m_headers;
+	const char* m_headers;
 	const char** m_headerEntry;
 	const char** m_postForm;
 	u32*		m_headerEntryLen;
@@ -121,6 +129,7 @@ private:
 public:
 	static		bool initHTTPLib();
 	static		void releaseHTTPLib();
+	static		void setUserAgent(const char* userAgent);
 };
 
 #else

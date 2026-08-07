@@ -43,6 +43,7 @@ private:
 	static int luaDBGSetCallback	(lua_State * L);
 	static int luaDBGSetMenu		(lua_State * L);
 	static int luaDBGRemoveMenu		(lua_State * L);
+	static int luaDBGRemoveAllMenu	(lua_State * L);
 };
 
 

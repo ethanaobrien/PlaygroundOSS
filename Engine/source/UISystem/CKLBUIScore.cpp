@@ -25,6 +25,7 @@ enum {
 	UI_SCORE_SET,
 	UI_SCORE_SETFLOAT,
 	UI_SCORE_SETDOT,
+	UI_SCORE_SETCOMMA,
 	UI_SCORE_GET,
 	UI_SCORE_ENTERANIM,
 	UI_SCORE_EXITANIM,
@@ -40,6 +41,7 @@ static IFactory::DEFCMD cmd[] = {
 	{ "UI_SCORE_ALIGN",     UI_SCORE_ALIGN      },
 	{ "UI_SCORE_SETFLOAT",	UI_SCORE_SETFLOAT },
 	{ "UI_SCORE_DOT",		UI_SCORE_SETDOT },
+	{ "UI_SCORE_COMMA",		UI_SCORE_SETCOMMA },
 
 	{ "SCORE_ALIGN_RIGHT",	CKLBUIScore::ALIGN_RIGHT    },
 	{ "SCORE_ALIGN_CENTER",	CKLBUIScore::ALIGN_CENTER   },
@@ -74,7 +76,7 @@ static IFactory::DEFCMD cmd[] = {
 static CKLBTaskFactory<CKLBUIScore> factory("UI_Score", CLS_KLBUISCORE, cmd);
 
 CKLBUIScore::CKLBUIScore()
-: CKLBUITask    ()
+: CKLBUITask    (P_UIAFTER)
 , m_pScoreNode  (NULL)
 {
 	setNotAlwaysActive();
@@ -210,7 +212,7 @@ CKLBUIScore::initUI(CLuaState& lua)
 
 		// 与えられた配列のindexに整数以外が使われているときや、
 		// 範囲を超えたものがある場合はエラー扱いとする。
-		klb_assert((idx >= 0 && idx <= 9), "BAD INDEX [%s] in texture array.", str);
+		klb_assertNull((idx >= 0 && idx <= 9), "BAD INDEX [%s] in texture array.", str);
 		if(idx < 0 || idx > 9) {	// 数値以外のインデックスが指定されていたり、範囲を超えている場合
 			return false;
 		}
@@ -222,7 +224,7 @@ CKLBUIScore::initUI(CLuaState& lua)
 	lua.pop(1);
 	// テクスチャの数が足りなければエラーとする。
 	if(tex_cnt != 10) {
-		klb_assert(tex_cnt == 10, "%s(%d): The number of textures is insufficient. ", lua.getScriptName(), lua.getNumLine()); 
+		klb_assertNull(tex_cnt == 10, "%s(%d): The number of textures is insufficient. ", lua.getScriptName(), lua.getNumLine()); 
 		return false;
 	}
 
@@ -248,8 +250,11 @@ CKLBUIScore::initCore(u32 order, s32 order_offset, float x, float y,
 	m_anim          = anim_flag;
 	m_align         = align;
 	m_bCountClip    = countclip;
+	m_bComma        = false;
 	m_dotStepX		= 0;
 	m_dotStepY		= 0;
+	m_commaStepX	= 0;
+	m_commaStepY	= 0;
 	m_value         = 0xFFFFFFFF;
 	m_fValue        = -12345678.0f;
 	setValue(0);
@@ -325,13 +330,12 @@ CKLBUIScore::execute(u32 deltaT)
 			fDot = 1;
 		}
 	} else {
-		int value = m_value;
+		u64 value = m_value;
 		if(m_bCountClip && value >= m_maxvalue) value = m_maxvalue - 1;
 		m_pScoreNode->setScore(value, true);
 		column = countColumn(value);	// 桁数をカウント
 	}
-	m_pScoreNode->setPriority(m_order);
-	m_pScoreNode->update();
+	m_pScoreNode->update(m_order);
 
 	if(!m_bFillZero) {
 		int offX;
@@ -341,7 +345,10 @@ CKLBUIScore::execute(u32 deltaT)
 		int max_cols = m_column;
 		int dotStepX = (m_dotStepX * fDot);
 		int dotStepY = (m_dotStepY * fDot);
-        if(column > max_cols) { column = max_cols; }
+		if(column > max_cols) { column = max_cols; }
+		int commaCount = (m_bComma && column > 3) ? ((column - 1) / 3) : 0;
+		int commaStepX = m_commaStepX * commaCount;
+		int commaStepY = m_commaStepY * commaCount;
 		switch(m_align)
 		{
 		default:
@@ -350,12 +357,12 @@ CKLBUIScore::execute(u32 deltaT)
 			offY = 0;
 			break;
 		case ALIGN_CENTER:
-			offX = ((m_width  - stepX * column) + dotStepX) / 2;
-			offY = ((m_height - stepY * column) + dotStepY) / 2;
+			offX = ((m_width  - stepX * column) + dotStepX - commaStepX) / 2;
+			offY = ((m_height - stepY * column) + dotStepY - commaStepY) / 2;
 			break;
 		case ALIGN_LEFT:
-			offX = (m_width  - (stepX * column)) + dotStepX;
-			offY = (m_height - (stepY * column)) + dotStepY;
+			offX = (m_width  - (stepX * column)) + dotStepX - commaStepX;
+			offY = (m_height - (stepY * column)) + dotStepY - commaStepY;
 			break;
 		}
 		m_pScoreNode->setTranslate(-offX, -offY);
@@ -372,7 +379,7 @@ CKLBUIScore::dieUI()
 
 // 表示の必要がある桁数を数える
 int
-CKLBUIScore::countColumn(u32 value)
+CKLBUIScore::countColumn(u64 value)
 {
 	int cnt = 0;
 	do {
@@ -382,7 +389,8 @@ CKLBUIScore::countColumn(u32 value)
 	return cnt;
 }
 
-void CKLBUIScore::setDot(const char* dotAsset, s32 width, s32 height) {
+void CKLBUIScore::setDot(const char* dotAsset, s32 width, s32 height,
+						 s32 offsetX, s32 offsetY) {
 	CKLBTextureAsset * pAsset		= m_numTex[0]->getTexture();
 
 	u32 handle = 0;
@@ -402,11 +410,37 @@ void CKLBUIScore::setDot(const char* dotAsset, s32 width, s32 height) {
 	m_dotStepY = height;
 
 	// Assign ressource
-	m_pScoreNode->setDot(pImgAsset,width,height);
+	m_pScoreNode->setDot(pImgAsset, width, height, offsetX, offsetY);
 }
 
 const char* CKLBUIScore::getDot() {
 	return NULL; // TODO
+}
+
+void CKLBUIScore::setComma(const char* commaAsset, s32 width, s32 height,
+						   s32 offsetX, s32 offsetY) {
+	CKLBTextureAsset* pAsset = m_numTex[0]->getTexture();
+
+	u32 handle = 0;
+	CKLBTextureAsset* pTexAsset = (CKLBTextureAsset*)CKLBUtility::loadAssetScript(commaAsset, &handle, 0, true);
+	if(pAsset != pTexAsset) {
+		CKLBScriptEnv::getInstance().error("COMMA image %s not inside same texture as score 0..9 graphics.", commaAsset);
+	}
+
+	if(handle) {
+		CKLBDataHandler::releaseHandle(handle);
+	}
+
+	m_commaStepX = width;
+	m_commaStepY = height;
+	m_bComma = true;
+
+	u32 commaCount = (m_column > 3) ? m_column / 3 : 0;
+	m_width  = m_stepX * m_column + width  * commaCount;
+	m_height = m_stepY * m_column + height * commaCount;
+
+	CKLBImageAsset* pImgAsset = pAsset->getImage(commaAsset + 8);
+	m_pScoreNode->setComma(pImgAsset, width, height, offsetX, offsetY);
 }
 
 int
@@ -426,7 +460,7 @@ CKLBUIScore::commandUI(CLuaState& lua, int argc, int cmd)
 				ret = 1;
 				break;
 			}
-			int value = lua.getInt(3);
+			u64 value = (s64)lua.getDoubleUnchecked(3);
 			if(m_bCountClip && value >= m_maxvalue) value = m_maxvalue - 1;
 			setValue(value);
 		}
@@ -438,7 +472,7 @@ CKLBUIScore::commandUI(CLuaState& lua, int argc, int cmd)
 				ret = 1;
 				break;
 			}
-			float value = lua.getFloat(3);
+			double value = lua.getDouble(3);
 			int pos = lua.getInt(4);
 			if(m_bCountClip && value >= m_maxvalue) value = m_maxvalue - 1;
 			setValueFloat(value, pos);
@@ -446,7 +480,7 @@ CKLBUIScore::commandUI(CLuaState& lua, int argc, int cmd)
 		break;
 	case UI_SCORE_SETDOT:
 		{
-			if(argc != 5) {
+			if(argc <= 4) {
 				lua.retNil();
 				ret = 1;
 				break;
@@ -455,10 +489,25 @@ CKLBUIScore::commandUI(CLuaState& lua, int argc, int cmd)
 			setDot(lua.getString(3), lua.getInt(4), lua.getInt(5));
 		}
 		break;
+	case UI_SCORE_SETCOMMA:
+		{
+			if(argc <= 4) {
+				lua.retNil();
+				ret = 1;
+				break;
+			}
+			s32 offsetX = 0;
+			s32 offsetY = 0;
+			if(argc >= 7) {
+				offsetX = lua.getInt(6);
+				offsetY = lua.getInt(7);
+			}
+			setComma(lua.getString(3), lua.getInt(4), lua.getInt(5), offsetX, offsetY);
+		}
+		break;
 	case UI_SCORE_GET:
-		{	
-			int value = getValue();
-			lua.retInt(value);
+		{
+			lua.retDouble(getValue());
 			ret = 1;
 		}
 		break;
@@ -475,7 +524,7 @@ CKLBUIScore::commandUI(CLuaState& lua, int argc, int cmd)
 			int  type       = lua.getInt(6);
 			u32  affected   = lua.getInt(7);
 			float mat[8];
-			klb_assert(type > 0, "UI_Score: UI_SCORE_ENTERANIM type == 0");
+			klb_assertNull(type > 0, "UI_Score: UI_SCORE_ENTERANIM type == 0");
 
 			// 配列を読む
 			lua.retValue(8);
@@ -483,13 +532,13 @@ CKLBUIScore::commandUI(CLuaState& lua, int argc, int cmd)
 			while(lua.tableNext()) {
 				lua.retValue(-2);
 				int idx = lua.getInt(-1) - 1;
-				klb_assert((idx >= 0 && idx < 8), "%s(%d): bad array index. UI_SCORE_ENTERANIM", lua.getScriptName(), lua.getNumLine());
+				klb_assertNull((idx >= 0 && idx < 8), "%s(%d): bad array index. UI_SCORE_ENTERANIM", lua.getScriptName(), lua.getNumLine());
 				mat[idx] = lua.getFloat(-2);
 				lua.pop(2);
 			}
 			lua.pop(1);
 
-			klb_assert(type != 0, "Custom animation is not authorized (type 0)");
+			klb_assertNull(type != 0, "Custom animation is not authorized (type 0)");
 			m_pScoreNode->setEnterAnimation(mspt, tshift, onlychg, type, affected, mat);
 		}
 		break;
@@ -506,7 +555,7 @@ CKLBUIScore::commandUI(CLuaState& lua, int argc, int cmd)
 			int  type       = lua.getInt(6);
 			u32  affected   = lua.getInt(7);
 			float mat[4];
-			klb_assert(type > 0, "UI_Score: UI_SCORE_ENTERANIM type == 0");
+			klb_assertNull(type > 0, "UI_Score: UI_SCORE_ENTERANIM type == 0");
 
 			// 配列を読む
 			lua.retValue(8);
@@ -519,7 +568,7 @@ CKLBUIScore::commandUI(CLuaState& lua, int argc, int cmd)
 			}
 			lua.pop(1);
 
-			klb_assert(type != 0, "Custom animation is not authorized (type 0)");
+			klb_assertNull(type != 0, "Custom animation is not authorized (type 0)");
 			m_pScoreNode->setExitAnimation(mspt, tshift, onlychg, type, affected, mat);
 		}
 		break;

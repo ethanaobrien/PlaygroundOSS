@@ -38,14 +38,13 @@ const CAndroidReadFileStream::LOCLIST CAndroidReadFileStream::m_toplevel[3] = {
     { 0, 0 }
 };
 
-CAndroidReadFileStream::CAndroidReadFileStream()
+CAndroidReadFileStream::CAndroidReadFileStream(u32 allowedFormats)
 : m_bReadOnly(true)
 , m_fd(-1)
 , m_fp(0)
 , m_eStat(CLOSED)
 , m_fullpath(0)
-, m_writeStream(0)
-, m_decrypter()
+, m_decrypter(allowedFormats)
 {}
 
 CAndroidReadFileStream::~CAndroidReadFileStream()
@@ -57,14 +56,14 @@ CAndroidReadFileStream::~CAndroidReadFileStream()
 }
 
 CAndroidReadFileStream *
-CAndroidReadFileStream::openStream(const char * path, const char * home)
+CAndroidReadFileStream::openStream(const char * path, const char * home, u32 allowedFormats)
 {
     CAndroidReadFileStream * pStream = 0;
 
-    pStream = new CAndroidReadFileStream();
+    pStream = new CAndroidReadFileStream(allowedFormats);
     if(!pStream) return 0;
 
-    CAndroidPathConv& pathconv = CAndroidPathConv::getInstance();
+    CKLBPathConv& pathconv = CKLBPathConv::getInstance();
     pStream->m_fullpath = pathconv.fullpath(path);
 
     if(!pStream->m_fullpath) {
@@ -95,10 +94,10 @@ CAndroidReadFileStream::openStream(const char * path, const char * home)
 }
 
 CAndroidReadFileStream *
-CAndroidReadFileStream::openAssets(const char * path, const char * home)
+CAndroidReadFileStream::openAssets(const char * path, const char * home, u32 allowedFormats)
 {
 	// 今や内容が全く同じ
-	return openStream(path, home);
+	return openStream(path, home, allowedFormats);
 }
 
 
@@ -110,13 +109,13 @@ CAndroidReadFileStream::getSize()
         return -1;
     }
 
-    return file_stats.st_size - (m_decrypter.m_useNew ? 4 : 0);
+    return file_stats.st_size - m_decrypter.getHeaderSize();
 }
 
 s32
 CAndroidReadFileStream::getPosition()
 {
-    return (s32)(ftell(m_fp) - (m_decrypter.m_useNew ? 4 : 0));
+    return (s32)(ftell(m_fp) - m_decrypter.getHeaderSize());
 }
 
 u8       
@@ -166,6 +165,10 @@ CAndroidReadFileStream::readFloat()
 bool     
 CAndroidReadFileStream::readBlock(void * buffer, u32 byteSize)
 {
+    if(!buffer || !m_fp) {
+        return false;
+    }
+
     u32 cnt;
     
     cnt = fread(buffer, 1, byteSize, m_fp);
@@ -182,16 +185,14 @@ CAndroidReadFileStream::getStatus()
 IWriteStream *  
 CAndroidReadFileStream::getWriteStream()
 {
-    if(m_bReadOnly) return 0;
-    if(!m_writeStream) m_writeStream = new CAndroidWriteFileStream(*this);
-    return m_writeStream;
+    return 0;
 }
 
 
-int
-CAndroidReadFileStream::readU16arr(u16 *pBufferU16, int items)
+size_t
+CAndroidReadFileStream::readU16arr(u16 *pBufferU16, size_t items)
 {
-    int cnt = fread(pBufferU16, sizeof(u16), items, m_fp);
+    size_t cnt = fread(pBufferU16, sizeof(u16), items, m_fp);
     decrypt(pBufferU16,sizeof(u16) * cnt);
 
     // iOS と Android/ARM では元々big endian なので、バイトオーダーの入れ替えは特に不要。
@@ -199,10 +200,10 @@ CAndroidReadFileStream::readU16arr(u16 *pBufferU16, int items)
     return cnt;
 }
 
-int
-CAndroidReadFileStream::readU32arr(u32 *pBufferU32, int items)
+size_t
+CAndroidReadFileStream::readU32arr(u32 *pBufferU32, size_t items)
 {
-    int cnt = fread(pBufferU32, sizeof(u32), items, m_fp);
+    size_t cnt = fread(pBufferU32, sizeof(u32), items, m_fp);
     decrypt(pBufferU32,sizeof(u32) * cnt);
 
     // iOS と Android/ARM では元々big endian なので、バイトオーダーの入れ替えは特に不要。

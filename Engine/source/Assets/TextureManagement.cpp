@@ -20,6 +20,10 @@
 #include "CKLBUtility.h"
 #include "CKLBDrawTask.h"
 #include "KLBPlatformMetrics.h"
+#include "CKLBGameApplication.h"
+#include "CKLBLuaLibASSET.h"
+#include "CKLBTask.h"
+#include "CKLBScriptEnv.h"
 
 /*
  * Here is the header of the ETC1 decoder part taken out from the 
@@ -45,18 +49,41 @@ namespace rg_etc1
 u32 gTextureAllocSW = 0;
 u32 gTextureAllocHW = 0;
 
-// Prototypes
+static void releaseGridTexturesOnPluginShutdown();
 void processImage8888(u32 /*pixelCount*/, u32 lineWidth, u32 height, u8* buffer);
 void processImage565(u32 pixelCount, u32 lineWidth, u32 height, u8* buffer);
 void processImage4444(u32 pixelCount, u32 lineWidth, u32 height, u8* buffer);
 void processImage5551(u32 pixelCount, u32 lineWidth, u32 height, u8* buffer);
-CKLBAbstractAsset* createTexture(u32 orgWidthI, u32 orgHeightI, const char* name);
+enum TextureAssetPixelFormat {
+	TEXTURE_ASSET_DEPTH16 = 1,
+	TEXTURE_ASSET_RESERVED = 2,
+	TEXTURE_ASSET_RGB888  = 3,
+	TEXTURE_ASSET_RGBA8888 = 4
+};
+
+static const int s_textureBytesPerPixel[4] = { 2, 0, 3, 4 };
+static const int s_textureChannels[4] = {
+	CKLBOGLWrapper::DEPTH,
+	CKLBOGLWrapper::LUMINANCE,
+	CKLBOGLWrapper::RGB,
+	CKLBOGLWrapper::RGBA
+};
+static const int s_texturePixelFormats[4] = {
+	GL_UNSIGNED_SHORT,
+	0,
+	GL_UNSIGNED_BYTE,
+	GL_UNSIGNED_BYTE
+};
+
+CKLBAbstractAsset* createTexture(u32 orgWidthI, u32 orgHeightI, const char* name,
+	s32 pixelFormat, u8 roundToPowerOfTwo, CTexture* sourceTexture);
 
 CKLBTextureAsset::CKLBTextureAsset()
 : CKLBAbstractAsset ()
 , m_indexBufferTotal(NULL)
 , m_floatBufferTotal(NULL)
 , m_pTexture        (NULL)
+, m_pTextureState   (NULL)
 , m_pTextureUsage   (NULL)
 , m_pImages         (NULL)
 , m_softTexture     (NULL)
@@ -64,32 +91,81 @@ CKLBTextureAsset::CKLBTextureAsset()
 , m_bytePerPix		(0)
 , m_width			(0)
 , m_height			(0)
+, m_pDefaultImageName(NULL)
+, m_pParentTexture	(NULL)
+, m_pChildTexture	(NULL)
+, m_pNextTexture	(NULL)
+, m_pAliasList		(NULL)
 {
 }
 
 CKLBTextureAsset::~CKLBTextureAsset()
 {
-	if (m_pImages) { 
-		for (u32 n = 0; n < m_imageCount; n++) {
-			if (m_pImages[n]) {
-				KLBDELETE(m_pImages[n]);
+	if (!m_refCountControlsResource) {
+		if (m_pAliasList) {
+			CKLBImageAsset* alias = m_pAliasList;
+			while (alias) {
+				CKLBImageAsset* nextAlias = alias->m_pNextAlias;
+				KLBDELETE(alias);
+				alias = nextAlias;
 			}
+			m_pAliasList = NULL;
 		}
-		KLBDELETEA(m_pImages);
-	}
 
-	if (m_indexBufferTotal)	{ KLBDELETE(m_indexBufferTotal); }
-	if (m_floatBufferTotal)	{ KLBDELETE(m_floatBufferTotal); }
+		if (!m_pParentTexture) {
+			if (m_pImages) {
+				for (u32 n = 0; n < m_imageCount; n++) {
+					if (m_pImages[n]) {
+						KLBDELETE(m_pImages[n]);
+					}
+				}
+				KLBDELETEA(m_pImages);
+			}
 
-	CKLBOGLWrapper& pMgr = CKLBOGLWrapper::getInstance();
+			if (m_indexBufferTotal)	{ KLBDELETE(m_indexBufferTotal); }
+			if (m_floatBufferTotal)	{ KLBDELETE(m_floatBufferTotal); }
 
-	if (m_pTexture) {
-		gTextureAllocHW -= this->m_width * this->m_height * m_bytePerPix;
-		if (m_pTextureUsage) {
-			m_pTexture->releaseUsage	(m_pTextureUsage);
+			CKLBOGLWrapper& pMgr = CKLBOGLWrapper::getInstance();
+
+			if (m_pTexture) {
+				gTextureAllocHW -= this->m_width * this->m_height * m_bytePerPix;
+				if (m_pTextureUsage) {
+					m_pTexture->releaseUsage(m_pTextureUsage);
+				}
+				pMgr.releaseTexture(m_pTexture);
+				m_pTexture = NULL;
+			}
+
+			if (m_pChildTexture) {
+				CKLBTextureAsset* child = m_pChildTexture;
+				while (child) {
+					CKLBTextureAsset* nextChild = child->m_pNextTexture;
+					KLBDELETE(child);
+					child = nextChild;
+				}
+				m_pChildTexture = NULL;
+			}
+
+		} else {
+			CKLBTextureAsset* previous = NULL;
+			CKLBTextureAsset* child = m_pParentTexture->m_pChildTexture;
+			while (child) {
+				if (child == this) {
+					if (previous) {
+						previous->m_pNextTexture = m_pNextTexture;
+					} else {
+						m_pParentTexture->m_pChildTexture = m_pNextTexture;
+					}
+					break;
+				}
+				previous = child;
+				child = child->m_pNextTexture;
+			}
+			m_pParentTexture = NULL;
 		}
-		pMgr.releaseTexture		(m_pTexture);
-		m_pTexture = NULL;
+
+		KLBDELETEA(m_pDefaultImageName);
+		m_pDefaultImageName = NULL;
 	}
 
 	if (m_softTexture) {
@@ -97,6 +173,55 @@ CKLBTextureAsset::~CKLBTextureAsset()
 		gTextureAllocSW -= this->m_width * this->m_height * 4;
 		m_softTexture = NULL;
 	}
+}
+
+CKLBTextureAsset* CKLBTextureAsset::clone()
+{
+	CKLBTextureAsset* asset = KLBNEW(CKLBTextureAsset);
+	if (asset) {
+		asset->m_pParentTexture     = this;
+		asset->m_width              = m_width;
+		asset->m_height             = m_height;
+		asset->m_type               = m_type;
+		asset->m_totalVertexCount   = m_totalVertexCount;
+		asset->m_totalIndexCount    = m_totalIndexCount;
+		asset->m_imageCount         = m_imageCount;
+		asset->m_bitmap             = m_bitmap;
+		asset->m_indexBufferTotal   = m_indexBufferTotal;
+		asset->m_floatBufferTotal   = m_floatBufferTotal;
+		asset->m_pTexture           = m_pTexture;
+		asset->m_pTextureUsage      = m_pTextureUsage;
+		asset->m_pImages            = m_pImages;
+		asset->m_softTexture        = m_softTexture;
+		asset->m_bytePerPix         = m_bytePerPix;
+		asset->m_pNextTexture       = m_pChildTexture;
+		m_pChildTexture             = asset;
+	}
+	return asset;
+}
+
+void CKLBTextureAsset::incrementRefCount()
+{
+	if (m_pParentTexture) {
+		m_pParentTexture->incrementRefCount();
+	}
+	CKLBAbstractAsset::incrementRefCount();
+}
+
+bool CKLBTextureAsset::decrementRefCount()
+{
+	CKLBTextureAsset* parent = m_pParentTexture;
+	bool released = CKLBAbstractAsset::decrementRefCount();
+	if (parent) {
+		parent->decrementRefCount();
+	}
+	return released;
+}
+
+void CKLBTextureAsset::setDefaultImageName(const char* name)
+{
+	KLBDELETEA(m_pDefaultImageName);
+	m_pDefaultImageName = CKLBUtility::copyString(name);
 }
 
 void
@@ -115,19 +240,54 @@ CKLBTextureAsset::unloadRessource() {
 	}
 }
 
-CKLBImageAsset* 
-CKLBTextureAsset::getImage(const char* fileName) 
+CKLBImageAsset*
+CKLBTextureAsset::getImage(const char* fileName)
 {
+	const char* assetDirPrefix = static_cast<CKLBGameApplication&>(CPFInterface::getInstance().client()).getAssetDirPrefix();
+	size_t fileNameLength = strlen(fileName);
+	if (!CKLBUtility::hasAssetDirPrefix(fileName, assetDirPrefix, fileNameLength)) {
+		char prefixedName[1000];
+		sprintf(prefixedName, "%s/%s", assetDirPrefix, fileName);
+		CKLBImageAsset* prefixedImage = getImage(prefixedName);
+		if (prefixedImage) return prefixedImage;
+	}
+
 	// TODO OPTIMIZE : binary search instead of stupid search.
 	// Tool will garantee that image are ordered correctly.
+	CKLBImageAsset* image = NULL;
 	if (fileName) {
 		for (u32 n = 0; n < m_imageCount; n++) {
 			if (strcmp(fileName,m_pImages[n]->getName()) == 0) {
-				return m_pImages[n];
+				image = m_pImages[n];
 			}
 		}
 	}
-	return NULL;
+	if (image) return image;
+
+	if (m_pDefaultImageName) {
+		CKLBImageAsset* defaultImage = NULL;
+		for (u32 n = 0; n < m_imageCount; n++) {
+			if (strcmp(m_pDefaultImageName, m_pImages[n]->getName()) == 0) {
+				defaultImage = m_pImages[n];
+				break;
+			}
+		}
+
+		if (defaultImage) {
+			const char* aliasName = CKLBUtility::copyString(fileName);
+			image = defaultImage->clone();
+			if (aliasName && image) {
+				image->m_fileSource = aliasName;
+				image->m_pOwnerTexture = this;
+				image->m_pNextAlias = m_pAliasList;
+				m_pAliasList = image;
+			} else {
+				KLBDELETE(image);
+				KLBDELETEA(aliasName);
+			}
+		}
+	}
+	return image;
 }
 
 void 
@@ -239,11 +399,15 @@ CKLBImageAsset::CKLBImageAsset()
 , m_pIndex          (NULL)
 , m_pTextureAsset   (NULL)
 , m_subIndex        (-1)
+, m_uiVertexCount   (0)
+, m_uiIndexCount    (0)
 , m_subTiles        (NULL)
 , m_nextSubTile     (NULL)
 , m_attribList      (NULL)
 , m_attribCount     (0)
 , m_usageType       (0)
+, m_pNextAlias      (NULL)
+, m_pOwnerTexture   (NULL)
 , m_topLeftImage    (NULL)
 , m_renderOffset    (0)
 , m_bAllocatedOutsideTexture(false)
@@ -280,6 +444,55 @@ CKLBImageAsset::~CKLBImageAsset()
 		// KLBDELETEA(m_pUVCoord);
 		// KLBDELETEA(m_pIndex	);
 	}
+
+	if (m_fileSource) {
+		if (m_pOwnerTexture) {
+			CKLBImageAsset* pPrevious = NULL;
+			CKLBImageAsset* pImage = m_pOwnerTexture->m_pAliasList;
+			while (pImage) {
+				if (pImage == this) {
+					if (pPrevious) {
+						pPrevious->m_pNextAlias = m_pNextAlias;
+					} else {
+						m_pOwnerTexture->m_pAliasList = m_pNextAlias;
+					}
+					break;
+				}
+				pPrevious = pImage;
+				pImage = pImage->m_pNextAlias;
+			}
+		} else {
+			m_fileSource = NULL;
+		}
+	}
+}
+
+CKLBImageAsset* CKLBImageAsset::clone()
+{
+	CKLBImageAsset* asset = KLBNEW(CKLBImageAsset);
+	if (asset) {
+		asset->m_subTiles                 = NULL;
+		asset->m_attribCount              = 0;
+		asset->m_attribList               = NULL;
+		asset->m_topLeftImage             = NULL;
+		asset->m_iCenterX                 = 0;
+		asset->m_iCenterY                 = 0;
+		asset->m_bAllocatedOutsideTexture = false;
+		asset->m_pXYCoord       = m_pXYCoord;
+		asset->m_pIndex         = m_pIndex;
+		asset->m_pUVCoord       = m_pUVCoord;
+		asset->m_subIndex       = m_subIndex;
+		asset->m_pTextureAsset  = m_pTextureAsset;
+		asset->m_subTiles       = m_subTiles;
+		asset->m_nextSubTile    = m_nextSubTile;
+		asset->m_uiVertexCount  = m_uiVertexCount;
+		asset->m_uiIndexCount   = m_uiIndexCount;
+		asset->m_imageSize      = m_imageSize;
+		asset->m_boundWidth     = m_boundWidth;
+		asset->m_boundHeight    = m_boundHeight;
+		asset->m_usageType      = m_usageType;
+	}
+	return asset;
 }
 
 void 
@@ -294,48 +507,28 @@ CKLBImageAsset::getAsTopLeftImage(s32 offX, s32 offY)
 {
 	if ((offX == 0) && (offY == 0)) {
 		return this;
-	} else {
-		if (!this->m_topLeftImage) {
-			m_topLeftImage	= KLBNEW(CKLBImageAsset); // Fake for now.
-			float* pArrayXY	= KLBNEWA(float, this->getVertexCount()*2);
-			if (m_topLeftImage && pArrayXY) {
-				
-				// Avoid double delete.
-				m_topLeftImage->m_subTiles		= NULL;
-				m_topLeftImage->m_attribCount	= 0;
-				m_topLeftImage->m_attribList	= NULL;
-				m_topLeftImage->m_topLeftImage	= NULL;
-				m_topLeftImage->m_iCenterX		= 0;
-				m_topLeftImage->m_iCenterY		= 0;
-
-				// Setup new XY coordinate.
-				m_topLeftImage->m_bAllocatedOutsideTexture = true;
-				m_topLeftImage->m_pXYCoord		= pArrayXY;
-				
-				m_topLeftImage->m_pUVCoord		= this->m_pUVCoord;
-				m_topLeftImage->m_pIndex		= this->m_pIndex;
-				m_topLeftImage->m_pTextureAsset	= this->m_pTextureAsset;
-				m_topLeftImage->m_subIndex		= this->m_subIndex;
-				m_topLeftImage->m_subTiles		= this->m_subTiles;
-				m_topLeftImage->m_nextSubTile	= this->m_nextSubTile;
-				m_topLeftImage->m_uiVertexCount	= this->m_uiVertexCount;
-				m_topLeftImage->m_uiIndexCount	= this->m_uiIndexCount;
-				m_topLeftImage->m_imageSize		= this->m_imageSize;	// Original image size
-				m_topLeftImage->m_boundWidth	= this->m_boundWidth;
-				m_topLeftImage->m_boundHeight	= this->m_boundHeight;
-
-				for (u32 n=0; n < this->getVertexCount()*2; n += 2) {
-					pArrayXY[n  ]	= this->m_pXYCoord[n  ] + offX;
-					pArrayXY[n+1]	= this->m_pXYCoord[n+1] + offY;
-				}
-			} else {
-				KLBDELETE(m_topLeftImage);
-				m_topLeftImage = NULL;
-				KLBDELETEA(pArrayXY);
-			}
-		}
-		return m_topLeftImage;
 	}
+	if (m_fileSource) {
+		return this;
+	}
+	if (!m_topLeftImage) {
+		m_topLeftImage = clone();
+		float* pArrayXY = KLBNEWA(float, this->getVertexCount() * 2);
+		if (m_topLeftImage && pArrayXY) {
+			m_topLeftImage->m_bAllocatedOutsideTexture = true;
+			m_topLeftImage->m_pXYCoord = pArrayXY;
+
+			for (u32 n = 0; n < this->getVertexCount() * 2; n += 2) {
+				pArrayXY[n    ] = this->m_pXYCoord[n    ] + offX;
+				pArrayXY[n + 1] = this->m_pXYCoord[n + 1] + offY;
+			}
+		} else {
+			KLBDELETE(m_topLeftImage);
+			m_topLeftImage = NULL;
+			KLBDELETEA(pArrayXY);
+		}
+	}
+	return m_topLeftImage;
 }
 
 bool 
@@ -383,8 +576,8 @@ CKLBImageAsset::getAttribute(u8 attribID, const char*& attribValue)
 void 
 CKLBImageAsset::getXY(u32 vertexIndex, float* pX, float* pY) 
 {
-	klb_assert(pX && pY, "null pointer");
-	klb_assert(vertexIndex < m_uiVertexCount , "invalid index");
+	klb_assertNull(pX && pY, "null pointer");
+	klb_assertNull(vertexIndex < m_uiVertexCount , "invalid index");
 	if (vertexIndex < m_uiVertexCount) {
 		vertexIndex *= 2;
 		*pX = m_pXYCoord[vertexIndex++];
@@ -395,8 +588,8 @@ CKLBImageAsset::getXY(u32 vertexIndex, float* pX, float* pY)
 void 
 CKLBImageAsset::getUV(u32 vertexIndex, float* pU, float* pV) 
 {
-	klb_assert(pU && pV, "null pointer");
-	klb_assert(vertexIndex < m_uiVertexCount , "invalid index");
+	klb_assertNull(pU && pV, "null pointer");
+	klb_assertNull(vertexIndex < m_uiVertexCount , "invalid index");
 	if (vertexIndex < m_uiVertexCount) {
 		vertexIndex *= 2;
 		*pU = m_pUVCoord[vertexIndex++];
@@ -629,6 +822,12 @@ KLBTextureAssetPlugin::loadImage(u8* stream, u32 /*streamSize*/, CKLBImageAsset*
 						pNewAssetI->m_usageType |= CKLBImageAsset::IS_3DMODEL;
 						is3dModel = true;
 					}
+					if (key == ASSET_ATTRIB::zK5_STANDARD_USAGE) {
+						pNewAssetI->m_usageType |= CKLBImageAsset::IS_STANDARD_USAGE_5;
+					}
+					if (key == ASSET_ATTRIB::zK6_STANDARD_USAGE) {
+						pNewAssetI->m_usageType |= CKLBImageAsset::IS_STANDARD_USAGE_6;
+					}
 
 					switch (type) {
 					case ASSET_ATTRIB::zATTRIB_INT:
@@ -798,8 +997,8 @@ KLBTextureAssetPlugin::loadImage(u8* stream, u32 /*streamSize*/, CKLBImageAsset*
 				}
 
 				if (patchCoordinateMode == 1) {
-					int deltaX = CKLBDrawResource::getInstance().ox();
-					int deltaY = CKLBDrawResource::getInstance().oy();
+					float deltaX = CKLBDrawResource::getInstance().borderX();
+					float deltaY = CKLBDrawResource::getInstance().borderY();
 
 					pNewAsset->m_pXYCoord[0] -= deltaX;
 					pNewAsset->m_pXYCoord[1] -= deltaY;
@@ -813,8 +1012,8 @@ KLBTextureAssetPlugin::loadImage(u8* stream, u32 /*streamSize*/, CKLBImageAsset*
 					pNewAsset->m_pXYCoord[6] -= deltaX;
 					pNewAsset->m_pXYCoord[7] += deltaY;
 				} else if (patchCoordinateMode == 2) {
-					int deltaX = CKLBDrawResource::getInstance().ox();
-					int deltaY = CKLBDrawResource::getInstance().oy();
+					int deltaX = CKLBDrawResource::getInstance().borderX();
+					int deltaY = CKLBDrawResource::getInstance().borderY();
 					if (deltaX) {
 						float purcX = deltaX / (float)CKLBDrawResource::getInstance().width();
 						deltaY = purcX * CKLBDrawResource::getInstance().height();
@@ -858,10 +1057,13 @@ KLBTextureAssetPlugin::loadImage(u8* stream, u32 /*streamSize*/, CKLBImageAsset*
 		}
 	}
 
-	klb_assertNull(0,"allocation failure.");
+	klb_assertAlways("allocation failure.");
 	return NULL;
 }
 
+s32 g_gridTextureError = 0;
+s32 g_gridTextureFirstError = 0;
+const char* g_gridTextureDieCallback = NULL;
 /**
 	Trick function to allow sharing buffer for all images into texture
 	and not using multiple allocation.
@@ -879,8 +1081,9 @@ KLBTextureAssetPlugin::setBuffers(CKLBTextureAsset*	pTextureAsset, float* uvBuff
 //   Texture.
 // ---------------------------------------------------------------------------------------------
 
-KLBTextureAssetPlugin::KLBTextureAssetPlugin()
+KLBTextureAssetPlugin::KLBTextureAssetPlugin(TextureLoadCallback loadCallback)
 : IKLBAssetPlugin   ()
+, m_loadCallback    (loadCallback)
 , m_pUVBuffer       (NULL)
 , m_pXYBuffer       (NULL)
 , m_pIndexBuffer    (NULL)
@@ -888,11 +1091,13 @@ KLBTextureAssetPlugin::KLBTextureAssetPlugin()
 , m_loadHardware    (true)
 , m_loadSoftware    (false)
 , m_useQuarterTexture(false)
+, m_mipmapOnce(false)
+, m_disableImageSizeOptimization(false)
 {
 }
 
-KLBTextureAssetPlugin::~KLBTextureAssetPlugin() 
-{
+KLBTextureAssetPlugin::~KLBTextureAssetPlugin() {
+	releaseGridTexturesOnPluginShutdown();
 }
 
 void
@@ -1013,8 +1218,75 @@ KLBTextureAssetPlugin::createSoftTexture(s32 width, s32 height, u32 pixelFormat,
 	return retBuf;
 }
 
-void 
-processImage8888(u32 /*pixelCount*/, u32 lineWidth, u32 height, u8* buffer) 
+class TexturePayloadReader {
+public:
+	TexturePayloadReader() {
+		m_checksumModulus = 65521;
+		m_output = m_header;
+		m_payload = NULL;
+		m_bitPosition = 0;
+		m_suppressMissingPayloadCallback = true;
+		memset(m_header, 0, sizeof(m_header));
+	}
+
+	~TexturePayloadReader() {
+		if (m_payload) {
+			KLBDELETEA(m_payload);
+		}
+	}
+
+	u8* readHeader(
+		u8* bitmap,
+		CKLBImageAsset* image,
+		CKLBTextureAsset* texture,
+		u8* channel);
+	void readPayload(u8* pixel, u8 channel);
+
+	u8* payload() const {
+		return m_payload;
+	}
+	s32 payloadLength() const {
+		return m_payloadLength;
+	}
+	u32 checksumModulus() const {
+		return m_checksumModulus;
+	}
+	const u8* header() const {
+		return m_header;
+	}
+	bool suppressMissingPayloadCallback() const {
+		return m_suppressMissingPayloadCallback;
+	}
+
+private:
+	void consumeBit(u8* pixel) {
+		const u8 encoded = *pixel;
+		const u32 bit = encoded & 1;
+		m_output[m_bitPosition >> 3] |= bit << (m_bitPosition & 7);
+		m_bitPosition++;
+		*pixel = (encoded & 0xFE) | (encoded >> 7);
+	}
+
+	u32 m_checksumModulus;
+	s32 m_bitPosition;
+	s32 m_payloadLength;
+	s32 m_pixelColumn;
+	s32 m_imageWidth;
+	s32 m_rowAdvance;
+	bool m_suppressMissingPayloadCallback;
+	u8* m_payload;
+	u8* m_output;
+	u8  m_header[10];
+};
+
+bool decodeTexturePayload(
+	u8* bitmap,
+	CKLBImageAsset* image,
+	CKLBTextureAsset* texture,
+	KLBTextureAssetPlugin::TextureLoadCallback callback);
+
+void
+processImage8888(u32 /*pixelCount*/, u32 lineWidth, u32 height, u8* buffer)
 {
 	u32* line1 = (u32*)buffer;
 	u32* line2 = &(((u32*)buffer)[lineWidth]);
@@ -1170,9 +1442,319 @@ processImage5551(u32 pixelCount, u32 lineWidth, u32 height, u8* buffer)
 #undef  SHIFTNEXT
 }
 
+// Background-filter parameters are quantized once at script setup so texture
+// loading can apply them without repeating float conversions.
+s32 g_backgroundFilterOffsetX = 0;
+s32 g_backgroundFilterOffsetY = 0;
+s32 g_backgroundFilterExtent = 0;
+s32 g_backgroundFilterOpacity = 0;
+u32 g_backgroundFilterRed = 0;
+u32 g_backgroundFilterGreen = 0;
+u32 g_backgroundFilterBlue = 0;
+
+namespace TextureBackgroundFilter {
+	static const u32 BACKGROUND_FILTER_WIDTH = 640;
+	static const u32 BACKGROUND_FILTER_SAMPLES = BACKGROUND_FILTER_WIDTH + 2;
+
+	enum BackgroundFilterChannel {
+		FILTER_RED,
+		FILTER_GREEN,
+		FILTER_BLUE,
+		FILTER_CHANNEL_COUNT
+	};
+
+	struct BackgroundFilterPixel {
+		u32 channel[FILTER_CHANNEL_COUNT];
+	};
+
+	struct BackgroundFilterLine {
+		BackgroundFilterPixel samples[2][BACKGROUND_FILTER_SAMPLES];
+		u32 pass;
+		u32 opacity;
+	};
+
+	void filterLine(BackgroundFilterLine* line)
+	{
+		BackgroundFilterPixel* first = line->samples[0];
+		BackgroundFilterPixel* second = line->samples[1];
+		BackgroundFilterPixel* source = (line->pass & 1) ? second : first;
+		BackgroundFilterPixel* destination = (line->pass & 1) ? first : second;
+		const u32 centerDivisor = line->opacity * 2 + 0x100;
+		const u32 edgeDivisor = line->opacity + 0x100;
+
+		destination[0].channel[FILTER_RED] =
+			(source[0].channel[FILTER_RED] * 0x100 +
+			 source[1].channel[FILTER_RED] * line->opacity) / edgeDivisor;
+		destination[0].channel[FILTER_GREEN] =
+			(source[0].channel[FILTER_GREEN] * 0x100 +
+			 source[1].channel[FILTER_GREEN] * line->opacity) / edgeDivisor;
+		destination[0].channel[FILTER_BLUE] =
+			(source[0].channel[FILTER_BLUE] * 0x100 +
+			 source[1].channel[FILTER_BLUE] * line->opacity) / edgeDivisor;
+
+		u32 weightedRed = source[1].channel[FILTER_RED] * 0x100;
+		for (u32 x = 0; x < BACKGROUND_FILTER_WIDTH; x++) {
+			u32 filtered = source[x + 2].channel[FILTER_RED];
+			filtered += source[x].channel[FILTER_RED];
+			filtered *= line->opacity;
+			filtered += weightedRed;
+			destination[x + 1].channel[FILTER_RED] =
+				filtered / centerDivisor;
+
+			filtered = source[x + 2].channel[FILTER_GREEN];
+			const u32 weightedGreen =
+				source[x + 1].channel[FILTER_GREEN] * 0x100;
+			filtered += source[x].channel[FILTER_GREEN];
+			filtered *= line->opacity;
+			filtered += weightedGreen;
+			destination[x + 1].channel[FILTER_GREEN] =
+				filtered / centerDivisor;
+
+			filtered = source[x + 2].channel[FILTER_BLUE];
+			const u32 weightedBlue =
+				source[x + 1].channel[FILTER_BLUE] * 0x100;
+			filtered += source[x].channel[FILTER_BLUE];
+			filtered *= line->opacity;
+			filtered += weightedBlue;
+			destination[x + 1].channel[FILTER_BLUE] =
+				filtered / centerDivisor;
+			weightedRed = source[x + 2].channel[FILTER_RED] * 0x100;
+		}
+
+		destination[BACKGROUND_FILTER_WIDTH + 1].channel[FILTER_RED] =
+			(weightedRed +
+			 source[BACKGROUND_FILTER_WIDTH].channel[FILTER_RED] * line->opacity) / edgeDivisor;
+		destination[BACKGROUND_FILTER_WIDTH + 1].channel[FILTER_GREEN] =
+			(source[BACKGROUND_FILTER_WIDTH + 1].channel[FILTER_GREEN] * 0x100 +
+			 source[BACKGROUND_FILTER_WIDTH].channel[FILTER_GREEN] * line->opacity) / edgeDivisor;
+		destination[BACKGROUND_FILTER_WIDTH + 1].channel[FILTER_BLUE] =
+			(source[BACKGROUND_FILTER_WIDTH + 1].channel[FILTER_BLUE] * 0x100 +
+			 source[BACKGROUND_FILTER_WIDTH].channel[FILTER_BLUE] * line->opacity) / edgeDivisor;
+
+		line->pass++;
+	}
+
+	inline void expandImageBounds(float* xy, float expandX, float expandY)
+	{
+		xy[0] -= expandX;
+		xy[1] -= expandY;
+		xy[2] += expandX;
+		xy[3] -= expandY;
+		xy[4] += expandX;
+		xy[5] += expandY;
+		xy[6] -= expandX;
+		xy[7] += expandY;
+	}
+
+	void apply(CKLBTextureAsset* texture, u32 pixelFormat)
+	{
+		CKLBImageAsset* image = texture->m_pImages[0];
+
+		if (g_backgroundFilterOffsetX) {
+			const float offset = (float)g_backgroundFilterOffsetX / 1000.0f;
+			float expandX = CKLBDrawResource::getInstance().borderX() * offset;
+			float expandY = CKLBDrawResource::getInstance().borderY() * offset;
+			if (expandX > 0.0f) {
+				const float ratio =
+					expandX / (float)CKLBDrawResource::getInstance().width();
+				expandY = ratio * CKLBDrawResource::getInstance().height();
+			} else {
+				const float ratio =
+					expandY / (float)CKLBDrawResource::getInstance().height();
+				expandX = ratio * CKLBDrawResource::getInstance().width();
+			}
+			expandImageBounds(image->m_pXYCoord, expandX, expandY);
+		}
+
+		if (g_backgroundFilterOffsetY) {
+			const float offset = (float)g_backgroundFilterOffsetY / 1000.0f;
+			const float expandX = CKLBDrawResource::getInstance().borderX() * offset;
+			const float expandY = CKLBDrawResource::getInstance().borderY() * offset;
+			expandImageBounds(image->m_pXYCoord, expandX, expandY);
+		}
+
+		if (!g_backgroundFilterExtent) {
+			return;
+		}
+
+		BackgroundFilterLine* line = KLBNEW(BackgroundFilterLine);
+		memset(line, 0, sizeof(BackgroundFilterLine));
+
+		image->m_usageType &= ~CKLBImageAsset::IS_STANDARD_RECT;
+		image->m_uiIndexCount += 12;
+		image->m_uiVertexCount += 8;
+
+		const float inverseWidth = 1.0f / texture->m_width;
+		const float inverseHeight = 1.0f / texture->m_height;
+		const float extent =
+			CKLBDrawResource::getInstance().borderX()
+			* ((float)g_backgroundFilterExtent / 1000.0f);
+		float* uv = image->m_pUVCoord;
+
+		const float firstLeft = 3.0f * inverseWidth;
+		const float firstTop = 908.0f * inverseHeight;
+		const float firstRight = 642.0f * inverseWidth;
+		const float firstBottom = 811.0f * inverseHeight;
+		uv[8] = firstLeft;
+		uv[9] = firstTop;
+		uv[10] = firstLeft;
+		uv[11] = firstBottom;
+		uv[12] = firstRight;
+		uv[13] = firstTop;
+		uv[14] = firstRight;
+		uv[15] = firstBottom;
+
+		float* xy = image->m_pXYCoord;
+		xy[10] = xy[0];
+		xy[11] = xy[1];
+		xy[8] = xy[0] - extent;
+		xy[9] = xy[1];
+		xy[14] = xy[6];
+		xy[15] = xy[7];
+		xy[12] = xy[6] - extent;
+		xy[13] = xy[7];
+
+		// The second strip samples the lower source band and reuses each edge.
+		u16* indices = image->m_pIndex;
+		uv[16] = firstLeft;
+		uv[17] = 921.0f * inverseHeight;
+		uv[18] = firstLeft;
+		uv[19] = 1018.0f * inverseHeight;
+		uv[20] = firstRight;
+		uv[21] = uv[17];
+		uv[22] = uv[20];
+		uv[23] = uv[19];
+
+		xy[16] = xy[2];
+		xy[17] = xy[3];
+		xy[18] = xy[2] + extent;
+		xy[19] = xy[3];
+		xy[20] = xy[4];
+		xy[21] = xy[5];
+		xy[22] = xy[4] + extent;
+		xy[23] = xy[5];
+
+		indices[6]  = 4; indices[7]  = 5; indices[8]  = 6;
+		indices[9]  = 5; indices[10] = 7; indices[11] = 6;
+		indices[12] = 8; indices[13] = 9; indices[14] = 10;
+		indices[15] = 9; indices[16] = 11; indices[17] = 10;
+
+		line->opacity = g_backgroundFilterOpacity;
+		if (pixelFormat != GL_UNSIGNED_SHORT_4_4_4_4) {
+			if (pixelFormat == GL_UNSIGNED_SHORT_5_5_5_1) {
+				klb_assertAlways("NOT IMPLEMENTED");
+			}
+		} else {
+			klb_assertAlways("NOT IMPLEMENTED");
+		}
+
+		const u32 rowStride = texture->m_width * texture->m_bytePerPix;
+		const s32 sourceX = (s32)(texture->m_width * uv[0]);
+		const s32 sourceY = (s32)(texture->m_height * uv[1]);
+		u32 red, green, blue;
+
+		for (s32 side = 0; side < 2; side++) {
+			const s32 edgeX = sourceX + (side ? 0 : 959);
+			u8* source = (u8*)texture->m_bitmap +
+				sourceY * rowStride + edgeX * texture->m_bytePerPix + 2;
+
+			BackgroundFilterPixel* pixel = &line->samples[0][1];
+			for (s32 sampleY = sourceY; sampleY < sourceY + (s32)BACKGROUND_FILTER_WIDTH; sampleY++) {
+				if (pixelFormat != GL_UNSIGNED_BYTE) {
+					if (pixelFormat == GL_UNSIGNED_SHORT_5_6_5) {
+						const u16 packed = *(u16*)(source - 2);
+						red =
+							((packed >> 8) & 0xf8) | (packed >> 13);
+						green =
+							((packed >> 3) & 0xfc) | ((packed >> 9) & 3);
+						blue =
+							((packed & 0x1f) << 3) | ((packed >> 2) & 7);
+					}
+				} else {
+					red = source[-2];
+					green = source[-1];
+					blue = source[0];
+				}
+				pixel->channel[FILTER_RED] = red; pixel->channel[FILTER_GREEN] = green;
+				pixel->channel[FILTER_BLUE] = blue; pixel++;
+				source += rowStride;
+			}
+
+			for (u32 channel = 0; channel < FILTER_CHANNEL_COUNT; channel++) {
+				line->samples[0][0].channel[channel] = line->samples[0][1].channel[channel];
+				line->samples[0][BACKGROUND_FILTER_WIDTH + 1].channel[channel] = line->samples[0][BACKGROUND_FILTER_WIDTH].channel[channel];
+			}
+
+			const u32 destinationY = side ? 810 : 920;
+			for (s32 row = 0; row < 100; row++) {
+				const s32 destinationOffset = (destinationY + row) * rowStride + 2 * texture->m_bytePerPix;
+				u8* destination = (u8*)texture->m_bitmap + destinationOffset;
+				filterLine(line);
+				BackgroundFilterPixel* filtered =
+					(line->pass & 1) ? line->samples[1] : line->samples[0];
+				const s32 blend = (row << 8) / 100;
+				const s32 retained = 0x100 - blend;
+				const s32 blendRed = g_backgroundFilterRed * blend;
+				const s32 blendGreen = g_backgroundFilterGreen * blend;
+				const s32 blendBlue = g_backgroundFilterBlue * blend;
+
+				for (s32 x = 0; x < (s32)BACKGROUND_FILTER_SAMPLES; x++, filtered++) {
+					s32 red = ((s32)filtered->channel[FILTER_RED] * retained + blendRed) >> 8;
+					s32 green = ((s32)filtered->channel[FILTER_GREEN] * retained + blendGreen) >> 8;
+					s32 blue =
+						((s32)filtered->channel[FILTER_BLUE] * retained + blendBlue) >> 8;
+					if (red > 255) red = 255;
+					if (green > 255) green = 255;
+					if (blue > 255) blue = 255;
+					if (red < 0) red = 0;
+					if (green < 0) green = 0;
+					if (blue < 0) blue = 0;
+
+					if (pixelFormat != GL_UNSIGNED_BYTE) {
+						if (pixelFormat == GL_UNSIGNED_SHORT_5_6_5) {
+							const u16 packedRed = (u16)((red & 0xf8) << 8), packedGreen = (u16)((green & 0x1ffc) << 3), packedBlue = (u16)(blue >> 3);
+							*(u16*)destination = (u16)(packedRed | packedGreen | packedBlue);
+							destination += 2;
+						}
+					} else {
+						destination[-2] = (u8)red;
+						destination[-1] = (u8)green;
+						destination[0] = (u8)blue;
+						if (texture->m_bytePerPix == 4) {
+							destination[1] = 0xff;
+						}
+						destination += texture->m_bytePerPix;
+					}
+				}
+			}
+		}
+
+		KLBDELETE(line);
+	}
+}
+
+void
+setupTextureBackgroundFilter(
+	float offsetX,
+	float offsetY,
+	float extent,
+	float opacity,
+	u32 red,
+	u32 green,
+	u32 blue)
+{
+	g_backgroundFilterOffsetX = (s32)(offsetX * 1000.0f);
+	g_backgroundFilterOffsetY = (s32)(offsetY * 1000.0f);
+	g_backgroundFilterExtent = (s32)(extent * 1000.0f);
+	g_backgroundFilterOpacity = (s32)(opacity * 255.0f);
+	g_backgroundFilterRed = red;
+	g_backgroundFilterGreen = green;
+	g_backgroundFilterBlue = blue;
+}
+
 /*virtual*/
 CKLBAbstractAsset* 
-KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize) 
+KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize) 
 {
 	CKLBTextureAsset* pNewAsset = m_pReloadAsset ? ((CKLBTextureAsset*)m_pReloadAsset) : KLBNEW(CKLBTextureAsset);
 
@@ -1222,10 +1804,21 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 			pNewAsset->m_totalVertexCount *= 4;
 		}
 
+		// The canonical single-quad layout can be expanded into two additional
+		// screen variants after the image record has been decoded.
+		const bool hasScreenVariants =
+			(pNewAsset->m_totalVertexCount == 16) &&
+			(pNewAsset->m_totalIndexCount == 6) &&
+			(pNewAsset->m_imageCount == 1);
+
 		if (!m_pReloadAsset) {
-		pNewAsset->m_floatBufferTotal	= KLBNEWA(float				,pNewAsset->m_totalVertexCount		);
-		pNewAsset->m_indexBufferTotal	= KLBNEWA(u16				,pNewAsset->m_totalIndexCount		);	// UV and X,Y
-		pNewAsset->m_pImages			= KLBNEWA(CKLBImageAsset*	,pNewAsset->m_imageCount			);
+		pNewAsset->m_floatBufferTotal	= KLBNEWA(float				,pNewAsset->m_totalVertexCount + (hasScreenVariants ? 32 : 0)	);
+		pNewAsset->m_indexBufferTotal	= KLBNEWA(u16				,pNewAsset->m_totalIndexCount + (hasScreenVariants ? 12 : 0)	);	// UV and X,Y
+		pNewAsset->m_pImages			= KLBNEWA(CKLBImageAsset*	,pNewAsset->m_imageCount + (hasScreenVariants ? 2 : 0)		);
+		}
+
+		if (hasScreenVariants) {
+			uvOffset += 16;
 		}
 
 		if (pNewAsset->m_floatBufferTotal && pNewAsset->m_indexBufferTotal && pNewAsset->m_pImages && pNewAsset->m_pName) {
@@ -1267,6 +1860,7 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 			// Texture size is all the data remaining (FullDataSize - AlreadyReadDataSize )
 			u32 textureSize = streamSize - (stream - streamStart);
 			bool hardCompression = false;
+			bool ownsBitmap = false;
 
 			GLenum pixelFormat;
 			CKLBOGLWrapper::TEX_CHANNEL channelCount;
@@ -1295,29 +1889,24 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 			}
 
 			int bytePerPix;
-			int hasClick;
 
 			switch ((pNewAsset->m_type>>6) & 0x3) {
 			case 0:
 				pixelFormat = GL_UNSIGNED_SHORT_5_6_5;
 				bytePerPix	= 2;
-				hasClick	= 0;
 				break;
 			case 1:
 				pixelFormat = GL_UNSIGNED_SHORT_5_5_5_1;
 				bytePerPix	= 2;
-				hasClick	= 1;
 				break;
 			case 2:
 				pixelFormat = GL_UNSIGNED_SHORT_4_4_4_4;
 				bytePerPix	= 2;
-				hasClick	= 1;
 				break;
 			case 3:
 			default:	// Avoid warning.
 				pixelFormat = GL_UNSIGNED_BYTE;
 				bytePerPix	= 1 * (channelCount ? channelCount : 1); // Luminance is 1 byte.
-				hasClick	= 1;
 				break;
 			}
 
@@ -1325,11 +1914,22 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 			u32 compressType = 0;
 			if (pNewAsset->m_type & (1<<3)) {
 				compressType = (stream[0]<<24) | (stream[1]<<16) | (stream[2]<<8) | stream[3]; stream += 4;
+				const bool zlibWrapped = (compressType & 0x80000000) != 0;
+				u32 outputSize = bytePerPix * pNewAsset->m_width * pNewAsset->m_height;
+				if (compressType) {
+					if (zlibWrapped) {
+						outputSize = (stream[0]<<24) | (stream[1]<<16) | (stream[2]<<8) | stream[3];
+					}
+					stream += 4;
+					textureSize -= 8;
+				} else {
+					textureSize -= 4;
+				}
+				pNewAsset->m_bitmap = &stream[0];
 
 				// Extension to be supported, read 4 more byte to find out.
-				if (compressType == 0) {
+				if ((compressType == 0) || zlibWrapped) {
 					/* textureSize = zlib stream */
-					u32 outputSize = bytePerPix * pNewAsset->m_width * pNewAsset->m_height;
 					pNewAsset->m_bitmap				= KLBNEWA(u8, outputSize);
 
 					if (pNewAsset->m_bitmap) {
@@ -1348,7 +1948,7 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 						if (ret != Z_OK) {
 							KLBDELETEA((u8*)pNewAsset->m_bitmap);
 							pNewAsset->m_bitmap = NULL;
-						}
+						} else { ownsBitmap = true; }
 
 						// Number of byte available in the stream for decompression.
 						strm.avail_in = textureSize; 
@@ -1362,12 +1962,11 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 
 						//---------------------------------
 						// Decompress me !
-						MEASURE_THREAD_CPU_BEGIN(TASKTYPE_TEX_LOAD_INFLATE);
 						ret = inflate(&strm, Z_NO_FLUSH);
-						MEASURE_THREAD_CPU_END(TASKTYPE_TEX_LOAD_INFLATE);
 						if ((ret != Z_OK) && (ret != Z_STREAM_END)) {
 							KLBDELETEA((u8*)pNewAsset->m_bitmap);
 							pNewAsset->m_bitmap = NULL;
+							ownsBitmap = false;
 						}
 						//---------------------------------
 					
@@ -1376,7 +1975,10 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 						// because all the free possible have been made.
 						ret = inflateEnd(&strm);
 					}
-				} else {
+				}
+
+				compressType &= 0x7FFFFFFF;
+				if (compressType != 0) {
 					//
 					// Support for later extension PVRTC, ETC1, ETC2, ...
 					//
@@ -1394,22 +1996,26 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 					//
 					#ifdef GL_COMPRESSED_RGB_PVRTC_4BPPV1_IMG
 					if ((compressType == GL_COMPRESSED_RGB_PVRTC_4BPPV1_IMG) && strstr(exts, "GL_IMG_texture_compression_pvrtc")) {
-						// OK.
+						pixelFormat = GL_COMPRESSED_RGB_PVRTC_4BPPV1_IMG;
+						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
 					#ifdef GL_COMPRESSED_RGB_PVRTC_2BPPV1_IMG
 					if ((compressType == GL_COMPRESSED_RGB_PVRTC_2BPPV1_IMG) && strstr(exts, "GL_IMG_texture_compression_pvrtc")) {
-						// OK.
+						pixelFormat = GL_COMPRESSED_RGB_PVRTC_2BPPV1_IMG;
+						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
 					#ifdef GL_COMPRESSED_RGBA_PVRTC_4BPPV1_IMG
 					if ((compressType == GL_COMPRESSED_RGBA_PVRTC_4BPPV1_IMG) && strstr(exts, "GL_IMG_texture_compression_pvrtc")) {
-						// OK.
+						pixelFormat = GL_COMPRESSED_RGBA_PVRTC_4BPPV1_IMG;
+						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
 					#ifdef GL_COMPRESSED_RGBA_PVRTC_2BPPV1_IMG
 					if ((compressType == GL_COMPRESSED_RGBA_PVRTC_2BPPV1_IMG) && strstr(exts, "GL_IMG_texture_compression_pvrtc")) {
-						// OK.
+						pixelFormat = GL_COMPRESSED_RGBA_PVRTC_2BPPV1_IMG;
+						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
 					//
@@ -1417,12 +2023,14 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 					//
 					#ifdef GL_COMPRESSED_RGBA_PVRTC_2BPPV2_IMG
 					if ((compressType == GL_COMPRESSED_RGBA_PVRTC_2BPPV2_IMG) && strstr(exts, "GL_IMG_texture_compression_pvrtc2")) {
-						// OK.
+						pixelFormat = GL_COMPRESSED_RGBA_PVRTC_2BPPV2_IMG;
+						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
 					#ifdef GL_COMPRESSED_RGBA_PVRTC_4BPPV2_IMG
 					if ((compressType == GL_COMPRESSED_RGBA_PVRTC_4BPPV2_IMG) && strstr(exts, "GL_IMG_texture_compression_pvrtc2")) {
-						// OK.
+						pixelFormat = GL_COMPRESSED_RGBA_PVRTC_4BPPV2_IMG;
+						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
 					//
@@ -1430,7 +2038,8 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 					//
 					#ifdef GL_ETC1_RGB8_OES
 					if ((compressType == GL_ETC1_RGB8_OES) && strstr(exts, "GL_OES_compressed_ETC1_RGB8_texture")) {
-						// OK.
+						pixelFormat = GL_ETC1_RGB8_OES;
+						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
 					//
@@ -1462,9 +2071,10 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 
 							opt &= ~CKLBOGLWrapper::TEX_OPT_COMPRESSED_BIT;
 							u32 outputSize = bytePerPix * pNewAsset->m_width * pNewAsset->m_height;
-							pNewAsset->m_bitmap				= KLBNEWA(u8, outputSize);
+							u8* compressedBitmap = (u8*)pNewAsset->m_bitmap;
+							u8* decodedBitmap = KLBNEWA(u8, outputSize);
 
-							if (pNewAsset->m_bitmap) {
+							if (decodedBitmap) {
 
 								/* From Khronos Specs
 									First block in mem  Second block in mem
@@ -1515,8 +2125,8 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 								*/
 
 								// Horizontal block first then vertical lines
-								u8* pSrcStream = &stream[0];
-								u8* pDstStream = (u8*)pNewAsset->m_bitmap;
+								u8* pSrcStream = compressedBitmap;
+								u8* pDstStream = decodedBitmap;
 								u32 rgbaOut[16];
 								for (int y=0; y < pNewAsset->m_height>>2; y++) {
 									u32* writePix = (u32*)pDstStream; 
@@ -1555,6 +2165,11 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 									pDstStream += 4 * 4 * pNewAsset->m_width; // RGBA * Width * 4 pixel height
 								}
 							}
+							if (ownsBitmap) {
+								KLBDELETEA(compressedBitmap);
+							}
+							pNewAsset->m_bitmap = decodedBitmap;
+							ownsBitmap = true;
 						} else {
 							klb_assertAlways("COMPRESSED TEXTURE FORMAT %8X NOT SUPPORTED ON THIS PLATFORM",compressType);
 						}
@@ -1570,6 +2185,7 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 			if (pNewAsset->m_type & (1<<4)) {
 				opt |= CKLBOGLWrapper::TEX_OPT_MIPMAP_BIT;
 			}
+			// m_mipmapOnce is consulted (and cleared) separately, at texture-creation time.
 
 			if (pNewAsset->m_type & (1<<5)) {
 				opt |= CKLBOGLWrapper::TEX_OPT_DOUBLEBUFFERED_BIT;
@@ -1581,9 +2197,17 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 				//
 				// Texture creation may fail, but asset is considered as loaded
 				//
-				MEASURE_THREAD_CPU_BEGIN(TASKTYPE_TEX_LOAD_LOWCONV);
-				bool lowRes = (CPFInterface::getInstance().client().getPhysicalScreenHeight() < 480) || m_useQuarterTexture;
-				if (lowRes && (compressType == 0)) {
+				if ((bytePerPix == 4) && (pNewAsset->m_imageCount == 1)) {
+					decodeTexturePayload(
+						(u8*)pNewAsset->m_bitmap,
+						pNewAsset->m_pImages[0],
+						pNewAsset,
+						m_loadCallback);
+				}
+
+				bool lowRes = ((CPFInterface::getInstance().client().getPhysicalScreenHeight() < 480) || m_useQuarterTexture)
+					&& !hardCompression;
+				if (lowRes) {
 					switch (pixelFormat) {
 					case GL_UNSIGNED_SHORT_5_6_5:
 						processImage565(
@@ -1619,19 +2243,250 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 					pNewAsset->m_height >>= 1;
 					textureSize >>= 2;
 				}
-				MEASURE_THREAD_CPU_END(TASKTYPE_TEX_LOAD_LOWCONV);
+				if (hasScreenVariants) {
+					CKLBImageAsset* screenImage = pNewAsset->m_pImages[0];
+					SKLBRect* imageRect = screenImage->getSize();
+					if ((imageRect->getWidth() == 960) &&
+						(imageRect->getHeight() == 640)) {
+						pNewAsset->m_bytePerPix = bytePerPix;
+						TextureBackgroundFilter::apply(pNewAsset, pixelFormat);
+					}
+				}
+
+				//
+				// Standard rectangular images may occupy only a portion of a
+				// standalone texture.  Duplicate their outermost texels into a
+				// one-pixel border so bilinear sampling cannot pull transparent
+				// or unrelated pixels across the UV boundary.
+				//
+				// The shipped path is deliberately limited to medium-sized,
+				// uncompressed, non-mipmapped single-image textures.  Screen
+				// images configured for the background filter use a separate
+				// geometry expansion and must retain their original bitmap.
+				//
+				if ((pNewAsset->m_imageCount == 1) &&
+					(g_backgroundFilterExtent == 0) &&
+					g_enableTextureBorderPatch) {
+					CKLBImageAsset* borderImage = pNewAsset->m_pImages[0];
+					if (borderImage->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT) &&
+					(pNewAsset->m_width > 0x100) && (pNewAsset->m_width <= 0x400) &&
+					(pNewAsset->m_height > 0x100) && (pNewAsset->m_height <= 0x400) &&
+					!m_mipmapOnce && !m_disableImageSizeOptimization) {
+					const u16 sourceWidth = pNewAsset->m_width;
+					const u16 sourceHeight = pNewAsset->m_height;
+					const float sourceWidthF = (float)sourceWidth;
+					const float sourceHeightF = (float)sourceHeight;
+					float* uv = borderImage->m_pUVCoord;
+
+					s32 minX = 9999;
+					s32 maxX = -1;
+					s32 minY = 9999;
+					s32 maxY = -1;
+					bool fractionalUV = false;
+
+					{
+						const float x = uv[0] * sourceWidthF;
+						const float y = uv[1] * sourceHeightF;
+						const s32 pixelX = (s32)truncf(x);
+						const s32 pixelY = (s32)truncf(y);
+						if (((s32)truncf(x + 0.99f) != pixelX) ||
+							((s32)truncf(y + 0.99f) != pixelY)) {
+							fractionalUV = true;
+						}
+					if (pixelX <= minX) minX = pixelX; if (pixelX >= maxX) maxX = pixelX;
+						if (pixelY <= minY) minY = pixelY; if (pixelY >= maxY) maxY = pixelY;
+					}
+
+					{
+						const float x = uv[2] * sourceWidthF;
+						const float y = uv[3] * sourceHeightF;
+						const s32 pixelX = (s32)truncf(x);
+						const s32 pixelY = (s32)truncf(y);
+						if (((s32)truncf(x + 0.99f) != pixelX) ||
+							((s32)truncf(y + 0.99f) != pixelY)) {
+							fractionalUV = true;
+						}
+					if (pixelX <= minX) minX = pixelX; if (pixelX >= maxX) maxX = pixelX;
+						if (pixelY <= minY) minY = pixelY; if (pixelY >= maxY) maxY = pixelY;
+					}
+
+					{
+						const float x = uv[4] * sourceWidthF;
+						const float y = uv[5] * sourceHeightF;
+						const s32 pixelX = (s32)truncf(x);
+						const s32 pixelY = (s32)truncf(y);
+						if (((s32)truncf(x + 0.99f) != pixelX) ||
+							((s32)truncf(y + 0.99f) != pixelY)) {
+							fractionalUV = true;
+						}
+						if (pixelX <= minX) minX = pixelX;
+						if (pixelX >= maxX) maxX = pixelX;
+						if (pixelY <= minY) minY = pixelY;
+						if (pixelY >= maxY) maxY = pixelY;
+					}
+
+					{
+						const float x = uv[6] * sourceWidthF;
+						const float y = uv[7] * sourceHeightF;
+						const s32 pixelX = (s32)truncf(x);
+						const s32 pixelY = (s32)truncf(y);
+						if (((s32)truncf(x + 0.99f) != pixelX) ||
+							((s32)truncf(y + 0.99f) != pixelY)) {
+							fractionalUV = true;
+						}
+						if (pixelX <= minX) minX = pixelX;
+						if (pixelX >= maxX) maxX = pixelX;
+						if (pixelY <= minY) minY = pixelY;
+						if (pixelY >= maxY) maxY = pixelY;
+					}
+
+					if (fractionalUV) {
+						if (maxX < sourceWidth)  maxX++;
+						if (maxY < sourceHeight) maxY++;
+					}
+
+					const s32 usedWidth = maxX - minX;
+					const s32 usedHeight = maxY - minY;
+						u8* sourceBitmap = (u8*)pNewAsset->m_bitmap;
+						u8* patchedBitmap = sourceBitmap;
+						u16 patchedWidth = sourceWidth;
+						u16 patchedHeight = sourceHeight;
+						s32 contentLeft = minX;
+						s32 contentTop = minY;
+
+						// A rectangle that consumes a complete dimension has no
+						// spare texel for its border.  Grow that dimension and
+						// place the original pixels one texel inside it.
+						const bool growWidth = (usedWidth == sourceWidth);
+						const bool growHeight = (usedHeight == sourceHeight);
+						const bool repack =
+							growWidth || growHeight ||
+							(minX == 0) || (maxX == sourceWidth) ||
+							(minY == 0) || (maxY == sourceHeight);
+						if (repack) {
+							contentLeft = 1;
+							contentTop = 1;
+						}
+						if (growWidth || growHeight) {
+							patchedWidth = growWidth ? (sourceWidth << 1) : sourceWidth;
+							patchedHeight = growHeight ? (sourceHeight << 1) : sourceHeight;
+							const size_t patchedSize =
+								(size_t)patchedWidth * patchedHeight * bytePerPix;
+							patchedBitmap = KLBNEWA(u8, patchedSize);
+							memset(patchedBitmap, 0, patchedSize);
+						}
+						pNewAsset->m_width = patchedWidth;
+						pNewAsset->m_height = patchedHeight;
+
+						const size_t copyBytes = (size_t)usedWidth * bytePerPix;
+						if (repack && (contentTop > minY)) {
+							for (s32 row = usedHeight; row-- > 0; ) {
+								memmove(
+									patchedBitmap +
+										((contentTop + row) * patchedWidth + contentLeft) * bytePerPix,
+									sourceBitmap +
+										((minY + row) * sourceWidth + minX) * bytePerPix,
+									copyBytes);
+							}
+						} else if (repack) {
+							for (s32 row = 0; row < usedHeight; row++) {
+								memmove(
+									patchedBitmap +
+										((contentTop + row) * patchedWidth + contentLeft) * bytePerPix,
+									sourceBitmap +
+										((minY + row) * sourceWidth + minX) * bytePerPix,
+									copyBytes);
+							}
+						}
+
+						const size_t rowStride = (size_t)patchedWidth * bytePerPix;
+						if ((contentLeft > 0) && (contentLeft + usedWidth <= patchedWidth)) {
+							for (s32 row = 0; row < usedHeight; row++) {
+								u8* rowPixels = patchedBitmap +
+									(size_t)(contentTop + row) * rowStride;
+								u8* border = rowPixels + (contentLeft - 1) * bytePerPix;
+								u8* edge = rowPixels + contentLeft * bytePerPix;
+								switch (bytePerPix) {
+								case 4: border[3] = edge[3];
+								case 3: border[2] = edge[2];
+								case 2: border[1] = edge[1];
+								case 1: border[0] = edge[0];
+								}
+							}
+						}
+						if (contentLeft + usedWidth < patchedWidth) {
+							for (s32 row = 0; row < usedHeight; row++) {
+								u8* rowPixels = patchedBitmap +
+									(size_t)(contentTop + row) * rowStride;
+								u8* border = rowPixels + (contentLeft + usedWidth) * bytePerPix;
+								u8* edge = border - bytePerPix;
+								switch (bytePerPix) {
+								case 4: border[3] = edge[3];
+								case 3: border[2] = edge[2];
+								case 2: border[1] = edge[1];
+								case 1: border[0] = edge[0];
+								}
+							}
+						}
+
+						const size_t borderedRowBytes = (size_t)usedWidth * bytePerPix;
+						if (contentTop > 0) {
+							memcpy(
+								patchedBitmap +
+									((contentTop - 1) * patchedWidth + contentLeft) * bytePerPix,
+								patchedBitmap +
+									(contentTop * patchedWidth + contentLeft) * bytePerPix,
+								borderedRowBytes);
+						}
+						if (contentTop + usedHeight < patchedHeight) {
+							memcpy(
+								patchedBitmap +
+									((contentTop + usedHeight) * patchedWidth + contentLeft) * bytePerPix,
+								patchedBitmap +
+									((contentTop + usedHeight - 1) * patchedWidth + contentLeft) * bytePerPix,
+								borderedRowBytes);
+						}
+
+						if (patchedBitmap != sourceBitmap) {
+							if (ownsBitmap) {
+								KLBDELETEA(sourceBitmap);
+							}
+							ownsBitmap = true;
+						}
+						pNewAsset->m_bitmap = patchedBitmap;
+
+						const float scaleU = growWidth ? 0.5f : 1.0f;
+						const float scaleV = growHeight ? 0.5f : 1.0f;
+						const float sourceU = (float)minX / sourceWidthF;
+						const float sourceV = (float)minY / sourceHeightF;
+						const float targetU = (float)contentLeft / patchedWidth;
+						const float targetV = (float)contentTop / patchedHeight;
+						uv[0] = (uv[0] - sourceU) * scaleU + targetU;
+						uv[1] = (uv[1] - sourceV) * scaleV + targetV;
+						uv[2] = (uv[2] - sourceU) * scaleU + targetU;
+						uv[3] = (uv[3] - sourceV) * scaleV + targetV;
+						uv[4] = (uv[4] - sourceU) * scaleU + targetU;
+						uv[5] = (uv[5] - sourceV) * scaleV + targetV;
+						uv[6] = (uv[6] - sourceU) * scaleU + targetU;
+						uv[7] = (uv[7] - sourceV) * scaleV + targetV;
+					}
+					}
+				// m_mipmapOnce is cleared below, at the point its effect is applied.
 
 				if (this->m_loadHardware) {
-					MEASURE_THREAD_CPU_BEGIN(TASKTYPE_TEX_LOAD_OGL);
 					if (CKLBAssetManager::getInstance().isAsyncLoading() == false) {
 						pNewAsset->m_bytePerPix	= bytePerPix;
-						pNewAsset->m_pTexture	= pMgr.createTexture(pNewAsset->m_width,
-																	 pNewAsset->m_height,
-																	 pixelFormat,
-																	 channelCount,
-																	 pNewAsset->m_bitmap,
-																	 textureSize,
-																	 (CKLBOGLWrapper::TEX_OPTION)opt,0,
+						CKLBOGLWrapper::TextureCreateInfo info;
+						info.width = pNewAsset->m_width;
+						info.height = pNewAsset->m_height;
+						info.pixelFormat = pixelFormat;
+						info.channelCount = channelCount;
+						info.data = pNewAsset->m_bitmap;
+						info.dataLength = textureSize;
+						info.option = (CKLBOGLWrapper::TEX_OPTION)opt;
+						if ((pNewAsset->m_type & (1<<4)) || m_mipmapOnce) { info.mipmapCount = 2; }
+						m_mipmapOnce = false;
+						pNewAsset->m_pTexture	= pMgr.createTexture(info,
 																	 (!m_pReloadAsset) ? NULL : pNewAsset->m_pTexture);
 						// Sync loading.
 					} else {
@@ -1641,83 +2496,8 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 					if (pNewAsset->m_pTexture) {
 						gTextureAllocHW += pNewAsset->m_width * pNewAsset->m_height * bytePerPix;
 					}
-					MEASURE_THREAD_CPU_END(TASKTYPE_TEX_LOAD_OGL);
 				} else {
 					pNewAsset->m_pTexture = NULL;
-				}
-
-				//
-				// Compute Mip Map for clicking alpha info.
-				//
-				if (hasClick) {
-					#define TILE_WIDTH_BIT		(3)
-					#define TILE_WIDTH			(1<<TILE_WIDTH_BIT)
-
-					// 1 Bit bitmap of Width/8, Height/8
-					int size		= ((pNewAsset->m_width>>TILE_WIDTH_BIT) * (pNewAsset->m_height>>TILE_WIDTH_BIT)) >> 3;
-
-					u8* clickMap	= m_pReloadAsset ? pNewAsset->m_pTexture->getSWAlphaBuffer() : KLBNEWA(u8, size);
-					int bit;
-					int shift;
-					int byte;
-					if (clickMap) {
-					memset(clickMap, 0, size);
-
-					u16 fakeNum = 0x00FF;
-					u8* tstPtr	= (u8*)&fakeNum;
-					int byteVal	= (tstPtr[0] == 0xFF) ? 0 : 1;	// Support for big-endian/little-endian portability.
-
-					switch ((pNewAsset->m_type>>6) & 0x3) {
-					case 1:
-						// GL_UNSIGNED_SHORT_5_5_5_1;
-						bit   = 1;
-						shift = 0;
-						byte  = byteVal;
-						break;
-					case 2:
-						// GL_UNSIGNED_SHORT_4_4_4_4;
-						bit   = 0x08;
-						shift = 3;
-						byte  = byteVal;
-						break;
-					case 3:
-					default:	// Avoid warning.
-						// 8888
-						bit   = 0x80;
-						shift = 7;
-						byte  = 3;
-						break;
-					}
-
-					// Shift ptr to point to correct alpha byte right away.
-					u8* ptr = &(((u8*)pNewAsset->m_bitmap)[byte]);
-
-					// Shift ptr sampling to point at 4, 4
-					ptr += (pNewAsset->m_width * bytePerPix * (TILE_WIDTH>>1)) + (bytePerPix * (TILE_WIDTH>>1));
-
-					u8* clickPtr = clickMap;
-
-					int posBit = 0;
-					int stepTile  = (bytePerPix * TILE_WIDTH);
-					// cheap trick : read pixel 4,4 of each 8x8 tile
-					for (int y=0; y < pNewAsset->m_height; y+=TILE_WIDTH) {
-						u8* ptrScan		= ptr;
-						u8* ptrScanEnd	= ptrScan + (pNewAsset->m_width * bytePerPix);
-						u8  val			= 0;
-						while (ptrScan < ptrScanEnd) {
-							// Read Alpha -> put at bit 0 -> put at correct bit in current byte of target buffer.
-							u8 streamBit = ((posBit++)&7);
-							val   |= ((*ptrScan & bit)>>shift) << streamBit;
-							if (streamBit == 7) {
-								*clickPtr++ = val;
-							}
-							ptrScan		+= stepTile;
-						}
-						ptr += (pNewAsset->m_width * stepTile);	// Skip 8 lines
-					}
-					}
-
-					pNewAsset->m_pTexture->assignSWAlphaBuffer(clickMap);
 				}
 
 				if (this->m_loadSoftware) {
@@ -1742,21 +2522,17 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, u32 streamSize)
 				}
 			}
 
-			//
-			// Stream was compressed ?
-			//
-			if (pNewAsset->m_type & (1<<3)) {
-				// Free Uncompressed source buffer.
+			if (ownsBitmap) {
 				if (pNewAsset->m_bitmap) {
-					if (hardCompression == false) {
-						KLBDELETEA((u8*)pNewAsset->m_bitmap);
-						pNewAsset->m_bitmap = NULL;
-					}
+					KLBDELETEA((u8*)pNewAsset->m_bitmap);
+					pNewAsset->m_bitmap = NULL;
 				} else {
 					// Allocation error, failure.
 					KLBDELETE(pNewAsset);
 					pNewAsset = NULL;
 				}
+			} else {
+				pNewAsset->m_bitmap = NULL;
 			}
 			return pNewAsset;
 		}
@@ -1792,15 +2568,13 @@ CKLBImageAsset::createSprite(	u32 textureHandle,
 								CKLBNode* pParentNode,
 								u32 renderPriority) 
 {
-	klb_assert(textureHandle,	"Valid Handle is required");
-	klb_assert(pParentNode,		"Requires valid parent node");
+	klb_assertNull(textureHandle,	"Valid Handle is required");
+	klb_assertNull(pParentNode,		"Requires valid parent node");
 
 	CKLBRenderingManager& pRdrMgr = CKLBRenderingManager::getInstance();
 	CKLBNode* pNode = KLBNEW(CKLBNode);
 
 	if (pNode) {
-		klb_assert(pParentNode,		"Requires valid parent node");
-
 		CKLBImageAsset* pImg = ((CKLBTextureAsset*)CKLBDataHandler::getPointer(textureHandle))->getImage(imageName);
 		if (pImg) {
 			CKLBSprite*	pRender	= pRdrMgr.allocateCommandSprite(pImg);
@@ -1818,17 +2592,393 @@ CKLBImageAsset::createSprite(	u32 textureHandle,
 	return NULL;
 }
 
+u8* TexturePayloadReader::readHeader(
+	u8* bitmap,
+	CKLBImageAsset* image,
+	CKLBTextureAsset* texture,
+	u8* channel)
+{
+	const float* uv = image->m_pUVCoord;
+	const s32 textureWidth = texture->m_width;
+	const s32 startX = (s32)(uv[0] * textureWidth);
+	const s32 startY = (s32)(uv[1] * texture->m_height);
+
+	m_imageWidth = image->getSize()->getWidth();
+	m_rowAdvance = (textureWidth - m_imageWidth) * 4;
+	m_pixelColumn = 0;
+
+	u8* pixel = bitmap + ((startY * textureWidth + startX) * 4);
+	do {
+		consumeBit(pixel);
+		if (m_bitPosition >= 80) {
+			pixel++;
+			*channel = 0;
+			break;
+		}
+
+		consumeBit(pixel + 1);
+		if (m_bitPosition >= 80) {
+			pixel += 2;
+			*channel = 1;
+			break;
+		}
+
+		consumeBit(pixel + 2);
+		pixel += 4;
+		m_pixelColumn++;
+		if (m_pixelColumn == m_imageWidth) {
+			m_pixelColumn = 0;
+			pixel += m_rowAdvance;
+		}
+		if (m_bitPosition >= 80) {
+			*channel = 3;
+			break;
+		}
+	} while (m_bitPosition < 80);
+
+	if ((m_header[0] == '@') && (m_header[1] == '%') &&
+		(m_header[2] == '1') && (m_header[3] == ',')) {
+		m_payloadLength = ((u32)m_header[5] << 8) | m_header[8];
+		m_payload = KLBNEWA(u8, m_payloadLength + 1);
+		m_output = m_payload;
+		memset(m_payload, 0, m_payloadLength + 1);
+	}
+	return pixel;
+}
+
+void TexturePayloadReader::readPayload(u8* pixel, u8 channel)
+{
+	m_bitPosition = 0;
+	while ((m_bitPosition >> 3) != m_payloadLength) {
+		const s32 payloadBitLength = m_payloadLength << 3;
+		switch (channel) {
+		case 0:
+			consumeBit(pixel);
+			pixel++;
+			channel++;
+			break;
+		case 3:
+			consumeBit(pixel);
+			pixel++;
+			channel -= 3;
+			break;
+		case 1:
+			consumeBit(pixel);
+			pixel += 2;
+			channel += 2;
+			m_pixelColumn++;
+			if (m_pixelColumn == m_imageWidth) {
+				m_pixelColumn = 0;
+				pixel += m_rowAdvance;
+			}
+			break;
+		default:
+			m_bitPosition = payloadBitLength;
+			break;
+		}
+	}
+}
+
+bool decodeTexturePayload(
+	u8* bitmap,
+	CKLBImageAsset* image,
+	CKLBTextureAsset* texture,
+	KLBTextureAssetPlugin::TextureLoadCallback callback)
+{
+	if (!callback) {
+		return false;
+	}
+
+	TexturePayloadReader reader;
+	u8 channel;
+	u8* pixel = reader.readHeader(bitmap, image, texture, &channel);
+	if (!reader.payload()) {
+		if (!reader.suppressMissingPayloadCallback()) {
+			callback(NULL, 1, false);
+		}
+		return false;
+	}
+
+	reader.readPayload(pixel, channel);
+
+	const u32 length = reader.payloadLength();
+	u8* decodedData = reader.payload();
+	u64 randomState = 0xDEADBEEF;
+	for (s32 n = 0; n < reader.payloadLength(); n++) {
+		randomState = (randomState * 16807) % 2147483647;
+		decodedData[(u32)n] ^= (u8)randomState;
+	}
+
+	u32 firstSum = 1;
+	u32 secondSum = 0;
+	for (u32 n = 0; n < length; n++) {
+		firstSum = (firstSum + decodedData[n]) % reader.checksumModulus();
+		secondSum = (secondSum + firstSum) % reader.checksumModulus();
+	}
+	const u32 checksum = (secondSum << 16) | firstSum;
+	const u8* header = reader.header();
+	const bool checksumValid =
+		((u8)(checksum >> 24) == header[4]) &&
+		((u8)(checksum >> 16) == header[6]) &&
+		((u8)(checksum >> 8) == header[7]) &&
+		((u8)checksum == header[9]);
+
+	callback(decodedData, length, checksumValid);
+	return true;
+}
+
+namespace {
+	CKLBGridTextureObject* s_gridTextures[16] = { NULL };
+	u32 s_gridTextureCount = 0;
+}
+
+// Shared with the scripting façade and the asynchronous grid-loading path.
+CKLBGridTextureObject::CKLBGridTextureObject()
+: CKLBTextureAsset()
+, m_gridImages(NULL)
+, m_imagePointers(NULL)
+, m_cellTextures(NULL)
+, m_cellStates(NULL)
+, m_cellGeometry(NULL)
+, m_uploadBuffer(NULL)
+, m_decodeBuffer(NULL)
+, m_columnCount(0)
+, m_rowCount(0)
+, m_gridID(NULL_IDX)
+, m_hasBorder(false)
+, m_locked(false)
+{
+}
+
+CKLBGridTextureObject::~CKLBGridTextureObject()
+{
+	CKLBOGLWrapper& textureManager = CKLBOGLWrapper::getInstance();
+	if (m_pTexture) {
+		if (m_pTextureUsage) {
+			m_pTexture->releaseUsage(m_pTextureUsage);
+			m_pTextureUsage = NULL;
+		}
+		textureManager.releaseTexture(m_pTexture);
+		m_pTexture = NULL;
+	}
+
+	const u32 rowCount = m_rowCount;
+	const u32 columnCount = m_columnCount;
+	CKLBAssetManager& assetManager = CKLBAssetManager::getInstance();
+	const u32 cellCount = columnCount * rowCount;
+	for (u32 index = 0; index < cellCount; index++) {
+		const u16 assetID = m_cellTextures[index].getAssetID();
+		if (assetID != NULL_IDX) {
+			assetManager.freeAssetSlot(assetID);
+		}
+	}
+
+	KLBDELETEA(m_gridImages);
+	KLBDELETEA(m_imagePointers);
+	KLBDELETEA(m_cellTextures);
+	KLBDELETEA(m_cellStates);
+	KLBDELETEA(m_cellGeometry);
+	KLBDELETEA(m_uploadBuffer);
+	KLBDELETEA(m_decodeBuffer);
+	m_gridImages = NULL;
+	m_imagePointers = NULL;
+	m_cellTextures = NULL;
+	m_cellStates = NULL;
+	m_cellGeometry = NULL;
+	m_uploadBuffer = NULL;
+	m_decodeBuffer = NULL;
+
+	if (m_gridID != NULL_IDX) {
+		s_gridTextures[m_gridID] = NULL;
+	}
+}
+
+void CKLBGridTextureObject::destroy()
+{
+	if (!m_locked) {
+		KLBDELETE(this);
+		if (!CKLBTaskMgr::getInstance().isClearingTaskList() && g_gridTextureDieCallback) {
+			CKLBScriptEnv::getInstance().call_gridTextureDie(g_gridTextureDieCallback, this);
+		}
+	}
+}
+
+void CKLBGridTextureObject::lock()
+{
+	m_locked = true;
+}
+
+u16 CKLBGridTextureObject::popFront(CellList list)
+{
+	u16 cellIndex = m_listHeads[list];
+	if (cellIndex != NULL_IDX) {
+		u16 next = m_cellStates[cellIndex].next;
+		m_listHeads[list] = next;
+		if (next != NULL_IDX) {
+			m_cellStates[next].previous = NULL_IDX;
+		} else {
+			m_listTails[list] = NULL_IDX;
+		}
+}
+	return cellIndex;
+}
+
+u16 CKLBGridTextureObject::popBack(CellList list)
+{
+	u16 cellIndex = m_listTails[list];
+	if (cellIndex != NULL_IDX) {
+		u16 previous = m_cellStates[cellIndex].previous;
+		m_listTails[list] = previous;
+		if (previous != NULL_IDX) {
+			m_cellStates[previous].next = NULL_IDX;
+		} else {
+			m_listHeads[list] = NULL_IDX;
+		}
+	}
+	return cellIndex;
+}
+
+void CKLBGridTextureObject::pushFront(CellList list, u16 cellIndex)
+{
+	u16 oldHead = m_listHeads[list];
+	CellState& cell = m_cellStates[cellIndex];
+	cell.next = oldHead;
+	cell.previous = NULL_IDX;
+	cell.status.value = (cell.status.value & 0xff0f) | (list << 4);
+	m_listHeads[list] = cellIndex;
+	if (oldHead != NULL_IDX) {
+		m_cellStates[oldHead].previous = cellIndex;
+	} else {
+		m_listTails[list] = cellIndex;
+	}
+}
+
+void CKLBGridTextureObject::unlinkCell(CellList list, u16 cellIndex)
+{
+	CellState& cell = m_cellStates[cellIndex];
+	u16 next = cell.next;
+	u16 previous = cell.previous;
+	if (next != NULL_IDX) {
+		m_cellStates[next].previous = previous;
+	} else {
+		m_listTails[list] = NULL_IDX;
+	}
+	if (previous != NULL_IDX) {
+		m_cellStates[previous].next = next;
+	} else {
+		m_listHeads[list] = NULL_IDX;
+	}
+}
+
+void CKLBGridTextureObject::markCellReferenced(u16 cellIndex)
+{
+	m_cellStates[cellIndex].status.value |= 1;
+}
+
+void CKLBGridTextureObject::releaseCell(CKLBTextureAsset* texture)
+{
+	u16 cellIndex = texture - m_cellTextures;
+	CellState& cell = m_cellStates[cellIndex];
+	unlinkCell(LIST_LIVE, cellIndex);
+
+	u16 state = cell.status.value;
+	u16 unregister = state & 1;
+	cell.status.value = state & ~1;
+
+	CellList destination = (CellList)(unregister + 1);
+	u16 oldHead = m_listHeads[destination];
+	cell.next = oldHead;
+	cell.previous = NULL_IDX;
+	cell.status.value = (state & 0xff0e) | (destination << 4);
+	m_listHeads[destination] = cellIndex;
+	if (oldHead != NULL_IDX) {
+		m_cellStates[oldHead].previous = cellIndex;
+	} else {
+		m_listTails[destination] = cellIndex;
+	}
+
+	if (unregister) {
+		CKLBAssetManager::getInstance().freeAssetSlot(texture->getAssetID());
+	}
+	texture->m_pTextureState->decrementRefCount();
+}
+
+bool CKLBGridTextureObject::unlock()
+{
+	m_locked = false;
+	if (getRefCount() == 0) {
+		KLBDELETE(this);
+		return false;
+	}
+	return true;
+}
+
+bool CKLBLuaLibASSET::setGridLocked(const void* grid, bool locked)
+{
+	g_gridTextureError = 0;
+	bool result = false;
+	if (grid) {
+		CKLBGridTextureObject* texture =
+			const_cast<CKLBGridTextureObject*>(
+				static_cast<const CKLBGridTextureObject*>(grid));
+		if (locked) {
+			texture->lock();
+			result = true;
+		} else {
+			result = texture->unlock();
+		}
+	} else {
+		g_gridTextureError = 1;
+	}
+
+	if (g_gridTextureError && !g_gridTextureFirstError) {
+		g_gridTextureFirstError = g_gridTextureError;
+	}
+	return result;
+}
+
+s32 CKLBLuaLibASSET::getGridError(bool clear)
+{
+	if (clear) {
+		s32 error = g_gridTextureFirstError;
+		g_gridTextureFirstError = 0;
+		return error;
+	}
+	s32 error = g_gridTextureError;
+	g_gridTextureError = 0;
+	return error;
+}
+
+void CKLBLuaLibASSET::setGridDieCallback(const char* callback)
+{
+	if (g_gridTextureDieCallback) {
+		KLBDELETEA(g_gridTextureDieCallback);
+		g_gridTextureDieCallback = NULL;
+	}
+	if (callback) {
+		g_gridTextureDieCallback = CKLBUtility::copyString(callback);
+	}
+}
+
 // 1. createTexture.
 // 2. Register Asset. (Name in dictionnary, slot, etc...)
 // 3. Do screenshot feature
-CKLBAbstractAsset* 
-createTexture(u32 orgWidthI, u32 orgHeightI, const char* name) 
+CKLBAbstractAsset*
+createTexture(u32 orgWidthI, u32 orgHeightI, const char* name,
+	s32 pixelFormatID, u8 roundToPowerOfTwo, CTexture* sourceTexture)
 {
 	CKLBTextureAsset* pNewAsset = KLBNEW(CKLBTextureAsset);
 
-	if (pNewAsset && name) {
-		u32 widthI	= CKLBUtility::nearest2Pow(orgWidthI );
-		u32 heightI = CKLBUtility::nearest2Pow(orgHeightI);
+	if (name && pNewAsset) {
+		u32 heightI;
+		u32 widthI;
+		if (roundToPowerOfTwo) {
+			widthI	= CKLBUtility::nearest2Pow(orgWidthI );
+			heightI = CKLBUtility::nearest2Pow(orgHeightI);
+		} else {
+			widthI  = orgWidthI;
+			heightI = orgHeightI;
+		}
 
 		// Name
 		// + [pad]
@@ -1846,27 +2996,39 @@ createTexture(u32 orgWidthI, u32 orgHeightI, const char* name)
 			pNewAsset->m_indexBufferTotal	= KLBNEWA(u16				, pNewAsset->m_totalIndexCount		);
 			pNewAsset->m_pImages			= KLBNEWA(CKLBImageAsset*	, pNewAsset->m_imageCount			);
 
-			GLenum pixelFormat;
-			CKLBOGLWrapper::TEX_CHANNEL channelCount;
-			channelCount					= CKLBOGLWrapper::RGB;
-			pixelFormat						= GL_UNSIGNED_BYTE;
+			int textureSize;
+			if (sourceTexture) {
+				pNewAsset->m_pTexture = sourceTexture;
+				pNewAsset->m_bytePerPix = 4;
+				orgWidthI = sourceTexture->getWidth();
+				orgHeightI = sourceTexture->getHeight();
+				textureSize = orgWidthI * orgHeightI * 4;
+			} else {
+				GLenum pixelFormat;
+				CKLBOGLWrapper::TEX_CHANNEL channelCount;
+				int bytePerPix;
+				int formatIndex = pixelFormatID - 1;
+				if (formatIndex >= 0 && formatIndex < 4) {
+					bytePerPix = s_textureBytesPerPixel[formatIndex];
+					channelCount = (CKLBOGLWrapper::TEX_CHANNEL)s_textureChannels[formatIndex];
+					pixelFormat = (GLenum)s_texturePixelFormats[formatIndex];
+				}
 
-			int bytePerPix;
-			bytePerPix						= 1 * (channelCount ? channelCount : 1); // Luminance is 1 byte.
-			CKLBOGLWrapper& pMgr			= CKLBOGLWrapper::getInstance();
-			int textureSize					= widthI * heightI * bytePerPix;
+				CKLBOGLWrapper& pMgr = CKLBOGLWrapper::getInstance();
+				textureSize = widthI * heightI * bytePerPix;
 
-			//
-			// Texture creation may fail, but asset is considered as loaded
-			//
-			pNewAsset->m_bytePerPix			= bytePerPix;
-			pNewAsset->m_pTexture			= pMgr.createTexture(	pNewAsset->m_width,
-																	pNewAsset->m_height,
-																	pixelFormat,
-																	channelCount,
-																	NULL,
-																	textureSize,
-																	(CKLBOGLWrapper::TEX_OPTION)0);
+				//
+				// Texture creation may fail, but asset is considered as loaded
+				//
+				pNewAsset->m_bytePerPix = bytePerPix;
+				pNewAsset->m_pTexture = pMgr.createTexture(	pNewAsset->m_width,
+													pNewAsset->m_height,
+													pixelFormat,
+													channelCount,
+													NULL,
+													textureSize,
+													(CKLBOGLWrapper::TEX_OPTION)0);
+			}
 
 			if (pNewAsset->m_pTexture) {
 				gTextureAllocHW += textureSize;
@@ -1876,7 +3038,7 @@ createTexture(u32 orgWidthI, u32 orgHeightI, const char* name)
 				CKLBImageAsset* pNewAssetI = KLBNEW(CKLBImageAsset);
 				pNewAsset->m_pImages[0] = pNewAssetI;
 				if (pNewAssetI) {
-					klb_assert(strlen(name) < 250, "Name for screenshot name is too long");
+					klb_assertNull(strlen(name) < 250, "Name for screenshot name is too long");
 
 					// + [pad]
 					char buff[256];
@@ -1960,14 +3122,15 @@ createTexture(u32 orgWidthI, u32 orgHeightI, const char* name)
 		KLBDELETE(pNewAsset);
 	}
 
-	klb_assertNull(0, "allocation failure.");
+	klb_assertAlways("allocation failure.");
 	return NULL;
 }
 
 bool 
 createScreenAsset(const char* name, u32 orgWidthI, u32 orgHeightI) 
 {
-	CKLBAbstractAsset* pAsset = createTexture(orgWidthI, orgHeightI, name);
+	CKLBAbstractAsset* pAsset = createTexture(orgWidthI, orgHeightI, name,
+		TEXTURE_ASSET_RGB888, true, NULL);
 	if (pAsset) {
 		CKLBAssetManager::getInstance().registerAsset(pAsset);
 		if (pAsset->getAssetID() != NULL_IDX) {
@@ -1979,6 +3142,81 @@ createScreenAsset(const char* name, u32 orgWidthI, u32 orgHeightI)
 	return false;
 }
 
+void CKLBTextureAsset::updateMovieTexture(u32 textureTarget, u32 textureName,
+										 s32 width, s32 height, const float* uv) {
+	m_width = (u16)width; m_height = (u16)height;
+	m_pTexture->bindExternalTexture(textureTarget, textureName);
+
+	CKLBImageAsset* image = m_pImages[0];
+	image->m_imageSize.m_iRight = (s16)width; image->m_imageSize.m_iBottom = (s16)height;
+	image->m_imageSize.m_iLeft = 0; image->m_imageSize.m_iTop = 0;
+
+	const float floatWidth = (float)width;
+	const float floatHeight = (float)height;
+	const float startU = uv[0];
+	const float startV = uv[1];
+	const float endV = uv[3];
+	const float endU = uv[2];
+	float* xy = image->m_pXYCoord;
+	xy[0] = 0.0f;      xy[1] = 0.0f;
+	xy[2] = floatWidth; xy[3] = 0.0f;
+	xy[4] = floatWidth; xy[5] = floatHeight;
+	xy[6] = 0.0f;      xy[7] = floatHeight;
+
+	float* imageUV = image->m_pUVCoord;
+	imageUV[0] = startU; imageUV[1] = startV;
+	imageUV[2] = endU;   imageUV[3] = startV;
+	imageUV[4] = endU;   imageUV[5] = endV;
+	imageUV[6] = startU; imageUV[7] = endV;
+	image->m_boundWidth = floatWidth; image->m_boundHeight = floatHeight;
+}
+
+CKLBTextureAsset* CKLBTextureAsset::createMovieTexture(const char* name) {
+	CKLBTextureAsset* texture = KLBNEW(CKLBTextureAsset);
+	if (name && texture) {
+		texture->setNameDirect(name);
+		texture->m_type = 3;
+		texture->m_totalVertexCount = 4;
+		texture->m_totalIndexCount = 6;
+		texture->m_imageCount = 1;
+
+		texture->m_floatBufferTotal =
+			KLBNEWA(float, texture->m_totalVertexCount * 4);
+		texture->m_indexBufferTotal =
+			KLBNEWA(u16, texture->m_totalIndexCount);
+		texture->m_pImages =
+			KLBNEWA(CKLBImageAsset*, texture->m_imageCount);
+
+		CKLBOGLWrapper& rendering = CKLBOGLWrapper::getInstance();
+		texture->m_pTexture = rendering.createTexture(0, 0, 0, CKLBOGLWrapper::RGBA,
+			NULL, 0, CKLBOGLWrapper::TEX_OPT_SHELL_BIT);
+		if (texture->m_floatBufferTotal && texture->m_indexBufferTotal &&
+			texture->m_pImages && texture->getName()) {
+			CKLBImageAsset* image = KLBNEW(CKLBImageAsset);
+			texture->m_pImages[0] = image;
+			if (image) {
+				klb_assertNull(strlen(name) < 250, "Name for screenshot name is too long");
+				image->setNameDirect(name);
+				image->m_uiSubTileCount = 1; image->m_usageType |= CKLBImageAsset::IS_STANDARD_RECT;
+				image->m_uiVertexCount = 4; image->m_uiIndexCount = 6;
+				image->m_iCenterX = 0; image->m_iCenterY = 0;
+				image->m_pUVCoord = texture->m_floatBufferTotal;
+				image->m_pXYCoord = &texture->m_floatBufferTotal[8];
+				image->m_pIndex = texture->m_indexBufferTotal;
+				image->m_pTextureAsset = texture;
+				image->m_pIndex[0] = 0; image->m_pIndex[1] = 1; image->m_pIndex[2] = 3;
+				image->m_pIndex[3] = 1; image->m_pIndex[4] = 2; image->m_pIndex[5] = 3;
+				texture->m_pTextureUsage = texture->m_pTexture->createUsage();
+				return texture;
+			}
+		}
+		KLBDELETE(texture);
+	}
+
+	klb_assertAlways("allocation failure.");
+	return NULL;
+}
+
 bool 
 doScreenShot(const char* name, u32 srcx, u32 srcy, u32 width, u32 height, u32 dstx, u32 dsty) 
 {
@@ -1987,7 +3225,7 @@ doScreenShot(const char* name, u32 srcx, u32 srcy, u32 width, u32 height, u32 ds
 	if (idx != NULL_IDX) {
 		CKLBTextureAsset* pNewAsset	= (CKLBTextureAsset*)mgr.getAsset(idx);
 		u8* buffer					= NULL;
-		u32 bufferSize				= width * height * 3;	// RGB888 per pixel
+		u32 bufferSize				= width * height * 4;	// RGBA8888 per pixel
 		CKLBOGLWrapper& pMgr		= CKLBOGLWrapper::getInstance();
 
 		buffer = KLBNEWA(u8, bufferSize);
@@ -2072,7 +3310,9 @@ freeScreenAsset(const char* name)
 #define RG_ETC1_BUILD_DEBUG
 #endif
 
-#define RG_ETC1_ASSERT assert
+// The decoder is fed validated texture blocks; keep its internal diagnostics
+// independent from the engine's debug assertion configuration.
+#define RG_ETC1_ASSERT(expression) ((void)0)
 
 namespace rg_etc1
 {
@@ -2739,3 +3979,933 @@ namespace rg_etc1
    }
          
 } // namespace rg_etc1
+
+void CKLBTextureAsset::onFirstReference()
+{
+	CKLBGridTextureObject* grid = m_pTextureState;
+	u16 cellIndex = this - grid->m_cellTextures;
+	CKLBGridTextureObject::CellState& cell = grid->m_cellStates[cellIndex];
+	grid->unlinkCell(CKLBGridTextureObject::LIST_FREE, cellIndex);
+
+	u16 oldHead = grid->m_listHeads[CKLBGridTextureObject::LIST_LIVE];
+	cell.next = oldHead;
+	cell.previous = NULL_IDX;
+	cell.status.bytes.lifecycle &= 0xf;
+	grid->m_listHeads[CKLBGridTextureObject::LIST_LIVE] = cellIndex;
+	if (oldHead != NULL_IDX) {
+		grid->m_cellStates[oldHead].previous = cellIndex;
+	} else {
+		grid->m_listTails[CKLBGridTextureObject::LIST_LIVE] = cellIndex;
+	}
+	grid->incrementRefCount();
+}
+
+void CKLBTextureAsset::onLastReference()
+{
+	m_pTextureState->releaseCell(this);
+}
+
+void CKLBGridTextureObject::activateCell(CKLBTextureAsset* texture)
+{
+	u16 cellIndex = texture - m_cellTextures;
+	CellState& cell = m_cellStates[cellIndex];
+	unlinkCell(LIST_FREE, cellIndex);
+
+	u16 oldHead = m_listHeads[LIST_LIVE];
+	cell.next = oldHead;
+	cell.previous = NULL_IDX;
+	cell.status.bytes.lifecycle &= 0xf;
+	m_listHeads[LIST_LIVE] = cellIndex;
+	if (oldHead != NULL_IDX) {
+		m_cellStates[oldHead].previous = cellIndex;
+	} else {
+		m_listTails[LIST_LIVE] = cellIndex;
+	}
+	texture->m_pTextureState->incrementRefCount();
+}
+
+#include "jpeglib.h"
+#include "png.h"
+#include <setjmp.h>
+
+struct GridTextureJpegError {
+	jpeg_error_mgr	manager;
+	jmp_buf			recovery;
+};
+
+void gridTextureJpegErrorExit(j_common_ptr decoder)
+{
+	GridTextureJpegError* error =
+		reinterpret_cast<GridTextureJpegError*>(decoder->err);
+	longjmp(error->recovery, 1);
+}
+
+void gridTextureJpegInitSource(j_decompress_ptr)
+{
+}
+
+boolean gridTextureJpegFillInputBuffer(j_decompress_ptr)
+{
+	return TRUE;
+}
+
+void gridTextureJpegSkipInputData(j_decompress_ptr decoder, long byteCount)
+{
+	if (byteCount > 0) {
+		decoder->src->next_input_byte += byteCount;
+		decoder->src->bytes_in_buffer -= byteCount;
+	}
+}
+
+void gridTextureJpegTermSource(j_decompress_ptr)
+{
+}
+
+void gridTextureJpegSetSource(
+	j_decompress_ptr decoder,
+	const u8* data,
+	size_t size
+)
+{
+	if (!decoder->src) {
+		decoder->src = reinterpret_cast<jpeg_source_mgr*>(
+			decoder->mem->alloc_small(
+				reinterpret_cast<j_common_ptr>(decoder),
+				JPOOL_PERMANENT,
+				sizeof(jpeg_source_mgr)
+			)
+		);
+	}
+
+	decoder->src->init_source = gridTextureJpegInitSource;
+	decoder->src->fill_input_buffer = gridTextureJpegFillInputBuffer;
+	decoder->src->skip_input_data = gridTextureJpegSkipInputData;
+	decoder->src->resync_to_restart = jpeg_resync_to_restart;
+	decoder->src->term_source = gridTextureJpegTermSource;
+	decoder->src->bytes_in_buffer = size;
+	decoder->src->next_input_byte = data;
+}
+
+struct GridTexturePngSource {
+	const u8* cursor;
+	u32 consumed;
+	u32 remaining;
+};
+
+void gridTexturePngRead(
+	png_structp decoder,
+	png_bytep destination,
+	u32 byteCount
+)
+{
+	GridTexturePngSource* source =
+		static_cast<GridTexturePngSource*>(png_get_progressive_ptr(decoder));
+	if (source->remaining < byteCount) {
+		png_error(decoder, "EOF");
+	}
+
+	for (u32 index = 0; index < byteCount; index++) {
+		destination[index] = source->cursor[index];
+	}
+	source->cursor += byteCount;
+	source->remaining -= byteCount;
+}
+
+bool decodeTextureImage(
+	u8* source,
+	u32 sourceSize,
+	u32 expectedWidth,
+	u32 expectedHeight,
+	u8* pixels,
+	u32 byteCount,
+	u32* channelCount,
+	TextureDecodeTarget* target
+)
+{
+	png_structp decoder = NULL;
+	png_infop information = NULL;
+	*channelCount = 0;
+	bool failed = true;
+	if (!png_sig_cmp(source, 0, 8)) {
+		decoder = png_create_read_struct(
+			PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+		if (decoder) {
+			information = png_create_info_struct(decoder);
+			if (information && !setjmp(png_jmpbuf(decoder))) {
+				GridTexturePngSource input;
+				input.cursor = source;
+				input.remaining = sourceSize;
+				input.consumed = 0;
+				png_set_read_fn(
+					decoder,
+					&input,
+					reinterpret_cast<png_rw_ptr>(gridTexturePngRead));
+				png_read_info(decoder, information);
+
+				const u32 width = png_get_image_width(decoder, information);
+				const s32 height = png_get_image_height(decoder, information);
+				png_bytep* rows = KLBNEWA(png_bytep, height);
+				if ((!expectedWidth || width == expectedWidth) &&
+					(!expectedHeight || height == expectedHeight)) {
+					const u8 bitDepth =
+						png_get_bit_depth(decoder, information);
+					u32 channels =
+						png_get_channels(decoder, information);
+					const u8 colorType =
+						png_get_color_type(decoder, information);
+					bool grayscale;
+					if (colorType == PNG_COLOR_TYPE_GRAY_ALPHA) {
+						grayscale = true;
+					} else if (colorType == PNG_COLOR_TYPE_PALETTE) {
+						png_set_palette_to_rgb(decoder);
+						channels = 3;
+						grayscale = false;
+					} else if (colorType == PNG_COLOR_TYPE_GRAY) {
+						grayscale = true;
+					} else {
+						grayscale = false;
+					}
+
+					if (target) {
+						target->width = width;
+						target->height = height;
+						target->channelCount = channels;
+						if (target->allocate) {
+							target->pixels = pixels;
+							if (target->allocate(target)) {
+								pixels = target->pixels;
+								byteCount = target->byteCount;
+							}
+						}
+					}
+
+					const u32 requiredBytes = width * height * channels;
+					bool invalidBuffer = false;
+					if (byteCount) {
+						if (requiredBytes > byteCount) {
+							invalidBuffer = true;
+						} else {
+							invalidBuffer = grayscale;
+						}
+					} else {
+						pixels = KLBNEWA(u8, requiredBytes);
+					}
+
+					if (!invalidBuffer) {
+						if (png_get_valid(
+							decoder, information, PNG_INFO_tRNS)) {
+							png_set_tRNS_to_alpha(decoder);
+							channels++;
+						}
+						if (bitDepth == 16) {
+							png_set_strip_16(decoder);
+						}
+						png_set_interlace_handling(decoder);
+						png_read_update_info(decoder, information);
+
+						for (s32 row = 0; row < height; row++) {
+							const u32 line = (u32)row;
+							rows[line] = pixels + line * width * channels;
+						}
+						png_read_image(decoder, rows);
+						png_read_end(decoder, information);
+						*channelCount = channels;
+						failed = false;
+					}
+				}
+				KLBDELETEA(rows);
+			}
+		}
+		png_destroy_read_struct(&decoder, &information, NULL);
+	}
+	return !failed;
+}
+
+CKLBImageAsset*
+CKLBTextureAsset::createImageAlias(CKLBImageAsset* source, const char* aliasName)
+{
+	const char* copiedName = CKLBUtility::copyString(aliasName);
+	CKLBImageAsset* image = source->clone();
+	if (copiedName && image) {
+		image->m_fileSource = copiedName;
+		image->m_pOwnerTexture = this;
+		image->m_pNextAlias = m_pAliasList;
+		m_pAliasList = image;
+	} else {
+		KLBDELETE(image);
+		KLBDELETEA(copiedName);
+	}
+	return image;
+}
+
+u16 CKLBGridTextureObject::registerTexture(CKLBGridTextureObject* texture)
+{
+	u32 count = s_gridTextureCount;
+	u32 index = 0;
+	for (; index < count; index++) {
+		if (!s_gridTextures[index]) {
+			s_gridTextures[index] = texture;
+			return (u16)index;
+		}
+	}
+	if (index <= 15) {
+		s_gridTextures[index] = texture;
+		s_gridTextureCount = count + 1;
+	} else {
+		klb_assertAlways("Reached maximum of 16 grid at the same time");
+	}
+	return (u16)count;
+}
+
+void CKLBGridTextureObject::releaseTextures()
+{
+	CKLBGridTextureObject** slot = s_gridTextures;
+	for (u32 index = 0; index < s_gridTextureCount; slot++, index++) {
+		if (*slot) {
+			KLBDELETE(*slot);
+			*slot = NULL;
+		}
+	}
+	s_gridTextureCount = 0;
+}
+
+static void releaseGridTexturesOnPluginShutdown()
+{
+	u32 index = 0;
+	CKLBGridTextureObject** slot = s_gridTextures;
+	for (; index < s_gridTextureCount; index++, slot++) {
+		if (*slot) {
+			KLBDELETE(*slot);
+			*slot = NULL;
+		}
+	}
+	s_gridTextureCount = 0;
+}
+
+CKLBGridTextureObject* CKLBGridTextureObject::create(
+	s32 cellWidth,
+	s32 cellHeight,
+	s32 cellCount,
+	bool rgba,
+	bool border
+)
+{
+	CKLBGridTextureObject* texture = KLBNEW(CKLBGridTextureObject);
+	g_gridTextureError = 0;
+	if (texture && !texture->init(
+			cellWidth,
+			cellHeight,
+			cellCount,
+			rgba,
+			border
+	)) {
+		KLBDELETE(texture);
+		texture = NULL;
+	}
+
+	if (g_gridTextureError && !g_gridTextureFirstError) {
+		g_gridTextureFirstError = g_gridTextureError;
+	}
+	return texture;
+}
+
+bool CKLBGridTextureObject::init(
+	s32 cellWidth,
+	s32 cellHeight,
+	s32 cellCount,
+	bool rgba,
+	bool border
+)
+{
+	// Width/height pairs, smallest capacity first.
+	static const u32 textureSizes[] = {
+		  64,   64,   128,   64,    64,  128,
+		 256,   64,   128,  128,    64,  256,
+		 512,   64,   256,  128,   128,  256,
+		  64,  512,  1024,   64,   512,  128,
+		 256,  256,   128,  512,    64, 1024,
+		2048,   64,  1024,  128,   512,  256,
+		 256,  512,   128, 1024,    64, 2048,
+		2048,  128,  1024,  256,   512,  512,
+		 256, 1024,   128, 2048,  2048,  256,
+		1024,  512,   512, 1024,   256, 2048,
+		2048,  512,  1024, 1024,   512, 2048,
+		2048, 1024,  1024, 2048,  2048, 2048
+	};
+
+	klb_assertNull(rgba, "Please force grid to use alpha, 24 bit texture openGL driver are not working correctly on Android XPeria Z");
+	klb_assert(cellWidth >= 1 && cellWidth <= 2048, "Grid width invalid");
+
+	if (border) {
+		m_hasBorder = true;
+		cellWidth += 2;
+		cellHeight += 2;
+	}
+
+	const u32 storedCellPixels = (u32)cellWidth * (u32)cellHeight;
+	const u32 totalStoredPixels = storedCellPixels * (u32)cellCount;
+	if (totalStoredPixels > 0x400000) {
+		g_gridTextureError = 4;
+		return false;
+	}
+
+	// The atlas-size table above is sorted by capacity, so a search can skip
+	// straight past every entry too small to hold the requested cell count.
+	u32 index;
+	if (totalStoredPixels > 0x200000) {
+		index = 70;
+	} else if (totalStoredPixels > 0x100000) {
+		index = 66;
+	} else if (totalStoredPixels > 0x80000) {
+		index = 60;
+	} else if (totalStoredPixels > 0x40000) {
+		index = 52;
+	} else if (totalStoredPixels > 0x20000) {
+		index = 42;
+	} else if (totalStoredPixels > 0x10000) {
+		index = 30;
+	} else if (totalStoredPixels > 0x8000) {
+		index = 20;
+	} else if (totalStoredPixels > 0x4000) {
+		index = 12;
+	} else {
+		index = (totalStoredPixels > 0x2000) ? 6 : 0;
+	}
+	for (; index != sizeof(textureSizes) / sizeof(textureSizes[0]); index += 2) {
+		m_columnCount = (u16)(textureSizes[index] / (u32)cellWidth);
+		m_rowCount = (u16)(textureSizes[index + 1] / (u32)cellHeight);
+		if ((u32)m_columnCount * m_rowCount >= (u32)cellCount) {
+			m_textureWidth = (u16)textureSizes[index];
+			m_textureHeight = (u16)textureSizes[index + 1];
+			break;
+		}
+	}
+	if (index == sizeof(textureSizes) / sizeof(textureSizes[0])) {
+		klb_assertAlways("Too many item for a 2048x2048 texture");
+	}
+
+	const u16 gridID = registerTexture(this);
+	if (gridID == NULL_IDX) {
+		return false;
+	}
+	m_gridID = gridID;
+
+	m_quadIndices[0] = 0;
+	m_quadIndices[1] = 1;
+	m_quadIndices[2] = 3;
+	m_quadIndices[3] = 1;
+	m_quadIndices[4] = 2;
+	m_quadIndices[5] = 3;
+
+	const u32 cellCapacity = (u32)m_columnCount * m_rowCount;
+	m_gridImages = KLBNEWA(CKLBImageAsset, cellCapacity);
+	m_imagePointers = KLBNEWA(CKLBImageAsset*, cellCapacity);
+	m_cellTextures = KLBNEWA(CKLBTextureAsset, cellCapacity);
+	m_cellStates = KLBNEWA(CellState, cellCapacity);
+	m_cellGeometry = KLBNEWA(float, cellCapacity * 16);
+	m_channelCount = 4;
+
+	CKLBOGLWrapper& renderer = CKLBOGLWrapper::getInstance();
+	m_pTexture = renderer.createTexture(
+		m_textureWidth,
+		m_textureHeight,
+		GL_UNSIGNED_BYTE,
+		CKLBOGLWrapper::RGBA,
+		NULL,
+		(s32)m_textureWidth * m_textureHeight * m_channelCount
+	);
+	m_pTextureUsage = m_pTexture ? m_pTexture->createUsage() : NULL;
+
+	m_uploadBuffer = KLBNEWA(u8, m_channelCount * storedCellPixels);
+	m_decodeBuffer = KLBNEWA(u8, m_channelCount * storedCellPixels);
+
+	if (!m_pTexture || !m_pTextureUsage || !m_gridImages ||
+		!m_imagePointers || !m_cellTextures || !m_cellGeometry ||
+		!m_cellStates) {
+		g_gridTextureError = 6;
+		return false;
+	}
+
+	const u32 textureWidth = m_textureWidth;
+	const u32 textureHeight = m_textureHeight;
+	const u32 borderPixels = m_hasBorder ? 1 : 0;
+	m_cellWidth = (u16)(cellWidth - borderPixels * 2);
+	m_cellHeight = (u16)(cellHeight - borderPixels * 2);
+
+	const float uvScaleX = 1.0f / textureWidth;
+	const float uvScaleY = 1.0f / textureHeight;
+	const float floatCellWidth = (float)m_cellWidth;
+	const float floatCellHeight = (float)m_cellHeight;
+	const float floatStoredWidth = (float)(u32)cellWidth;
+	const float floatStoredHeight = (float)(u32)cellHeight;
+	const float floatBorder = (float)borderPixels;
+
+	index = 0;
+	for (s32 row = 0; row < m_rowCount; row++) {
+		const float rowOffset =
+			(float)row * floatStoredHeight + floatBorder;
+		const float bottom = (floatCellHeight + rowOffset) * uvScaleY;
+		const float top = rowOffset * uvScaleY;
+		for (s32 column = 0; column < m_columnCount; column++, index++) {
+			CellState& state = m_cellStates[index];
+			state.previous = (u16)(index - 1);
+			state.next = (u16)(index + 1);
+			state.source = NULL;
+			state.status.value = (u16)(LIST_RECLAIM << 4);
+
+			CKLBTextureAsset& cellTexture = m_cellTextures[index];
+			cellTexture.setNameDirect(NULL);
+			cellTexture.m_totalVertexCount = 0;
+			cellTexture.m_totalIndexCount = 0;
+			cellTexture.m_width = 0;
+			cellTexture.m_height = 0;
+			cellTexture.m_type = 0;
+			cellTexture.m_imageCount = 1;
+			cellTexture.resetAssetID();
+			cellTexture.m_refCountControlsResource = true;
+			cellTexture.m_pTextureState = this;
+			cellTexture.m_softTexture = NULL;
+			cellTexture.m_bitmap = NULL;
+			cellTexture.m_indexBufferTotal = NULL;
+			cellTexture.m_floatBufferTotal = NULL;
+			cellTexture.m_pTexture = m_pTexture;
+			cellTexture.m_pTextureUsage = m_pTextureUsage;
+			cellTexture.m_pImages = &m_imagePointers[index];
+			cellTexture.m_bytePerPix = (u8)m_channelCount;
+
+			m_imagePointers[index] = &m_gridImages[index];
+
+			CKLBImageAsset& image = m_gridImages[index];
+			image.setNameDirect(NULL);
+			image.m_uiSubTileCount = 1;
+			image.m_usageType |= CKLBImageAsset::IS_STANDARD_RECT;
+			image.m_uiVertexCount = 4;
+			image.m_uiIndexCount = 6;
+			image.m_imageSize.m_iRight = (s16)m_cellWidth;
+			image.m_imageSize.m_iBottom = (s16)m_cellHeight;
+			image.m_imageSize.m_iLeft = 0;
+			image.m_imageSize.m_iTop = 0;
+			image.m_iCenterX = 0;
+			image.m_iCenterY = 0;
+			image.resetAssetID();
+			image.m_pUVCoord = &m_cellGeometry[index * 16];
+			image.m_pXYCoord = image.m_pUVCoord + 8;
+			image.m_pIndex = m_quadIndices;
+			image.m_pTextureAsset = &cellTexture;
+
+			image.m_pXYCoord[0] = 0.0f;
+			image.m_pXYCoord[1] = 0.0f;
+			image.m_pXYCoord[2] = floatCellWidth;
+			image.m_pXYCoord[3] = 0.0f;
+			image.m_pXYCoord[4] = floatCellWidth;
+			image.m_pXYCoord[5] = floatCellHeight;
+			image.m_pXYCoord[6] = 0.0f;
+			image.m_pXYCoord[7] = floatCellHeight;
+
+			const float columnOffset =
+				(float)column * floatStoredWidth + floatBorder;
+			const float right = (floatCellWidth + columnOffset) * uvScaleX;
+			const float left = columnOffset * uvScaleX;
+			image.m_pUVCoord[0] = left;
+			image.m_pUVCoord[1] = top;
+			image.m_pUVCoord[2] = right;
+			image.m_pUVCoord[3] = top;
+			image.m_pUVCoord[4] = right;
+			image.m_pUVCoord[5] = bottom;
+			image.m_pUVCoord[6] = left;
+			image.m_pUVCoord[7] = bottom;
+
+			image.m_boundWidth = (float)m_cellWidth;
+			image.m_boundHeight = (float)m_cellHeight;
+		}
+	}
+
+	m_cellStates[0].previous = NULL_IDX;
+	m_cellStates[cellCapacity - 1].next = NULL_IDX;
+
+	m_listHeads[LIST_LIVE] = NULL_IDX;
+	m_listTails[LIST_LIVE] = NULL_IDX;
+	m_listHeads[LIST_FREE] = NULL_IDX;
+	m_listTails[LIST_FREE] = NULL_IDX;
+	m_listHeads[LIST_RECLAIM] = 0;
+	m_listTails[LIST_RECLAIM] = (u16)(index - 1);
+	return true;
+}
+
+namespace {
+bool decodeGridJpeg(
+	const u8* stream,
+	u32 streamSize,
+	u32 expectedWidth,
+	u32 expectedHeight,
+	u8* pixels,
+	u32 capacity,
+	u32* channelCount
+)
+{
+	JSAMPROW rows[1];
+	jpeg_decompress_struct decoder;
+	GridTextureJpegError error;
+	decoder.err = jpeg_std_error(&error.manager);
+	error.manager.error_exit = gridTextureJpegErrorExit;
+	if (setjmp(error.recovery)) {
+		jpeg_destroy_decompress(&decoder);
+		return true;
+	}
+
+	jpeg_create_decompress(&decoder);
+	gridTextureJpegSetSource(&decoder, stream, streamSize);
+	jpeg_read_header(&decoder, TRUE);
+	jpeg_start_decompress(&decoder);
+
+	const u32 sourceChannels = decoder.num_components;
+	const u32 width = decoder.output_width;
+	const u32 height = decoder.output_height;
+	bool unsupported;
+	if ((decoder.num_components == 1) || (decoder.num_components == 3)) {
+		unsupported = false;
+	} else {
+		unsupported = true;
+	}
+	bool decoded = false;
+	if (!expectedWidth || width == expectedWidth) {
+		const u32 pixelCount = width * height;
+		const u32 requiredCapacity = pixelCount * 3;
+		if (!((expectedHeight && height != expectedHeight) ||
+			  (requiredCapacity > capacity) ||
+			  unsupported)) {
+			const u32 rowBytes = width * sourceChannels;
+			while (decoder.output_scanline < height) {
+				rows[0] = pixels + decoder.output_scanline * rowBytes;
+				jpeg_read_scanlines(&decoder, rows, 1);
+			}
+			if (sourceChannels == 1) {
+				// Grey source: widen to RGB in place, from the tail so the
+				// three-byte texel never overwrites an unread sample.
+				const u8* sample = &pixels[pixelCount - 1];
+				u8* texel = &pixels[pixelCount * 3 - 3];
+				for (u32 i = 0; i < pixelCount; ++i) {
+					const u8 grey = *sample--;
+					texel[0] = grey;
+					texel[1] = grey;
+					texel[2] = grey;
+					texel -= 3;
+				}
+			}
+			*channelCount = 3;
+			decoded = true;
+		}
+	}
+	jpeg_finish_decompress(&decoder);
+	jpeg_destroy_decompress(&decoder);
+	return decoded;
+}
+}
+
+bool CKLBGridTextureObject::updateCell(
+	u32 column,
+	u32 row,
+	AssetGridSource* source
+)
+{
+	u8* const* decodedSource;
+	u32 decodedLength;
+	u8 sourceChannels;
+	bool decodeFailed;
+
+	if (source->option >= 5) {
+		u32 decodedChannels;
+		bool decodeOk = false;
+		if (source->option != 6) {
+			if (source->option == 5) {
+				decodedChannels = 4;
+				if (decodeTextureImage(
+						source->data,
+						source->length,
+						m_cellWidth,
+						m_cellHeight,
+						m_decodeBuffer,
+						m_cellWidth * m_cellHeight * 4,
+						&decodedChannels,
+						NULL)) {
+					decodeOk = true;
+				} else {
+					g_gridTextureError = -1;
+				}
+			}
+		} else {
+			decodedChannels = 3;
+			if (decodeGridJpeg(
+					source->data,
+					source->length,
+					m_cellWidth,
+					m_cellHeight,
+					m_decodeBuffer,
+					m_cellWidth * m_cellHeight * 4,
+					&decodedChannels)) {
+				decodeOk = true;
+			} else {
+				g_gridTextureError = -1;
+			}
+		}
+		if (decodeOk) {
+			sourceChannels = decodedChannels;
+			decodeFailed = false;
+		} else {
+			// Unknown or failed payload encoding: leave the cell blank.
+			sourceChannels = m_channelCount;
+			decodeFailed = true;
+		}
+		decodedSource = &m_decodeBuffer;
+		decodedLength = sourceChannels * m_cellHeight * m_cellWidth;
+	} else {
+		decodedSource = &source->data;
+		decodedLength = source->length;
+		sourceChannels = source->option;
+		decodeFailed = false;
+	}
+
+	const u8* decoded = *decodedSource;
+	const u32 height = m_cellHeight;
+	const u32 width = m_cellWidth;
+	const u32 requiredLength = height * sourceChannels * width;
+	const u8* uploadPixels = decoded;
+	if (sourceChannels != m_channelCount) {
+		if (requiredLength > decodedLength) {
+			decodeFailed = true;
+		} else if (sourceChannels > m_channelCount) {
+			const u8* pixel = decoded;
+			u8* destination = m_uploadBuffer;
+			for (u32 index = 0; index < width * height; index++) {
+				*destination++ = *pixel++;
+				*destination++ = *pixel++;
+				*destination++ = *pixel++;
+				pixel++;
+			}
+		} else {
+			const u8* pixel = decoded;
+			u8* destination = m_uploadBuffer;
+			for (u32 index = 0; index < width * height; index++) {
+				*destination++ = *pixel++;
+				*destination++ = *pixel++;
+				*destination++ = *pixel++;
+				*destination++ = 255;
+			}
+		}
+		uploadPixels = m_uploadBuffer;
+	} else if (requiredLength > decodedLength) {
+		decodeFailed = true;
+	}
+
+	if (decodeFailed) {
+		u8* blankTarget = const_cast<u8*>(uploadPixels);
+		if (uploadPixels == source->data) {
+			blankTarget = m_uploadBuffer;
+		}
+		const u32 blankLength =
+			(u32)m_channelCount * ((u32)m_cellWidth * (u32)m_cellHeight);
+		memset(blankTarget, 0, blankLength);
+	}
+
+	if (m_hasBorder) {
+		const u32 channels = m_channelCount;
+		const u32 borderedWidth = (u32)m_cellWidth + 2;
+		const u32 destinationStride = borderedWidth * channels;
+		const u32 sourceStride = (u32)m_cellWidth * channels;
+
+		for (s32 y = (s32)m_cellHeight - 1; y >= 0; y--) {
+			memcpy(
+				m_uploadBuffer + (y + 1) * destinationStride + m_channelCount,
+				uploadPixels + y * sourceStride,
+				sourceStride);
+		}
+		for (u32 y = 0; y < m_cellHeight; y++) {
+			u8* leftBorder = m_uploadBuffer + (y + 1) * destinationStride;
+			memcpy(leftBorder, leftBorder + m_channelCount, m_channelCount);
+			u8* rightBorder =
+				m_uploadBuffer + (y + 2) * destinationStride - m_channelCount;
+			memcpy(rightBorder, rightBorder - m_channelCount, m_channelCount);
+		}
+		memcpy(
+			m_uploadBuffer,
+			m_uploadBuffer + destinationStride,
+			destinationStride);
+		memcpy(
+			m_uploadBuffer + (m_cellHeight + 1) * destinationStride,
+			m_uploadBuffer + m_cellHeight * destinationStride,
+			destinationStride);
+
+		if (m_channelCount == 4) {
+			u8* topRow = m_uploadBuffer;
+			u8* bottomRow =
+				topRow + ((u32)m_cellHeight + 1) * borderedWidth * channels;
+			for (u32 offset = 0; offset < destinationStride; offset += 4) {
+				topRow[offset + 3] = 0;
+				bottomRow[offset + 3] = 0;
+			}
+			const u32 cellWidth = m_cellWidth;
+			u8* borderedRow = m_uploadBuffer + destinationStride;
+			for (u32 y = 0; y < m_cellHeight; y++) {
+				borderedRow[3] = 0;
+				borderedRow[cellWidth * 4 + 7] = 0;
+				borderedRow += destinationStride;
+			}
+		}
+
+		if (!decodeFailed) {
+			const u32 uploadWidth = m_cellWidth + 2;
+			const u32 uploadHeight = m_cellHeight + 2;
+			return m_pTexture->updateTexture(
+				column * uploadWidth,
+				row * uploadHeight,
+				uploadWidth,
+				uploadHeight,
+				m_uploadBuffer,
+				uploadWidth * uploadHeight * m_channelCount);
+		}
+	} else if (!decodeFailed) {
+		const u32 uploadWidth = m_cellWidth;
+		const u32 uploadHeight = m_cellHeight;
+		return m_pTexture->updateTexture(
+			column * uploadWidth,
+			row * uploadHeight,
+			uploadWidth,
+			uploadHeight,
+			const_cast<u8*>(uploadPixels),
+			uploadWidth * uploadHeight * m_channelCount);
+	}
+	return false;
+}
+
+u16 CKLBGridTextureObject::loadImage(
+	AssetGridSource* source,
+	const char* name
+)
+{
+	CKLBAssetManager& manager = CKLBAssetManager::getInstance();
+	if (manager.findAsset(name)) {
+		return reloadImage(source, name);
+	}
+
+	u16 cellIndex = popFront(LIST_RECLAIM);
+	if (cellIndex == NULL_IDX) {
+		cellIndex = popBack(LIST_FREE);
+		if (cellIndex == NULL_IDX) {
+			g_gridTextureError = 3;
+			klb_assertAlways("GRID TEXTURE FULL, IMAGE LOADING FAIL");
+		}
+		// Recycling a live cell: its texture still owns a manager slot.
+		manager.freeAssetSlot(m_imagePointers[cellIndex]->getTexture()->getAssetID());
+	}
+
+	KLBDELETEA(m_imagePointers[cellIndex]->m_pName);
+	KLBDELETEA(m_cellTextures[cellIndex].m_pName);
+
+	m_cellTextures[cellIndex].setNameDirect(name);
+	char imageName[1024];
+	sprintf(imageName, "%s.imag", name);
+	m_imagePointers[cellIndex]->setNameDirect(imageName);
+
+	const u16 columnCount = m_columnCount;
+	const u16 row = cellIndex / columnCount;
+	const u32 column = (u32)cellIndex - (u32)columnCount * row;
+	updateCell(column, row, source);
+
+	manager.allocateAssetSlot(&m_cellTextures[cellIndex]);
+
+	pushFront(LIST_FREE, cellIndex);
+	return cellIndex | m_gridID;
+}
+
+u16 CKLBGridTextureObject::findImage(const char* name) const
+{
+	const CKLBAbstractAsset* asset =
+		CKLBAssetManager::getInstance().findAsset(name);
+	u16 assetID = NULL_IDX;
+	if (asset) {
+		assetID = const_cast<CKLBAbstractAsset*>(asset)->getAssetID();
+		const u16 gridID = assetID >> 12;
+		const u16 cellIndex = assetID & 0x0fff;
+		if ((gridID != m_gridID) ||
+			(cellIndex >= (u32)m_rowCount * m_columnCount) ||
+			(&m_cellTextures[cellIndex] != asset)) {
+			assetID = NULL_IDX;
+		}
+	}
+	return assetID;
+}
+
+bool gridRequestCache(
+	void* grid,
+	AssetGridSource* source,
+	const char* name
+)
+{
+	g_gridTextureError = 0;
+	if (grid) {
+		CKLBGridTextureObject* texture =
+			static_cast<CKLBGridTextureObject*>(grid);
+		if (texture->findImage(name) != NULL_IDX) {
+			return true;
+		}
+		return texture->loadImage(source, name) != NULL_IDX;
+	}
+
+	g_gridTextureError = 1;
+	if (!g_gridTextureFirstError) {
+		g_gridTextureFirstError = g_gridTextureError;
+	}
+	return false;
+}
+
+u32 gridLoadImage(
+	void* grid,
+	AssetGridSource* source,
+	const char* name,
+	bool reload
+)
+{
+	g_gridTextureError = 0;
+	CKLBGridTextureObject* texture =
+		static_cast<CKLBGridTextureObject*>(grid);
+	u32 assetID = NULL_IDX;
+	if (texture) {
+		if (reload) {
+			assetID = texture->reloadImage(source, name);
+		} else {
+			assetID = texture->loadImage(source, name);
+		}
+	} else {
+		g_gridTextureError = 1;
+	}
+
+	if (g_gridTextureError && !g_gridTextureFirstError) {
+		g_gridTextureFirstError = g_gridTextureError;
+	}
+	return assetID;
+}
+
+u16 CKLBGridTextureObject::reloadImage(
+	AssetGridSource* source,
+	const char* name
+)
+{
+	const CKLBAbstractAsset* asset =
+		CKLBAssetManager::getInstance().findAsset(name);
+	if (!asset) {
+		return NULL_IDX;
+	}
+
+	const u16 assetID =
+		const_cast<CKLBAbstractAsset*>(asset)->getAssetID();
+	const u16 gridID = assetID >> 12;
+	const u16 cellIndex = assetID & 0x0fff;
+	if (gridID != m_gridID) {
+		return NULL_IDX;
+	}
+	const u16 columnCount = m_columnCount;
+	const u16 row = cellIndex / columnCount;
+	const u32 column = (u32)cellIndex - (u32)columnCount * row;
+	updateCell(column, row, source);
+	return assetID;
+}

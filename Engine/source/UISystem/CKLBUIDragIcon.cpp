@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -32,10 +32,12 @@ enum {
 enum {
 	DRAGICON_DRAG,
 	DRAGICON_RELEASE,
+	DRAGICON_TAP,
 };
 // 動作モード設定フラグ群
 enum {
 	F_DICON_BASEINVISIBLE = 0x00000001,
+	F_DICON_MODAL         = 0x00000002,
 };
 static IFactory::DEFCMD cmd[] = {
 	{"UI_DRAGICON_ENABLE",		UI_DRAGICON_ENABLE},
@@ -43,8 +45,10 @@ static IFactory::DEFCMD cmd[] = {
 
 	{"DRAGICON_DRAG",			DRAGICON_DRAG},
 	{"DRAGICON_RELEASE",		DRAGICON_RELEASE},
+	{"DRAGICON_TAP",			DRAGICON_TAP},
 
 	{"F_DICON_BASEINVISIBLE",	F_DICON_BASEINVISIBLE },
+	{"F_DICON_MODAL",			F_DICON_MODAL         },
 
 	{0, 0}
 };
@@ -93,7 +97,7 @@ static CKLBTaskFactory<CKLBUIDragIcon> factory("UI_DragIcon", CLS_KLBUIDRAGICON,
 
 CKLBUIDragIcon::CKLBUIDragIcon()
 : CKLBUITask	()
-, m_modalStack	(false)
+, m_modalStack	()
 , m_asset		(NULL)
 , m_dragAsset	(NULL)
 , m_callBack	(NULL)
@@ -208,8 +212,7 @@ CKLBUIDragIcon::initCore(u32 order, float x, float y, AREA * tap_area,
 
 	// ドラッグアイコン関係
 	setStrC(m_dragAsset, drag_asset);
-	int order_step  = drag_order_offset;
-	float alpha     = drag_alpha;
+	m_dragOrderOffset = drag_order_offset;
 	m_center_x  = center_x;
 	m_center_y  = center_y;
 
@@ -230,7 +233,7 @@ CKLBUIDragIcon::initCore(u32 order, float x, float y, AREA * tap_area,
 
 	// assetをロードして、アイコン用、ドラッグ用のNodeを作る
 	m_pIconNode = CKLBUtility::createNodeScript(asset, order, &m_iconHandle);
-	m_pDragNode = CKLBUtility::createNodeScript(drag_asset, order_step + order, &m_dragHandle);
+	m_pDragNode = CKLBUtility::createNodeScript(drag_asset, drag_order_offset + order, &m_dragHandle);
 
 	// この段階でUIノードが出来上がっているので、位置とプライオリティを設定
 	// m_pIconNode->setTranslate(getNum(PR_X), getNum(PR_Y));
@@ -241,14 +244,15 @@ CKLBUIDragIcon::initCore(u32 order, float x, float y, AREA * tap_area,
 
 	// ドラッグアイコンは絶対位置で使用されなければならないため、
 	// root ノードに接続して、必要になるまで invisible にしておく
-	CKLBDrawResource& res = CKLBDrawResource::getInstance();
-	res.getRoot()->addNode(m_pDragNode);
-	SColorVector color;
-	color.m_vector[3] = alpha;
-	m_pDragNode->setColorMatrix(color);
-	m_pDragNode->setVisible(false);
+	m_iconVisible = true;
+	m_dragVisible = false;
+	m_dragX       = 0.0f;
+	m_dragY       = 0.0f;
+	m_dragAlpha   = drag_alpha;
+	updateDragPresentation();
 
 	// ドラッグ領域制限は初期状態で画面全域
+	CKLBDrawResource& res = CKLBDrawResource::getInstance();
 	m_clip.x        = 0;
 	m_clip.y        = 0;
 	m_clip.width    = res.width();
@@ -264,6 +268,28 @@ CKLBUIDragIcon::initCore(u32 order, float x, float y, AREA * tap_area,
 	m_ofs_x = 0;
 	m_ofs_y = 0;
 	return true;
+}
+
+void
+CKLBUIDragIcon::updateDragPresentation()
+{
+	CKLBDrawResource& res = CKLBDrawResource::getInstance();
+	res.getRoot()->addNode(m_pDragNode);
+
+	SColorVector color;
+	color.m_vector[3] = m_dragAlpha;
+	m_pDragNode->setColorMatrix(color);
+	m_pDragNode->setVisible(m_dragVisible);
+}
+
+void
+CKLBUIDragIcon::setModal(bool modal)
+{
+	if(m_flags & F_DICON_MODAL) {
+		m_modalStack.pop();
+		m_modalStack.setModal(modal);
+		m_modalStack.push();
+	}
 }
 
 void
@@ -302,6 +328,7 @@ CKLBUIDragIcon::execute(u32 /*deltaT*/)
 				if(is_tap(item->x, item->y)) {
 					m_state = S_DRAG;	// 状態をドラッグ中のstateに変更
 					m_tid = item->id;	// 操作に使われたポイントIDを記録する
+					m_dragVisible = true;
 					m_pDragNode->setVisible(true);
 
 					// scale が指定された場合、親アイコンは基礎Nodeに繋がっているためscaleが有効になるが、
@@ -310,13 +337,25 @@ CKLBUIDragIcon::execute(u32 /*deltaT*/)
 					float scaleY = m_dragScaleY;
 					m_pDragNode->setScale(scaleX, scaleY);
 
-					int flags = m_flags;
-					if(flags & F_DICON_BASEINVISIBLE) {
+					if(m_flags & F_DICON_BASEINVISIBLE) {
+						m_iconVisible = false;
 						m_pIconNode->setVisible(false);
 					}
 
-					m_pDragNode->setTranslate(item->x - m_center_x, item->y - m_center_y);
+					s32 x, y;
+					drag_clip(item->x, item->y, &x, &y);
+
+					if(m_flags & F_DICON_MODAL) {
+						m_modalStack.remove();
+						m_modalStack.setModal(true);
+						m_modalStack.push();
+					}
+
+					m_dragX = item->x - m_center_x;
+					m_dragY = item->y - m_center_y;
+					m_pDragNode->setTranslate(m_dragX, m_dragY);
 					tpq.useItem(item, this);
+					CKLBScriptEnv::getInstance().call_eventDragIcon(m_callBack, this, DRAGICON_TAP, x, y);
 				}
 			}
 			break;
@@ -330,7 +369,9 @@ CKLBUIDragIcon::execute(u32 /*deltaT*/)
 				s32 x, y;
 				drag_clip(item->x, item->y, &x, &y);
 
-				m_pDragNode->setTranslate(x - m_center_x, y - m_center_y);
+				m_dragX = x - m_center_x;
+				m_dragY = y - m_center_y;
+				m_pDragNode->setTranslate(m_dragX, m_dragY);
 
 				// ドラッグ座標をコールバックに通知する。
 				tpq.useItem(item, this);
@@ -338,7 +379,6 @@ CKLBUIDragIcon::execute(u32 /*deltaT*/)
 			}
 			break;
 		case PAD_ITEM::RELEASE:
-		case PAD_ITEM::CANCEL:
 			{
 				// このタスクのステートがドラッグ中でない限り
 				// そのドラッグは他の用途のためのドラッグ操作。
@@ -348,10 +388,17 @@ CKLBUIDragIcon::execute(u32 /*deltaT*/)
 				s32 x, y;
 				drag_clip(item->x, item->y, &x, &y);
 
+				m_dragVisible = false;
 				m_pDragNode->setVisible(false);
-				int flags = m_flags;
-				if (flags & F_DICON_BASEINVISIBLE) {
+				if (m_flags & F_DICON_BASEINVISIBLE) {
+					m_iconVisible = true;
 					m_pIconNode->setVisible(true);
+				}
+
+				if(m_flags & F_DICON_MODAL) {
+					m_modalStack.remove();
+					m_modalStack.setModal(false);
+					m_modalStack.push();
 				}
 
 				// リリースされた座標をコールバックに通知する。
@@ -367,6 +414,7 @@ CKLBUIDragIcon::execute(u32 /*deltaT*/)
 void
 CKLBUIDragIcon::dieUI()
 {
+	m_modalStack.pop();
 	CKLBUtility::deleteNode(m_pIconNode, m_iconHandle);
 	CKLBUtility::deleteNode(m_pDragNode, m_dragHandle);
 }
@@ -416,6 +464,43 @@ CKLBUIDragIcon::commandUI(CLuaState& lua, int argc, int cmd)
 	}
 
 	return ret;
+}
+
+void
+CKLBUIDragIcon::setOrder(u32 order)
+{
+	if(order == m_order) {
+		return;
+	}
+
+	m_order = order;
+
+	u32 iconHandle = m_iconHandle;
+	u32 dragHandle = m_dragHandle;
+	CKLBNode* iconNode = m_pIconNode;
+	CKLBNode* dragNode = m_pDragNode;
+
+	m_pIconNode = CKLBUtility::createNodeScript(m_asset, m_order, &m_iconHandle);
+	m_pDragNode = CKLBUtility::createNodeScript(
+		m_dragAsset,
+		m_order + m_dragOrderOffset,
+		&m_dragHandle
+	);
+
+	CKLBUtility::deleteNode(iconNode, iconHandle);
+	CKLBUtility::deleteNode(dragNode, dragHandle);
+
+	if(m_pIconNode) {
+		getNode()->addNode(m_pIconNode);
+		m_pIconNode->setPriority(m_order);
+		m_pIconNode->setVisible(m_iconVisible);
+	}
+
+	if(m_pDragNode) {
+		updateDragPresentation();
+		m_pDragNode->setScale(m_dragScaleX, m_dragScaleY);
+		m_pDragNode->setTranslate(m_dragX, m_dragY);
+	}
 }
 
 // Luaの配列で渡された操作エリア情報を取得する

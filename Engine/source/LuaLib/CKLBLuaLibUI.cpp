@@ -15,6 +15,7 @@
 */
 #include "CKLBLuaLibUI.h"
 #include "CKLBUITask.h"
+#include "CKLBUISystem.h"
 #include "CKLBSplineNode.h"
 
 enum {
@@ -39,6 +40,7 @@ static ILuaFuncLib::DEFCONST defcmd[] = {
 	{ "UI_GENERIC_SET_SCALE",		CKLBUITask::UI_GENERIC_SET_SCALE },
 	{ "UI_GENERIC_SET_ROT",			CKLBUITask::UI_GENERIC_SET_ROT },
 	{ "UI_GENERIC_SET_VISIBLE",		CKLBUITask::UI_GENERIC_SET_VISIBLE },
+	{ "UI_GENERIC_GET_RECORDID",	CKLBUITask::UI_GENERIC_GET_RECORDID },
 
 	{ "SPL_VALUE_INT",		CKLBUITask::SPL_VALUE_INT },
 	{ "SPL_VALUE_NUM",		CKLBUITask::SPL_VALUE_NUM },
@@ -71,6 +73,17 @@ CKLBLuaLibUI::~CKLBLuaLibUI() {}
 void CKLBLuaLibUI::addLibrary()
 {
 	addFunction("UIF_Position", CKLBLuaLibUI::luaCalcPosition);
+	addFunction("UI_GetRecordID", CKLBLuaLibUI::luaGetRecordID);
+}
+
+int
+CKLBLuaLibUI::luaGetRecordID(lua_State * L)
+{
+	CLuaState lua(L);
+	char recordID[100];
+	CKLBUtility::numString64(recordID, CKLBUISelectable::getEventSender());
+	lua.retString(recordID);
+	return 1;
 }
 
 int

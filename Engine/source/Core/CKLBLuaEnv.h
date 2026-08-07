@@ -41,18 +41,30 @@ public:
 	bool defineInt			(const char * defName, int value);
 	bool defineNum			(const char * defName, float value);
 	bool defineString		(const char * defName, const char * string);
+	const char* getGlobalString(const char * name);
+	s32 getGlobalInt		(const char * name);
+	float getGlobalFloat	(const char * name);
 
     bool loadScript			(const char * scriptName);
     void execScript			(int deltaT);
 
 	bool sysLoad			(const char * script_name);
+	bool intoUpdate		();
 	bool intoMaintenance	();
 	bool exitMaintenance	();
 
     void errMsg				(const char * str);
+	void dumpLuaStack		(char * buffer, u32 bufferSize, bool encode);
     
     static int load			(lua_State * L);
     static int isLoading	(lua_State * L);
+	static int addExtMsg		(lua_State * L);
+	static int sendException	(lua_State * L);
+	static int copyToClipBoard	(lua_State * L);
+	static int getFreeMemorySize(lua_State * L);
+	static int getUsedMemorySize(lua_State * L);
+	static int requestExtensionEvent(lua_State * L);
+	static int getSMode		(lua_State * L);
     static int command		(lua_State * L);
     static int logging		(lua_State * L);
     static int exitGame		(lua_State * L);

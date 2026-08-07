@@ -35,6 +35,7 @@ const char	*	CKLBUITask::ms_propList[] = {
 CKLBUITask::CKLBUITask(TASK_PHASE phase)
 : CKLBLuaPropTask()
 , m_phase       (phase)
+, m_recordID    (~0ULL)
 , m_initX       (0.0f)
 , m_initY       (0.0f)
 , m_pRegParent  (NULL)
@@ -57,6 +58,7 @@ CKLBUITask::setupNode()
 {
 	m_pUINode = KLBNEW(CKLBSplineNode);
     if(!m_pUINode) { return false; }
+	m_pRootNode = m_pUINode;
 	m_pUINode->setUITask(this);
 	m_pUINode->resetAsInternalNode();
 	m_pUINode->setName("CKLBUITask Node");
@@ -68,7 +70,7 @@ CKLBUITask::registUI(CKLBUITask * pParent, bool result, CKLBTask * pRegParent)
 {
 	// UIタスクの親が pParentで指定されている場合、別の非UIタスクを pRegParent に指定することはできない。
 	// pParent が 0 の場合、pRegParent が 0 でなければそちらが親タスクとして使用される。
-	klb_assert((pParent && !pRegParent) || (!pParent), "double parent assign.");
+	klb_assertNull((pParent && !pRegParent) || (!pParent), "double parent assign.");
 
 	if(!result) {
 		KLBDELETE(m_pUINode);
@@ -135,12 +137,47 @@ CKLBUITask::registUI(CKLBUITask * pParent, bool result, CKLBTask * pRegParent)
     return bResult;
 }
 
+const char **
+CKLBUITask::replaceAssets(CLuaState& lua, int pos, int * retcnt)
+{
+	const int REPLACE_BLOCK = 10;
+	const char ** list = KLBNEWA(const char *, REPLACE_BLOCK);
+	int max     = REPLACE_BLOCK;
+	int cnt     = 0;
+	int cntmax  = 0;
+	lua.retValue(pos);
+	lua.retNil();
+	while(lua.tableNext()) {
+		const char * string = lua.getString(-1);
+
+		lua.retValue(-2);
+		int index = lua.getInt(-1);
+		lua.pop(1);
+
+		cnt = index - 1;
+		if(cntmax < cnt) { cntmax = cnt; }
+		while(cnt >= max) {
+			const char ** tmplist = KLBNEWA(const char *, max + REPLACE_BLOCK);
+			for(int i = 0; i < max; i++) { tmplist[i] = list[i]; }
+			KLBDELETEA(list);
+			list = tmplist;
+			max += REPLACE_BLOCK;
+		}
+		list[cnt] = CKLBUtility::copyString(string);
+		lua.pop(1);
+	}
+	lua.pop(1);
+
+	*retcnt = (cntmax + 1) / 2;
+	return list;
+}
+
 bool
 CKLBUITask::initScript(CLuaState& lua)
 {
 	// 最低一つはパラメータが必要(親タスクのポインタあるいは0)
     if(lua.numArgs() < 1) { return false; }
-	CKLBUITask * pParent = (lua.isNil(1)) ? NULL : (CKLBUITask *)lua.getPointer(1);
+	CKLBUITask * pParent = (lua.isNil(1)) ? NULL : (CKLBUITask *)lua.getScriptPtr(1);
 
     if(!setupNode()) { return false; }
 
@@ -151,11 +188,28 @@ CKLBUITask::initScript(CLuaState& lua)
 	return registUI(pParent, bResult, m_pRegParent);
 }
 
+bool
+CKLBUITask::initScriptSecondary(CLuaState& lua)
+{
+	if(lua.numArgs() < 1) { return false; }
+	CKLBUITask * pParent = (lua.isNil(1)) ? NULL : (CKLBUITask *)lua.getScriptPtr(1);
+
+	if(!setupNode()) { return false; }
+
+	bool bResult = initUISecondary(lua);
+	return registUI(pParent, bResult, m_pRegParent);
+}
+
 void
 CKLBUITask::die()
 {
 	dieUI();
 	KLBDELETE(m_pUINode);
+}
+
+void
+CKLBUITask::onResume()
+{
 }
 
 void CKLBUITask::setColor(u32 color) {
@@ -223,7 +277,7 @@ bool CKLBUITask::reconnect(const char* nodeName) {
 bool
 CKLBUITask::updateUIProperty()
 {
-	klb_assert(!m_newScriptModel, "Never called by new scripting model");
+	klb_assertNull(!m_newScriptModel, "Never called by new scripting model");
 
 	bool bAnim = m_pUINode->isAnimating();
 	if(bAnim) {
@@ -260,7 +314,7 @@ CKLBUITask::updateUIProperty()
 bool
 CKLBUITask::setGenericProperty()
 {
-	klb_assert(!m_newScriptModel, "Never called by new scripting model");
+	klb_assertNull(!m_newScriptModel, "Never called by new scripting model");
 
 	u32 alpha = getInt(PRG_ALPHA + m_beginIndex);
 	u32 color = getInt(PRG_COLOR + m_beginIndex);
@@ -284,6 +338,12 @@ CKLBUITask::setGenericProperty()
 	m_pUINode->setVisible(visible);
 	m_pUINode->setRotation(rot);
 
+	return true;
+}
+
+bool
+CKLBUITask::initUISecondary(CLuaState& /*lua*/)
+{
 	return true;
 }
 
@@ -471,6 +531,14 @@ CKLBUITask::commandScript(CLuaState& lua)
 				result = true;
 			}
 			lua.retBoolean(result);
+			ret = 1;
+		}
+		break;
+	case UI_GENERIC_GET_RECORDID:
+		{
+			char recordID[100];
+			CKLBUtility::numString64(recordID, m_recordID);
+			lua.retString(recordID);
 			ret = 1;
 		}
 		break;

@@ -24,17 +24,17 @@
 
 #include "BaseType.h"
 #include "FileSystem.h"
-
-class CAndroidReadFileStream;
+#include "encryptFile.h"
 
 class CAndroidWriteFileStream : public IWriteStream
 {
-    friend class CAndroidReadFileStream;
 private:
-    CAndroidWriteFileStream(CAndroidReadFileStream& rdStream);
+    CAndroidWriteFileStream(bool encrypt);
     virtual ~CAndroidWriteFileStream();
     
 public:
+    static CAndroidWriteFileStream * openStream(const char * path, bool encrypt);
+
     ESTATUS	getStatus();
 	s32	getPosition();
 	void writeU8(u8 value);	// Use cast to support s8
@@ -44,10 +44,11 @@ public:
 	void writeBlock(void* buffer, u32 byteSize);
     
 private:
-    int         m_fd;
-    FILE    *   m_fp;
-    
-    ESTATUS     m_eStat;
+    CDecryptBaseClass m_decrypter;
+    const char      * m_fullpath;
+    bool              m_encrypt;
+    FILE            * m_fp;
+    ESTATUS           m_eStat;
 };
 
 #endif // CAndroidWriteFileStream_h

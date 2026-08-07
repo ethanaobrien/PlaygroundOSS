@@ -19,7 +19,9 @@
 #include "CKLBLuaEnv.h"
 #include "CKLBFormGroup.h"
 
-CKLBTouchEventUIMgr::CKLBTouchEventUIMgr() : m_pFormBegin(NULL)
+CKLBTouchEventUIMgr::CKLBTouchEventUIMgr()
+: m_pFormBegin(NULL)
+, m_pDragTarget(NULL)
 {
 	for(int i = 0; i < MAX_TOUCH_POINT; i++) m_pTarget[i] = 0;
 }
@@ -30,6 +32,18 @@ CKLBTouchEventUIMgr::getInstance()
 {
 	static CKLBTouchEventUIMgr instance;
 	return instance;
+}
+
+void
+CKLBTouchEventUIMgr::dumpFormList()
+{
+	// Debug aid: report every registered form list with its current flags.
+	SFormCtrlList * pList = m_pFormBegin;
+	while(pList) {
+		printf("FormCtrlList:%p Enable:%i Exclusive:%i Working:%i Group:%p\n",
+			pList, pList->bEnable, pList->bExclusive, pList->bWorking, pList->pGroup);
+		pList = pList->next;
+	}
 }
 
 void
@@ -61,10 +75,11 @@ CKLBTouchEventUIMgr::removeForm(SFormCtrlList * pList)
 }
 
 SFormCtrlList *
-CKLBTouchEventUIMgr::searchCtrl(CKLBUISelectable * pCtrl)
+CKLBTouchEventUIMgr::searchCtrl(CKLBUISelectable ** ppCtrl)
 {
 	// 対象のコントロールが含まれるフォームの単位を検索する
 	SFormCtrlList * pList = m_pFormBegin;
+	CKLBUISelectable * pCtrl = *ppCtrl;
 
 	while(pList) {
 
@@ -72,6 +87,9 @@ CKLBTouchEventUIMgr::searchCtrl(CKLBUISelectable * pCtrl)
 		while(pItem) {
 			if(pItem == pCtrl) {
 				// このリストに含まれているので、リストのポインタを返す
+				if(!pList->bEnableEvents) {
+					*ppCtrl = NULL;
+				}
 				return pList;
 			}
 			pItem = pItem->getNextSelectable();
@@ -86,12 +104,88 @@ CKLBTouchEventUIMgr::searchCtrl(CKLBUISelectable * pCtrl)
 void
 CKLBTouchEventUIMgr::resetSelectable(CKLBUISelectable * pSelectable)
 {
+	CKLBFormGroup& fGrp = CKLBFormGroup::getInstance();
 	for(int i = 0; i < MAX_TOUCH_POINT; i++) {
 		if(m_pTarget[i] == pSelectable) {
+			SFormCtrlList * pList = m_pFormBegin;
+			while(pList) {
+				CKLBUISelectable * pItem = pList->pBegin;
+				while(pItem) {
+					if(pItem == pSelectable) {
+						fGrp.setWorking(pList, false);
+						break;
+					}
+					pItem = pItem->getNextSelectable();
+				}
+				if(pItem) break;
+				pList = pList->next;
+			}
 			m_pTarget[i] = 0;
 			break;
 		}
 	}
+}
+
+void
+CKLBTouchEventUIMgr::resetDragTarget(CKLBUISelectable * pSelectable)
+{
+	if (m_pDragTarget == pSelectable) {
+		resetSelectable(pSelectable);
+		m_pDragTarget = NULL;
+	}
+}
+
+s32
+CKLBTouchEventUIMgr::processRelease(const PAD_ITEM * item, CKLBUISelectable ** ppCtrl)
+{
+	CKLBFormGroup& fGrp = CKLBFormGroup::getInstance();
+	bool result = false;
+	*ppCtrl = m_pTarget[item->id];
+	if(*ppCtrl) {
+		SFormCtrlList * pList = searchCtrl(ppCtrl);
+		if(pList) fGrp.setWorking(pList, false);
+
+		if(*ppCtrl) {
+			int mv_x = item->x - m_tapPos[item->id].x;
+			int mv_y = item->y - m_tapPos[item->id].y;
+			int ax = (mv_x < 0) ? -mv_x : mv_x;
+			int ay = (mv_y < 0) ? -mv_y : mv_y;
+
+			if(ax > MV_BORDER || ay > MV_BORDER) {
+				CKLBAction action;
+				action.m_actionType = ACTION_UNDEF;
+				if((*ppCtrl)->isEnabled()) {
+					(*ppCtrl)->processAction(&action);
+				}
+
+				if(pList && pList->pCallbackIF) {
+					pList->pCallbackIF->callback(item->type,
+										m_tapPos[item->id].x,
+										m_tapPos[item->id].y,
+										mv_x, mv_y);
+				} else if(pList->nativeCallback) {
+					pList->nativeCallback(pList->pID,
+									   item->type,
+									   m_tapPos[item->id].x,
+									   m_tapPos[item->id].y,
+									   mv_x, mv_y,
+									   item->x, item->y);
+				}
+			} else {
+				bool cancel = pList && !pList->bEnable
+							 && m_pDragTarget && m_pDragTarget == *ppCtrl;
+				if(pList && !pList->bEnable && !cancel) return true;
+
+				CKLBAction action;
+				action.m_actionType = cancel ? ACTION_CANCEL : ACTION_RELEASE;
+				if((*ppCtrl)->isEnabled()) {
+					(*ppCtrl)->processAction(&action);
+				}
+			}
+			result = true;
+		}
+	}
+	return result;
 }
 
 void
@@ -106,9 +200,6 @@ CKLBTouchEventUIMgr::processUI()
 	tpq.startItem();
 
 	const PAD_ITEM * item;
-	float xf;
-	float yf;
-
 	CKLBFormGroup& fGrp = CKLBFormGroup::getInstance();
 
 	u32 tapMask = 0;
@@ -123,10 +214,6 @@ CKLBTouchEventUIMgr::processUI()
 		DEBUG_PRINT("EventP:%i,%i,%i,%i",item->id, item->type, item->x, item->y);
 #endif
 
-//		if ((item->type == PAD_ITEM::RELEASE) || (item->type == PAD_ITEM::TAP)) {
-			xf = (float)item->x;
-			yf = (float)item->y;
-
 			u32 msk = 1 << item->id;
 
 			switch(item->type)
@@ -136,10 +223,11 @@ CKLBTouchEventUIMgr::processUI()
 					if ((tapMask & msk) != 0) {  
 						break;
 					}
-					CKLBUISelectable * hitObj = CKLBUISystem::hitTest(xf, yf);
+					CKLBUISelectable * hitObj = CKLBUISystem::hitTest(item->x, item->y, false);
 					if(hitObj) {
 						// そのコントロールが含まれるフォーム情報を得る
-						SFormCtrlList * pList = searchCtrl(hitObj);
+						SFormCtrlList * pList = searchCtrl(&hitObj);
+						if(!hitObj) break;
 						if(pList) {
 							// そのコントロールが操作禁止状態にあれば、
 							// 操作イベントを無視する。
@@ -155,6 +243,7 @@ CKLBTouchEventUIMgr::processUI()
 						}
 						CKLBAction action;
 						if (hitObj->isVisible()) {
+							m_pDragTarget = hitObj;
 							m_pTarget[item->id] = hitObj;
 							m_tapPos[item->id].x = item->x;
 							m_tapPos[item->id].y = item->y;
@@ -193,7 +282,8 @@ CKLBTouchEventUIMgr::processUI()
 						// 移動量が閾値を超えていれば、もはやクリック操作ではない。
 						if(ax > MV_BORDER || ay > MV_BORDER) {
 							// タップされていたターゲットのフォーム情報を得る
-							SFormCtrlList * pList = searchCtrl(hitObj);
+							SFormCtrlList * pList = searchCtrl(&hitObj);
+							if(!hitObj) break;
 
 							CKLBAction action;
 							action.m_actionType = ACTION_UNDEF;
@@ -212,17 +302,29 @@ CKLBTouchEventUIMgr::processUI()
 							
 							} else {
 								// DRAGのコールバックが指定されていたら基点と移動量を与えて呼び出す
+								s32 release = 0;
 								if(pList->pCallbackIF) {
-									pList->pCallbackIF->callback(item->type, 
-																	m_tapPos[item->id].x,
-																	m_tapPos[item->id].y,
-																	mv_x, mv_y);
-								} else if(pList->nativeCallback) {
-									pList->nativeCallback(pList->pID,
-															item->type,
+									release = pList->pCallbackIF->callback(item->type,
 															m_tapPos[item->id].x,
 															m_tapPos[item->id].y,
 															mv_x, mv_y);
+								} else if(pList->nativeCallback) {
+									release = pList->nativeCallback(pList->pID,
+														item->type,
+														m_tapPos[item->id].x,
+														m_tapPos[item->id].y,
+														mv_x, mv_y,
+														item->x, item->y);
+								}
+								if(release) {
+									PAD_ITEM releaseItem;
+									releaseItem.id     = item->id;
+									releaseItem.locker = item->locker;
+									releaseItem.type   = PAD_ITEM::RELEASE;
+									releaseItem.x      = item->x;
+									releaseItem.y      = item->y;
+									processRelease(&releaseItem, &hitObj);
+									m_pTarget[item->id] = 0;
 								}
 							}
 						}
@@ -230,63 +332,18 @@ CKLBTouchEventUIMgr::processUI()
 				}
 				break;
 			case PAD_ITEM::RELEASE:
-			case PAD_ITEM::CANCEL:
 				{
 					if ((tapMask & msk) != 0) {  
 						break;
-					} else {
-						tapMask |= msk;
 					}
 
-					CKLBUISelectable * hitObj = 0; // CKLBUISystem::hitTest(xf, yf);
-					if(m_pTarget[item->id]) hitObj = m_pTarget[item->id];
-
-					if(hitObj) {
-						// そのコントロールが含まれるフォーム情報を得る
-						SFormCtrlList * pList = searchCtrl(hitObj);
-						if(pList) fGrp.setWorking(pList, false);
-
-						int mv_x = item->x - m_tapPos[item->id].x;
-						int mv_y = item->y - m_tapPos[item->id].y;
-						int ax = (mv_x < 0) ? -mv_x : mv_x;
-						int ay = (mv_y < 0) ? -mv_y : mv_y;
-
-						// 移動量が閾値を超えていれば、もはやクリック操作ではない。
-						if(ax > MV_BORDER || ay > MV_BORDER) {
-							CKLBAction action;
-							action.m_actionType = ACTION_UNDEF;
-							if (hitObj->isEnabled()) {
-								hitObj->processAction(&action);							
-							}								
-
-							// DRAGのコールバックが指定されていたら基点と移動量を与えて呼び出す
-							if(pList && pList->pCallbackIF) {
-								pList->pCallbackIF->callback(item->type, 
-																m_tapPos[item->id].x,
-																m_tapPos[item->id].y,
-																mv_x, mv_y);
-							} else if(pList->nativeCallback) {
-								pList->nativeCallback(pList->pID,
-														item->type,
-														m_tapPos[item->id].x,
-														m_tapPos[item->id].y,
-														mv_x, mv_y);
-							}
-						} else {
-							// あまり動かずにリリースされたので、
-							// クリック操作とみなす。
-							if(!pList || pList->bEnable) {
-								// その時点で操作が禁止されていたら、リリースも発行しない。
-								CKLBAction action;
-								action.m_actionType = ACTION_RELEASE;
-								if (hitObj->isEnabled()) {
-									hitObj->processAction(&action);
-								}
-							}
-						}
+					CKLBUISelectable * hitObj = NULL;
+					if(processRelease(item, &hitObj)) {
 						tpq.useItem(item, hitObj);
-						m_pTarget[item->id] = 0;
 					}
+					tapMask |= msk;
+					m_pTarget[item->id] = 0;
+					m_pDragTarget = 0;
 				}
 				break;
 			}

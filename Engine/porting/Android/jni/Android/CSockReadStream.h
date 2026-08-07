@@ -40,6 +40,7 @@ private:
 public:
     // delete はできる。
     virtual ~CSockReadStream();
+    bool isUserEncrypted() { return false; }
 
     // 指定されたIPアドレスまたはFQDNとPORTで CSockReadStream インスタンスを作り、そのポインタを返す。
     // このクラスメソッドはプラットフォーム側のために用意され、ゲーム側では IReadStream のポインタとして
@@ -56,8 +57,8 @@ public:
     bool    readBlock(void * buffer, u32 byteSize);
     ESTATUS getStatus();
 
-    int     readU16arr(u16 * pBufferU16, int items);
-    int     readU32arr(u32 * pBufferU32, int items);
+    size_t  readU16arr(u16 * pBufferU16, size_t items);
+    size_t  readU32arr(u32 * pBufferU32, size_t items);
 
     IWriteStream * getWriteStream();
 private:

@@ -18,6 +18,7 @@
 
 #include "CKLBUITask.h"
 #include "CKLBModalStack.h"
+#include "CKLBUISystem.h"
 
 /*!
 * \class CKLBUIDragIcon
@@ -79,6 +80,7 @@ public:
 	const char *	m_asset;
 
 	inline u32	        getOrder    ()						{	return m_order;			}
+	virtual void        setOrder    (u32 order);
 	inline const char*  getAsset    ()					    {	return m_asset;			}
 	inline const char*  getDrag     ()					    {	return m_dragAsset;		}
 	inline u32	        getFlags    ()						{	return m_flags;			}
@@ -125,6 +127,8 @@ private:
 	bool		is_tap      (int x, int y);
 	bool		get_area    (CLuaState& lua, int argp, AREA& area);
 	bool		drag_clip   (s32 drx, s32 dry, s32 * x, s32 * y);
+	void		updateDragPresentation();
+	void		setModal    (bool modal);
 
 	AREA					m_clip;		// ドラッグ可能範囲
 	AREA					m_area;		// アイコン操作エリア
@@ -149,7 +153,15 @@ private:
 	u32						m_iconHandle;
 	u32						m_dragHandle;
 
+	s32						m_dragOrderOffset;
+	float					m_dragX;
+	float					m_dragY;
+	float					m_dragAlpha;
+	bool					m_iconVisible;
+	bool					m_dragVisible;
+
 	CKLBModalStack			m_modalStack;	// モーダルスタック
+	SFormCtrlList			m_ctrlList;		// Form / touch-event control state
 
 	static	PROP_V2			ms_propItems[];
 };

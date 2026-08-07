@@ -56,7 +56,7 @@ struct SClipRecord {
 	CKLBRenderState*	pClipEndState;
 };
 
-#define UI_SYS_MAXCLIP_ARRAY		(16)
+#define UI_SYS_MAXCLIP_ARRAY		(32)
 struct SFormCtrlList;
 
 /*!
@@ -68,17 +68,21 @@ struct SFormCtrlList;
 */
 class CKLBUISystem {
 public:
-	static CKLBUISelectable*	hitTest				(float screenX, float screenY);
+	static CKLBUISelectable*	hitTest				(s32 screenX, s32 screenY, bool checkScreen);
 	static CKLBUISelectable*	createTouchSurface	(CKLBUISelectable*	pSource , u32 priority);
 	static void					releaseTouchSurface	(CKLBUISelectable*	pSurface);
 	static void					releaseAll          ();
 	static void					setFormList			(SFormCtrlList * pList);
+	static void					resetFormList		();
 	static void*				registerClip		(CKLBRenderState* startClip, CKLBRenderState* endClip);
 	static void					unregisterClip		(void* clipHandle);
 private:
+	enum { FORM_LIST_STACK_CAPACITY = 1 };
 	static bool					checkRange			(CKLBRenderState* startClip, CKLBRenderState* endClip);
 
 	static SFormCtrlList*		s_formList;
+	static SFormCtrlList*		s_formListStack[FORM_LIST_STACK_CAPACITY];
+	static u16					s_formListStackDepth;
 	static SClipRecord*			s_clip_array[UI_SYS_MAXCLIP_ARRAY];
 	static u16					s_clip_arraySize;
 };
@@ -112,7 +116,6 @@ public:
 	CKLBUIElement();
 	~CKLBUIElement();
 
-	void	storeDoRefLock		(bool doRefCounting)	{ m_bDoRefCount = doRefCounting; }
 
 	virtual
 	u32		getClassID			()					    { return CLS_KLBUIELEMENT; }
@@ -130,6 +133,8 @@ public:
 	virtual bool isContainer	()		{ return false; }
 
 	virtual void setAsset		(CKLBAsset*	pAsset, ASSET_TYPE mode);
+	virtual const char* getAssetName(ASSET_TYPE mode);
+	virtual void replaceAsset	(const char* sourceName, CKLBAsset* replacement);
 
 	CKLBUIContainer* getParentUI();
 
@@ -165,6 +170,8 @@ protected:
 	bool	processListener		(CKLBAction* pAction);
 
 	virtual void setUpperEnabled(bool isEnabled);
+	virtual CKLBNode* createSubTree(CKLBAsset* pAsset, u32 priority);
+	static void retainAsset	(CKLBAsset* pAsset);
 	void releaseAsset			(CKLBAsset* pAsset);
 	void switchTo				(UI_STATE newState);
 
@@ -192,7 +199,6 @@ protected:
 	UI_STATE			m_UIState;
 	bool				m_bEnabled;
 	bool				m_bUpperEnabled;
-	bool				m_bDoRefCount;
 	const char*			m_luaFunc;		// callback Lua function
 
 private:
@@ -232,6 +238,10 @@ public:
 	void	setEnabled			(bool isEnabled);
 	virtual
 	void	setAsset			(CKLBAsset*	pAsset, ASSET_TYPE mode);
+	virtual
+	const char* getAssetName	(ASSET_TYPE mode);
+	virtual
+	void replaceAsset		(const char* sourceName, CKLBAsset* replacement);
 
 	void	setAudio			(CKLBAudioAsset* pAudioAsset, u32 mode, float volume, bool bOwner = false);
 	void	setMultiplyVolume	(u32 mode, float factorVolume);
@@ -239,7 +249,7 @@ public:
 	virtual
 	bool	processAction		(CKLBAction* pAction);
 
-	bool	init				(u32 priority);
+	virtual bool init		(u32 priority);
 
 	//
 	// Define rectangle for reaction to touch screen.
@@ -270,7 +280,10 @@ public:
 
 	inline
 	CKLBUISelectable*	getNextSelectable() { return m_pNextSelectable; }
+	inline void setRecordID(u64 recordID) { m_recordID = recordID; }
+	static u64			getEventSender();
 protected:
+	virtual void invisibleSelf	();
 	void	resetSticked		(CKLBUIElement* pElement);
 	void	setStickedRecurse	(CKLBNode* pNode);
 
@@ -284,6 +297,7 @@ protected:
 	CKLBNode*	m_pPushedTree;
 	CKLBAudioAsset*	m_pDownAudio;
 	CKLBAudioAsset* m_pUpAudio;
+	u64			m_recordID;
 	float		m_pDownVolumeOriginal;
 	float		m_pUpVolumeOriginal;
     float       m_pDownVolumeFactor;
@@ -292,6 +306,7 @@ protected:
 	float		m_pUpVolume;
 	bool		m_bOwnerDownAudio;
 	bool		m_bOwnerUpAudio;
+	bool		m_bLocked;		// Used for canceling an event. (drag)
 
 	u32			m_modalResult;
 	u32			m_radioID;
@@ -302,7 +317,7 @@ protected:
 
 	bool	m_bStick;		// Stay down even if current state is "up".
 	bool	m_bDown;		// Current State.
-	bool	m_bLocked;		// Used for canceling an event. (drag)
+	bool	m_bStickLock;	// Preserve a checkbox's locked-down state until release.
 	int		m_lastClick;	// last click frameID
 
 	void setStickedInternal(bool isSticked);
@@ -313,26 +328,28 @@ struct SFormCtrlList {
 	CKLBUISelectable	*	pBegin;
 
 	void				*	pGroup;		// Formが所属するグループのポインタ
-	SFormCtrlList		*	pGrpPrev;	// グループ内リンク用
-	SFormCtrlList		*	pGrpNext;	// グループ内リンク用
 
 	bool					bExclusive;
 	bool					bWorking;
 	bool					bEnable;
+	bool					bEnableEvents;
 
 	SFormCtrlList(void)
 		: next      (NULL)
         , pBegin    (NULL)
         , pGroup    (NULL)
-        , pGrpPrev  (NULL)
-        , pGrpNext  (NULL)
         , bExclusive(false)
         , bWorking  (false)
         , bEnable   (false)
+		, bEnableEvents(true)
+		, pCallbackIF(NULL)
+		, nativeCallback(NULL)
+		, pID       (NULL)
 	{}
 
 	CKLBDragCallbackIF	*	pCallbackIF;
-	void (*nativeCallback)(void * pData, PAD_ITEM::TYPE type, int dragX, int dragY, int mvX, int mvY);
+	s32 (*nativeCallback)(void * pData, PAD_ITEM::TYPE type, int dragX, int dragY,
+						  int mvX, int mvY, int x, int y);
 	CKLBObjectScriptable*	pID;
 };
 

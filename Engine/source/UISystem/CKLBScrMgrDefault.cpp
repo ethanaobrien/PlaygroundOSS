@@ -14,8 +14,56 @@
    limitations under the License.
 */
 #include "CKLBScrMgrDefault.h"
+#include "CKLBScrMgrSlide.h"
 
+static CKLBScrMgrSurfFactory factorySurf("slide");
 static CKLBScrMgrDefaultFactory factory("default");
+
+CKLBScrMgrSurf::CKLBScrMgrSurf(float brake, float speedFactor)
+: m_brake               (brake)
+, m_velocity            (0.0f)
+, m_speedFactor         (speedFactor)
+, m_position            (0.0f)
+, m_targetPosition      (0.0f)
+, m_accumulatedPosition (0.0f)
+, m_scrollEnabled       (false)
+, m_dragging            (true)
+, m_callbackPending     (false)
+{
+}
+
+CKLBScrMgrSurf::~CKLBScrMgrSurf()
+{
+}
+
+CKLBScrMgrSurfFactory::CKLBScrMgrSurfFactory(const char * name)
+: IMgrEntry(name)
+{
+}
+
+CKLBScrMgrSurfFactory::~CKLBScrMgrSurfFactory()
+{
+}
+
+CKLBScrollMgr *
+CKLBScrMgrSurfFactory::createManager(int argc, int args[])
+{
+	float brake       = (argc > 0) ? (float)args[0] : (float)DEFAULT_BRAKE;
+	float speedFactor = (argc > 1) ? (float)args[1] : (float)DEFAULT_SPEEDFACTOR;
+	return KLBNEWC(CKLBScrMgrSurf, (brake / 1000.0f, speedFactor / 1000.0f));
+}
+
+CKLBScrollMgr *
+CKLBScrMgrSurfFactory::createManagerByProperty(CKLBPropertyBag * pProp)
+{
+	float brake = (pProp->getIndex("brake") >= 0)
+		? (float)pProp->getPropertyInt("brake")
+		: (float)DEFAULT_BRAKE;
+	float speedFactor = (pProp->getIndex("speedfactor") >= 0)
+		? (float)pProp->getPropertyInt("speedfactor")
+		: (float)DEFAULT_SPEEDFACTOR;
+	return KLBNEWC(CKLBScrMgrSurf, (brake / 1000.0f, speedFactor / 1000.0f));
+}
 
 CKLBScrMgrDefaultFactory::CKLBScrMgrDefaultFactory(const char * name) 
 : IMgrEntry (name) 
@@ -91,7 +139,8 @@ CKLBScrMgrDefault::getBarPosition()
 void
 CKLBScrMgrDefault::execute(u32 /* deltaT */)
 {
-	if((int)m_posTarget == (int)(m_posNow + 0.05f)) {
+	if(   (int)m_posTarget == (int)(m_posNow + 0.05f)
+	   || (m_speed != 0.0f && fabs(m_speed) <= 0.2f)) {
 		m_posNow    = m_posTarget;
 		m_mvDir     = 0;
 		m_speed     = 0.0f;
@@ -99,8 +148,16 @@ CKLBScrMgrDefault::execute(u32 /* deltaT */)
 		return;
 	}
 	float target = m_posTarget;
-    if(m_mvDir < 0 && target > m_posNow) { target -= m_lenLoop; }
-	if(m_mvDir > 0 && target < m_posNow) { target += m_lenLoop; }
+	if(m_lenLoop) {
+		int distance = (int)fabs(m_posNow - target);
+		if(distance >= abs(m_lenLoop - distance)) {
+			if(target < m_posNow) {
+				target += m_lenLoop;
+			} else {
+				target -= m_lenLoop;
+			}
+		}
+	}
 	float left = target - m_posNow;
 
 	m_speed   = left / m_delay;
@@ -110,6 +167,5 @@ CKLBScrMgrDefault::execute(u32 /* deltaT */)
 
 bool 
 CKLBScrMgrDefault::stillScrolling() {
-	// Less than 2 pix per second.
-	return fabs(m_speed) > 2.0f;
+	return false;
 }

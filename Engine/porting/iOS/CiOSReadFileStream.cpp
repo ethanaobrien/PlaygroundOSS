@@ -286,10 +286,10 @@ CiOSReadFileStream::getWriteStream()
     return m_writeStream;
 }
 
-int
-CiOSReadFileStream::readU16arr(u16 *pBufferU16, int items)
+size_t
+CiOSReadFileStream::readU16arr(u16 *pBufferU16, size_t items)
 {
-    int cnt = fread(pBufferU16, sizeof(u16), items, m_fp);
+    size_t cnt = fread(pBufferU16, sizeof(u16), items, m_fp);
     m_decrypter.decryptBlck(pBufferU16, sizeof(u16) * cnt);
 
     // iOS と Android/ARM では元々big endian なので、バイトオーダーの入れ替えは特に不要。
@@ -297,10 +297,10 @@ CiOSReadFileStream::readU16arr(u16 *pBufferU16, int items)
     return cnt;
 }
 
-int
-CiOSReadFileStream::readU32arr(u32 *pBufferU32, int items)
+size_t
+CiOSReadFileStream::readU32arr(u32 *pBufferU32, size_t items)
 {
-    int cnt = fread(pBufferU32, sizeof(u32), items, m_fp);    
+    size_t cnt = fread(pBufferU32, sizeof(u32), items, m_fp);    
     m_decrypter.decryptBlck(pBufferU32, sizeof(u32) * cnt);
 
 	// iOS と Android/ARM では元々big endian なので、バイトオーダーの入れ替えは特に不要。

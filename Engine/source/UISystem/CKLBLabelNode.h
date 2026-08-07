@@ -29,6 +29,7 @@
 class CKLBLabelNode : public CKLBUIElement {
 public:
 	CKLBLabelNode(int fontsize, const char * fontname = 0, const char * text = 0);
+	CKLBLabelNode(int fontsize, bool parseInlineFormatting, const char * fontname, const char * text);
 	~CKLBLabelNode();
 
 	// KLBObject::
@@ -51,6 +52,7 @@ public:
 	void		lock			(bool stop);
 	void		setAlign		(u32 align);
 	void		setText			(const char* text);
+	void		setTextEllipsis	(const char* ellipsis);
 	const char*	getText			();
 
 	void		setTextColor	(u32 color);
@@ -61,9 +63,20 @@ public:
 	bool		setFont			(int fontsize, const char * fontname);   
 
 	void		setUseTextSize	(bool autoSize);
+	void		setFontPolicy	(bool useNativeFont, u32 fitMode);
+	void		setFit			(bool enabled, u32 lineHeight, bool wrap);
+	void		setMarquee		(u32 active, s32 insetLeft, s32 insetRight, s32 insetTop, s32 insetBottom);
+	void		setMarquee		(s16 startDelay, s16 endDelay, u8 mode, float speed);
+	void		setMarqueePosition(s16 position);
+	void		updateMarquee	(s32 deltaT);
+	bool		isMarqueeStopped();
+	void		setViewPortPosition(s32 x);
+	void		setShadow		(u32 color, s32 offsetX, s32 offsetY, float blur, u8 enabled);
 	void		setPriority		(u32 renderPriority);
+	CKLBNodeVirtualDocument* getVirtualDocument() const { return m_pLabel; }
 
 	void		forceRefresh	()  { m_pLabel->forceRefresh(); }
+	void		freeFont		();
 
 	static bool setDefaultFont  (const char * fontname = 0);
 	static void release         ();
@@ -88,19 +101,51 @@ protected:
 
 	char	*	m_textBuf;
 	size_t		m_textLen;
+	char	*	m_textEllipsis;
+	u32		m_textEllipsisLen;
 
 	u32		m_align;
-	float	m_tx;
+	u32		m_shadowColor;
 	float	m_ty;
 	float	m_alignX;
-	float	m_alignY;
+	s32		m_fitLineHeight;
+	float	m_marqueeInsetLeft;
+	float	m_marqueeInsetRight;
+	float	m_marqueeInsetTop;
+	float	m_marqueeInsetBottom;
+	float	m_marqueePosition;
+	s16		m_shadowBlurFixed;
+	s8		m_shadowOffsetX;
+	s8		m_shadowOffsetY;
+	s8		m_shadowPassCount;
+	u8		m_marqueeActive;
 	u8		m_format;
 	bool	m_lock;
 	bool	m_changed;
 	bool	m_useTextSize;
+	bool	m_fitEnabled;
+	bool	m_fitWrap;
+	bool	m_parseInlineFormatting;
+	bool	m_useNativeFont;
+	u32		m_fitMode;
 
 private:
 
+	static void findLabelDocumentList(
+		CKLBNodeVirtualDocument*** documentList,
+		const char* fontName,
+		u8 fontSize,
+		u32 textColor,
+		u32 shadowColor,
+		const char* text,
+		s8 shadowOffsetX,
+		s8 shadowOffsetY,
+		u16 shadowBlurFixed,
+		u32 documentWidth,
+		u32 documentHeight,
+		float scaleX,
+		float scaleY
+	);
 	void updateLabel();
 
 	static const char * ms_default_font;

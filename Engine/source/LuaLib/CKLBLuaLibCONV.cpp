@@ -16,6 +16,14 @@
 #include "CKLBLuaLibCONV.h"
 #include "CKLBUtility.h"
 
+#include "KLBBase64.h"
+
+
+static int base64Encode(lua_State* L);
+static int base64Decode(lua_State* L);
+static int xorString(lua_State* L);
+static int hexlify(lua_State* L);
+
 static CKLBLuaLibCONV libdef(0);
 
 CKLBLuaLibCONV::CKLBLuaLibCONV(DEFCONST * arrConstDef) : ILuaFuncLib(arrConstDef) {}
@@ -28,6 +36,109 @@ CKLBLuaLibCONV::addLibrary()
 	addFunction("CONV_Lua2Json",     CKLBLuaLibCONV::lua2json);
 	addFunction("CONV_Json2Lua",     CKLBLuaLibCONV::json2lua);
 	addFunction("CONV_JsonFile2Lua", CKLBLuaLibCONV::jsonfile2lua);
+	addFunction("CONV_base64_encode", base64Encode);
+	addFunction("CONV_base64_decode", base64Decode);
+	addFunction("CONV_xor_string",    xorString);
+	addFunction("CONV_hexlify",       hexlify);
+}
+
+static int
+base64Encode(lua_State* L)
+{
+	CLuaState lua(L);
+	if (lua.numArgs() == 1) {
+		size_t inputLength;
+		const char* input = lua.getString(1, &inputLength);
+		if (input) {
+			size_t capacity = ((inputLength + 2) / 3) * 4 + 1;
+			char* output = KLBNEWA(char, capacity);
+			u32 outputLength;
+			KLBNetAPI_encodeBase64(input, inputLength, output, &outputLength);
+			if (outputLength) {
+				lua.retString(output, outputLength - 1);
+				KLBDELETEA(output);
+			} else {
+				lua.retBool(false);
+			}
+		} else {
+			lua.retBool(false);
+		}
+	} else {
+		lua.retBool(false);
+	}
+	return 1;
+}
+
+static int
+base64Decode(lua_State* L)
+{
+	CLuaState lua(L);
+	if (lua.numArgs() == 1) {
+		size_t inputLength;
+		const char* input = lua.getString(1, &inputLength);
+		if (input) {
+			char* output = KLBNEWA(char, inputLength + 1);
+			u32 outputLength;
+			KLBNetAPI_decodeBase64(input, output, &outputLength);
+			lua.retString(output, outputLength);
+			KLBDELETEA(output);
+		} else {
+			lua.retBool(false);
+		}
+	} else {
+		lua.retBool(false);
+	}
+	return 1;
+}
+
+static int
+xorString(lua_State* L)
+{
+	CLuaState lua(L);
+	if (lua.numArgs() == 2) {
+		size_t leftLength;
+		size_t rightLength;
+		const char* left = lua.getString(1, &leftLength);
+		const char* right = lua.getString(2, &rightLength);
+		if (left && right && leftLength == rightLength) {
+			char* output = KLBNEWA(char, leftLength);
+			for (size_t i = 0; i < leftLength; ++i) {
+				output[i] = left[i] ^ right[i];
+			}
+			lua.retString(output, leftLength);
+			KLBDELETEA(output);
+		} else {
+			lua.retBool(false);
+		}
+	} else {
+		lua.retBool(false);
+	}
+	return 1;
+}
+
+static int
+hexlify(lua_State* L)
+{
+	CLuaState lua(L);
+	if (lua.numArgs() == 1) {
+		size_t inputLength;
+		const char* input = lua.getString(1, &inputLength);
+		if (input) {
+			char* output = KLBNEWA(char, inputLength * 2 + 1);
+			size_t outputLength = 0;
+			for (size_t i = 0; i < inputLength; ++i) {
+				sprintf(output + i * 2, "%02x", static_cast<unsigned char>(input[i]));
+			}
+			outputLength = inputLength * 2;
+			lua.retString(output, outputLength);
+			KLBDELETEA(output);
+		} else {
+			lua.retBool(false);
+		}
+	} else {
+		lua.retBool(false);
+	}
+	return 1;
 }
 
 
@@ -37,7 +148,7 @@ CKLBLuaLibCONV::lua2json(lua_State * L)
 	CLuaState lua(L);
 
 	lua.retValue(1);
-	u32 size; // Ignored here.
+	size_t size; // Ignored here.
 	const char * json = CKLBUtility::lua2json(lua,size);
 	lua.pop(1);
 	lua.retString(json);
@@ -63,7 +174,8 @@ CKLBLuaLibCONV::jsonfile2lua(lua_State * L)
 	IReadStream * pStream;
 
 	IPlatformRequest& pltf = CPFInterface::getInstance().platform();
-	pStream = pltf.openReadStream(asset, pltf.useEncryption());
+	const u32 allowedEncryptionFormats = 0x0e;
+	pStream = pltf.openReadStream(asset, pltf.useEncryption(), allowedEncryptionFormats);
 	if(!pStream || pStream->getStatus() != IReadStream::NORMAL) {
 		delete pStream;
 		lua.retNil();

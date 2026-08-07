@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,9 +15,13 @@
 */
 #include <stdio.h>
 #include <stdlib.h>
+#include <new>
 #include "CKLBDatabase.h"
 #include "CPFInterface.h"
 #include "encryptFile.h"
+
+extern void KLBUnregisterObjectName(void* object, const char* className);
+extern void KLBRegisterObjectName(void* object, const char* className, int flags);
 
 // Get a private global symbol owning all the file systems of SQLite.
 extern "C" {
@@ -40,7 +44,7 @@ struct WrapperFileDecrypt {
 	int					m_size;
 	void*				m_file;
 	bool				m_no_op;
-	int					m_hasHeader;
+	u32					m_headerSize;
 };
 
 // === SQLite OS Methods ===
@@ -84,12 +88,12 @@ int fEncryptRead					(sqlite3_file* file, void* buff, int iAmt, sqlite3_int64 iO
 		fileDecrypt->m_decrypt.gotoOffset((u32)iOfst);
 
 		IPlatformRequest& pltf = CPFInterface::getInstance().platform();
-		pltf.ifseek(fileDecrypt->m_file, (long)(iOfst + (fileDecrypt->m_hasHeader * 4)), SEEK_SET);
+		pltf.ifseek(fileDecrypt->m_file, (long)(iOfst + fileDecrypt->m_headerSize), SEEK_SET);
 		u32 readSize = pltf.ifread(buff, 1, iAmt, fileDecrypt->m_file);
 
 		fileDecrypt->m_decrypt.decryptBlck(buff, readSize);
 
-		if (readSize < iAmt) {
+		if ((s32)readSize < iAmt) {
 			/* Unread parts of the buffer must be zero-filled */
 			memset(&((char*)buff)[readSize], 0, iAmt-readSize);
 			return SQLITE_IOERR_SHORT_READ;
@@ -110,7 +114,7 @@ int fEncryptWrite					(sqlite3_file* file, const void* data, int iAmt, sqlite3_i
 
 	if (!fileDecrypt->m_no_op) {
 		IPlatformRequest& pltf = CPFInterface::getInstance().platform();
-		int err = pltf.ifseek(fileDecrypt->m_file, (long)(iOfst + (fileDecrypt->m_hasHeader*4)), SEEK_SET);
+		int err = pltf.ifseek(fileDecrypt->m_file, (long)(iOfst + fileDecrypt->m_headerSize), SEEK_SET);
 
 		if (!err) {
 			if (iAmt != 0) {
@@ -159,7 +163,7 @@ int fEncryptFileSize				(sqlite3_file* file, sqlite3_int64 *pSize)
 			IPlatformRequest& pltf = CPFInterface::getInstance().platform();
 			int err = pltf.ifseek(fileDecrypt->m_file, 0, SEEK_END);
 			if (err == 0) {
-				*pSize = pltf.iftell(fileDecrypt->m_file) - (fileDecrypt->m_hasHeader * 4);
+				*pSize = pltf.iftell(fileDecrypt->m_file) - fileDecrypt->m_headerSize;
 			} else {
 				return SQLITE_ERROR;
 			}
@@ -265,9 +269,9 @@ int fEncryptOpen					(sqlite3_vfs* vfs, const char *zName, sqlite3_file* file, i
 		fileDecrypt->m_no_op	= false;
 	}
 
-	/* Check the following statements are true: 
+	/* Check the following statements are true:
 	**
-	**   (a) Exactly one of the READWRITE and READONLY flags must be set, and 
+	**   (a) Exactly one of the READWRITE and READONLY flags must be set, and
 	**   (b) if CREATE is set, then READWRITE must also be set, and
 	**   (c) if EXCLUSIVE is set, then CREATE must also be set.
 	**   (d) if DELETEONCLOSE is set, then CREATE must also be set.
@@ -385,6 +389,7 @@ int fEncryptOpen					(sqlite3_vfs* vfs, const char *zName, sqlite3_file* file, i
 	void* f = pltf.ifopen(zName, openMode);	// Read and write possible, but must exist.
 	
 	if (f) {
+		new (&fileDecrypt->m_decrypt) CDecryptBaseClass(14);
 		fileDecrypt->m_file	= f;
 		u8 header[4];
 		header[0] = 0;
@@ -392,11 +397,18 @@ int fEncryptOpen					(sqlite3_vfs* vfs, const char *zName, sqlite3_file* file, i
 		header[2] = 0;
 		header[3] = 0;
 		pltf.ifread(header,1,4,f);
-		fileDecrypt->m_hasHeader = fileDecrypt->m_decrypt.decryptSetup((const u8*)zName, header);
+		fileDecrypt->m_decrypt.decryptSetup((const u8*)zName, header, &fileDecrypt->m_headerSize);
+		if (fileDecrypt->m_headerSize >= 5) {
+			u8 extendedHeader[128];
+			pltf.ifread(extendedHeader,
+				1, fileDecrypt->m_headerSize - sizeof(header),
+				f);
+			fileDecrypt->m_decrypt.finishSetup(extendedHeader, zName);
+		}
 
 		pltf.ifseek(f, 0, SEEK_END);
-		fileDecrypt->m_size = pltf.iftell(f) - (fileDecrypt->m_hasHeader*4);
-		pltf.ifseek(f, (fileDecrypt->m_hasHeader*4), SEEK_SET);
+		fileDecrypt->m_size = pltf.iftell(f) - fileDecrypt->m_headerSize;
+		pltf.ifseek(f, fileDecrypt->m_headerSize, SEEK_SET);
 
 		return SQLITE_OK;
 	} else {
@@ -434,7 +446,7 @@ static bool initEncryptedVFS() {
 		gSQLiteEncryptIO.xShmBarrier				= fEncryptShmBarrier;
 		gSQLiteEncryptIO.xShmUnmap					= fEncryptShmUnmap;
 
-		gVfsList = getVFSList();
+		gVfsList = sqlite3_vfs_find(NULL);
 
 		// 2.1 Patch the fileSystem xOpen function with custom function that wraps sqlist3_file*
 		gOpenDefaultSQLite	= gVfsList->xOpen;
@@ -466,7 +478,7 @@ bool CKLBDatabase::init(const char* dbFile, int flags) {
 
 	// Else release old Database and old name
 	_release();
-	int size = strlen(dbFile);
+	size_t size = strlen(dbFile);
 	m_lastDB = KLBNEWA(char, size+1);
 
 	if (m_lastDB) {
@@ -569,8 +581,10 @@ CKLBDatabase::CKLBDatabase()
 :m_dataBase		(NULL)
 ,m_lastDB		(NULL)
 {
+	KLBRegisterObjectName(this, "CKLBDatabase", 0);
 }
 
 CKLBDatabase::~CKLBDatabase() {
+	KLBUnregisterObjectName(this, "CKLBDatabase");
 	_release();
 }

@@ -25,6 +25,8 @@
 
 class CKLBTask;
 class CKLBTaskMgr;
+class CKLBDrawResource;
+class CKLBAsset;
 
 class CKLBRegistedTaskList
 {
@@ -99,6 +101,7 @@ struct TASK_LIST {
 */
 class CKLBTask : public CKLBObjectScriptable
 {
+	friend class CKLBDrawResource;
     friend class CKLBTaskMgr;
 public:
     
@@ -110,6 +113,7 @@ public:
     } TASKTYPE;
 
     virtual TASKTYPE getTaskType();
+    virtual void notifyAssetUpdate(const char* assetName, CKLBAsset* asset);
 
 
     //! タスク登録フェーズ値定義
@@ -142,7 +146,6 @@ public:
         P_IMPORTANT = 2,        //!< ポーズ・フリーズ中でも走らなければならないタスク
 #ifdef DEBUG_MENU
 		P_DBGSIGN 	= 3,		//!< デバッグコマンド受付
-		P_DBGMENU 	= 4,		//!< デバッグメニュー処理
 #endif
 
 		P_UIPREV 	= 5,		//!< 標準UIパーツより先に処理するUIフェーズ
@@ -153,18 +156,19 @@ public:
 		P_UIAFTER 	= 8,		//!< 他のUIパーツを子タスクとして使用するUIタスク用のフェーズ
 
         P_MENU 		= 9,         //!< メニューフェーズ: メニュー処理タスクはこのフェーズに登録。ポーズ中でも実行される。
+		P_DBGMENU 	= 10,		//!< デバッグメニュー処理
 
         // P_PREV, P_NORMAL, P_AFTER はポーズ中実行されない。
-        P_PREV 		= 10,         //!< (ポーズ中停止)通常タスク以前に処理しなければならないもの
-        P_NORMAL 	= 11,      //!< (ポーズ中停止)通常のタスクはここで処理
-        P_AFTER 	= 12,       //!< (ポーズ中停止)通常のタスクが終わった後に処理しなければならないもの
-		P_JUDGE 	= 13,       //!< ゲーム中の判定など
+        P_PREV 		= 11,         //!< (ポーズ中停止)通常タスク以前に処理しなければならないもの
+        P_NORMAL 	= 12,      //!< (ポーズ中停止)通常のタスクはここで処理
+        P_AFTER 	= 13,       //!< (ポーズ中停止)通常のタスクが終わった後に処理しなければならないもの
+		P_JUDGE 	= 14,       //!< ゲーム中の判定など
 
-        P_DRAW 		= 14,        //!< 描画処理をキックするタスク等はここに登録
-        P_GC		= 15,
-        P_END 		= 16,         //!< 描画キック後に行う処理があればここに登録
+        P_DRAW 		= 15,        //!< 描画処理をキックするタスク等はここに登録
+        P_GC		= 16,
+        P_END 		= 17,         //!< 描画キック後に行う処理があればここに登録
 
-        P_MAX 		= 17          //!< フェーズ総数
+        P_MAX 		= 18          //!< フェーズ総数
     } TASK_PHASE;
 
 public:
@@ -183,7 +187,26 @@ public:
 	*/
 	void setPause(bool bPause, bool bRecursive = true);
 
-	void interposeTimer(CKLBTask* pTimer);
+    void interposeTimer(CKLBTask* pTimer);
+
+	// Resolve the compact lifecycle handle used when tasks cross the Lua API.
+	static void initializeTaskRegistry()
+	{
+		memset(s_taskSlots, 0, sizeof(s_taskSlots));
+		for(u32 i = 0; i < TASK_TRACK_CAPACITY; ++i) {
+			s_freeSlots[i] = static_cast<u16>(i + 1);
+			s_taskInfo[i].classID     = 0xffffffff;
+			s_taskInfo[i].createFrame = 0xffffffff;
+			s_taskInfo[i].dieFrame    = 0xffffffff;
+		}
+		s_freeSlots[TASK_TRACK_CAPACITY - 1] = 0xffff;
+		s_freeCursor  = TASK_TRACK_CAPACITY - 1;
+		s_allocCursor = 0;
+	}
+
+	static CKLBTask* getFromScriptHandle(size_t handle);
+	static CKLBTask* findFromScriptHandle(size_t handle);
+	size_t getTaskTrackHandle();
 
 	virtual u32 getClassID();
 protected:
@@ -248,6 +271,26 @@ protected:
 
 	void setNotAlwaysActive()		{	m_activeStatus &= ~ALWAYS_ACTIVE; }
 private:
+	static const u32 TASK_TRACK_CAPACITY = 8000;
+	struct TaskTrackInfo {
+		u32 createFrame;
+		u32 dieFrame;
+		u32 classID;
+	};
+
+	static CKLBTask*     s_taskSlots[TASK_TRACK_CAPACITY];
+	static TaskTrackInfo s_taskInfo[TASK_TRACK_CAPACITY];
+	static u16           s_freeSlots[TASK_TRACK_CAPACITY];
+	static u16           s_allocCursor;
+	static u16           s_freeCursor;
+
+    static size_t registerTask(CKLBTask* task);
+    static void unregisterTask(size_t handle);
+    void refreshTaskTrackClassID();
+
+    // Compact handle owned by the task-lifecycle registry.
+    size_t           m_taskTrackHandle;
+
     // 実行関連情報(std::list<...>が使えない場合を想定し、ポインタで実装)
     TASK_PHASE       m_ePhase;     // 自身の実行フェーズ
     // タスク間の親子関連情報
@@ -304,6 +347,7 @@ public:
 
 	//! Dump list of instanciated tasks.
 	void dump();
+	void notifyAssetUpdate(const char* assetName, CKLBAsset* asset);
 
 	//! クリア処理
 	/*!
@@ -339,6 +383,12 @@ public:
 	inline void setRegistedTaskList(CKLBRegistedTaskList * pRegList = 0) {
 		m_pRegList = pRegList;
 	}
+	inline CKLBRegistedTaskList* getRegistedTaskList() {
+		return m_pRegList;
+	}
+	inline void requestUIAfterExecution() {
+		m_bExecuteUIAfter = true;
+	}
 
 
     //! 1フレーム分の処理実行
@@ -373,16 +423,7 @@ public:
     inline bool getPause() { return m_bPause; }
 
 	inline bool isKilling() const { return m_bKilling; }
-
-#ifdef DEBUG_MENU
-	//! デバッグ用全停止指令
-	/*!
-		trueを与えることで、P_UIPREVからP_JUDGEまでの入力とデバッグ、描画を除いた
-		すべてのフェーズの実行を一時停止します。
-		falseで解除されます。
-	*/
-	bool setDbgPause(bool bPause) { return m_bDbgPause = bPause; }
-#endif
+	inline bool isClearingTaskList() const { return m_bClearingTaskList; }
 
     //! Exit
     /*!
@@ -406,6 +447,9 @@ public:
 
 	inline s64 getStartTime	()				{ return m_startTime;	}
 	inline s64 getScriptTime()				{ return m_scriptTime;	}
+	inline s64 getFrameTimeAccumulator() const	{ return m_frameTimeAccumulator; }
+	inline s64 getActiveTimeAccumulator() const	{ return m_activeTimeAccumulator; }
+	inline void resetActiveTimeAccumulator()	{ m_activeTimeAccumulator = 0; }
 
 private:
     //! タスクを指定されたフェーズの実行リストに登録する
@@ -436,17 +480,20 @@ private:
 
 	// kill処理中フラグ
 	bool			m_bKilling;	  // kill中は true。それ以外は false
+	// Requests one additional P_UIAFTER pass after late UI asset creation.
+	bool            m_bExecuteUIAfter;
+	// Distinguishes whole-manager clearing from ordinary kill-list processing.
+	bool            m_bClearingTaskList;
 
 	//
 	s64				m_startTime;
 	s64				m_scriptTime;
+	// Both shipped counters advance by deltaT at the start of each frame.
+	s64             m_frameTimeAccumulator;
+	s64             m_activeTimeAccumulator;
 
 	// タスクリスト記録
 	CKLBRegistedTaskList	*	m_pRegList;
-
-#ifdef DEBUG_MENU
-	bool			m_bDbgPause;
-#endif
 
     // true にされたフレームの最後に、ステージタスクとして登録されている全タスクを破棄対象とする。
     bool            m_bStageClear;

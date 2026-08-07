@@ -17,6 +17,47 @@
 #define MULTITHREADED_NETWORK_KLB
 
 #include "CKLBHTTPInterface.h"
+#include <list>
+#include "curl.h"
+
+// Per-request libcurl state owned by the platform HTTP service.  The
+// platform interface deliberately exposes only this handle type; engine HTTP
+// code does not need to depend on libcurl's individual data structures.
+class CurlObjectInternal {
+public:
+	static CurlObjectInternal* create();
+	static void destroy(CurlObjectInternal* operation);
+	static bool initializeLibrary();
+	static void shutdownLibrary();
+
+	explicit CurlObjectInternal(CURL* curl)
+	: m_curl(curl)
+	, m_headers(NULL)
+	, m_form(NULL)
+	, m_formEnd(NULL)
+	, m_postConfigured(false)
+	{}
+	~CurlObjectInternal() {}
+
+	virtual void reset();
+	virtual void cleanup();
+	virtual int perform();
+	virtual void freeFormHeaders();
+	virtual void appendHeader(const char* header);
+	virtual void setPostFields();
+	virtual void setPostData(long contentLength, const void* data);
+	virtual void addFormData(const char* name, long contentLength, const void* data);
+	virtual void setupConnection(const char* url, const char* proxy, void* callbackContext,
+	                             void* progressCallback, void* headerCallback, void* writeCallback);
+	virtual long getHttpCode();
+
+private:
+	CURL*            m_curl;
+	curl_slist*      m_headers;
+	curl_httppost*   m_form;
+	curl_httppost*   m_formEnd;
+	bool             m_postConfigured;
+};
 
 #define LOCK(a)					CPFInterface::getInstance().platform().mutexLock(a)
 #define UNLOCK(a)				CPFInterface::getInstance().platform().mutexUnlock(a)
@@ -30,21 +71,6 @@
 #define SLEEP_THREAD(a)			CPFInterface::getInstance().platform().eventSleep(a)
 
 /*!
-* \class ConnectionEntry
-* \brief Connection Entry Class
-* 
-* 
-*/
-class ConnectionEntry {
-public:
-	ConnectionEntry();
-	~ConnectionEntry();
-	ConnectionEntry*	m_pNext;
-	CKLBHTTPInterface	m_oConnection;
-	bool				m_kill;
-};
-
-/*!
 * \class NetworkManager
 * \brief Network Manager
 * 
@@ -53,12 +79,14 @@ public:
 class NetworkManager {
 public:
 	static bool 				startNetworkManager	();
-	static void 				stopNetworkManager	();
+	static void 				stopNetworkManager	(bool complete);
 	static CKLBHTTPInterface*	createConnection	();
 	static void					releaseConnection	(CKLBHTTPInterface* connection);
+	static void					wakeUp				();
 private:
 		   s32					workThread			();
 	static s32					threadFunc			(void* pThread, void* data);
+	static void					releaseAllConnections();
 	static NetworkManager		s_manager;
 	
 	NetworkManager();
@@ -66,12 +94,13 @@ private:
 	
 	void* 				m_lock;
 	void*				m_eventLock;
-	ConnectionEntry*	m_entries;
-	volatile u32		m_killCount;
-	ConnectionEntry*	m_killEntries[200];
+	std::list<CKLBHTTPInterface*> m_entries;
+	std::list<CKLBHTTPInterface*> m_killEntries;
 	bool				m_bShutDown;
 	void*				m_thread;
-	
+	bool				m_bStarted;
+	bool				m_bPaused;
+
 	volatile
 	bool				m_bShutDownComplete;
 	

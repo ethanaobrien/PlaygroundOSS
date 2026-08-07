@@ -86,6 +86,11 @@ private:
 
 	static int luaDelKeyChainID	(lua_State * L);
 	static int luaDelKeyChainPW	(lua_State * L);
+
+	static int luaSetUserDefaults	(lua_State * L);
+	static int luaGetUserDefaults	(lua_State * L);
+	static int luaSSPSetUserDefaults(lua_State * L);
+	static int luaSSPGetUserDefaults(lua_State * L);
 };
 
 

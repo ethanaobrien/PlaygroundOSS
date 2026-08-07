@@ -60,7 +60,6 @@ CMediaPlayer::~CMediaPlayer()
 void
 CMediaPlayer::setDataSource(const char * path)
 {
-	DEBUG_PRINT("CMediaPlayer::setDataSource() in ... m_obj = %p", m_obj);
 	jstring jpath = getEnv()->NewStringUTF(path);
 
 	//
@@ -79,61 +78,48 @@ CMediaPlayer::setDataSource(const char * path)
 	CJNI::getJNIEnv()->DeleteLocalRef(local_obj);
 	CJNI::getJNIEnv()->DeleteLocalRef(jpath);
 	exceptionOccurred();
-	DEBUG_PRINT("CMediaPlayer::setDataSource(): path = %s", path);
 }
 
 void
 CMediaPlayer::prepare()
 {
-	DEBUG_PRINT("CMediaPlayer::prepare() in...");
 	getEnv()->CallVoidMethod(m_obj, m_prepare);
 	exceptionOccurred();
-	DEBUG_PRINT("CMediaPlayer::prepare() exit.");
 }
 
 void
 CMediaPlayer::start()
 {
-	DEBUG_PRINT("CMediaPlayer::start() in...");
 	getEnv()->CallVoidMethod(m_obj, m_start);
 	exceptionOccurred();
-	DEBUG_PRINT("CMediaPlayer::start() exit.");
 }
 
 void
 CMediaPlayer::stop()
 {
-	DEBUG_PRINT("CMediaPlayer::stop() in...");
 	getEnv()->CallVoidMethod(m_obj, m_stop);
 	exceptionOccurred();
-	DEBUG_PRINT("CMediaPlayer::stop() exit.");
 }
 
 void
 CMediaPlayer::pause()
 {
-	DEBUG_PRINT("CMediaPlayer::pause() in...");
 	getEnv()->CallVoidMethod(m_obj, m_pause);
 	exceptionOccurred();
-	DEBUG_PRINT("CMediaPlayer::pause() exit.");
 }
 
 void
 CMediaPlayer::release()
 {
-	DEBUG_PRINT("CMediaPlayer::release() in...");
 	getEnv()->CallVoidMethod(m_obj, m_release);
 	exceptionOccurred();
-	DEBUG_PRINT("CMediaPlayer::release() exit.");
 }
 
 void
 CMediaPlayer::reset()
 {
-	DEBUG_PRINT("CMediaPlayer::reset() in...");
 	getEnv()->CallVoidMethod(m_obj, m_reset);
 	exceptionOccurred();
-	DEBUG_PRINT("CMediaPlayer::reset() exit.");
 }
 
 s32
@@ -141,10 +127,8 @@ CMediaPlayer::getCurrentPos()
 {
 	s32 ret = 0;
 
-	DEBUG_PRINT("CMediaPlayer::getCurrentPos() in...");
 	ret = getEnv()->CallIntMethod(m_obj, m_getCurrentPos);
 	exceptionOccurred();
-	DEBUG_PRINT("CMediaPlayer::getCurrentPos() exit.");
 
 	return ret;
 }
@@ -168,10 +152,8 @@ CMediaPlayer::isPlaying()
 void
 CMediaPlayer::setLooping(bool looping)
 {
-	DEBUG_PRINT("CMediaPlayer::setLooping() in...");
 	getEnv()->CallVoidMethod(m_obj, m_setLooping, (jboolean)looping);
 	exceptionOccurred();
-	DEBUG_PRINT("CMediaPlayer::setLooping() exit.");
 }
 
 void

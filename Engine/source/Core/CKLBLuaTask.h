@@ -53,6 +53,10 @@ public:
     // 初期化に成功したら regist() の戻り値を返すこと。
     // 失敗した場合は false を返す。
     virtual bool initScript(CLuaState& lua) = 0;
+
+	// Optional secondary factory entry. Tasks which do not need a distinct
+	// secondary initialization path accept it by default.
+	virtual bool initScriptSecondary(CLuaState& lua);
     
     // lua script から動作中に送られるコマンドの受付メソッド。
     // コマンドを必要としないタスクもあるので、デフォルトでは何もしない処理が実装されている。
@@ -92,23 +96,28 @@ public:
 	} DEFCMD;
 
 protected:
-    void addLink(const char * luaFuncName, int (*func)(lua_State * L), DEFCMD * arrCmdItem, u32 classID);
+    void addLink(const char * luaFuncName, int (*func)(lua_State * L), DEFCMD * arrCmdItem, u32 classID,
+				 const char * secondaryLuaFuncName = NULL,
+				 int (*secondaryFunc)(lua_State * L) = NULL);
 
 private:
     static IFactory *	m_begin;
     IFactory		*   m_pNext;
     const char		*   m_funcName;
+	const char		*   m_secondaryFuncName;
 	const DEFCMD	*	m_arrCmdItem;
 	u32					m_classID;
 	int (*m_luaFunc)(lua_State * L);
+	int (*m_secondaryLuaFunc)(lua_State * L);
 };
 
 template <class T>
 class CKLBTaskFactory : public IFactory
 {
 public:
-	CKLBTaskFactory(const char * luaFuncName, u32 classID, DEFCMD * arrCmdItem = 0) {
-		addLink(luaFuncName, CKLBTaskFactory<T>::createFactory, arrCmdItem, classID);
+	CKLBTaskFactory(const char * luaFuncName, u32 classID, DEFCMD * arrCmdItem = 0, const char * secondaryLuaFuncName = NULL) {
+		addLink(luaFuncName, CKLBTaskFactory<T>::createFactory, arrCmdItem, classID,
+				secondaryLuaFuncName, CKLBTaskFactory<T>::createFactorySecondary);
 	}
     ~CKLBTaskFactory() {}
 
@@ -118,7 +127,7 @@ public:
 		s64 startCreate = CPFInterface::getInstance().platform().nanotime();
 #endif
         T * pTask = KLBNEW(T);
- 
+
         bool bResult = false;
         if(pTask) {
 			CKLBTaskMgr::getInstance().setCurrentTask(pTask);
@@ -129,7 +138,34 @@ public:
 #endif
         }
         if(bResult) {
-			lua.retPointer(pTask);
+			lua.retScriptPtr(pTask);
+		} else {
+			CKLBTaskMgr::getInstance().setCurrentTask(pTask);
+            KLBDELETE(pTask);
+			CKLBTaskMgr::getInstance().setCurrentTask(NULL);
+			lua.retBoolean(false);
+		}
+        return 1;
+    }
+
+    static int createFactorySecondary(lua_State * L) {
+        CLuaState lua(L);
+#ifdef INTERNAL_BENCH
+		s64 startCreate = CPFInterface::getInstance().platform().nanotime();
+#endif
+        T * pTask = KLBNEW(T);
+
+        bool bResult = false;
+        if(pTask) {
+			CKLBTaskMgr::getInstance().setCurrentTask(pTask);
+		    bResult = pTask->initScriptSecondary(lua);
+			CKLBTaskMgr::getInstance().setCurrentTask(NULL);
+#ifdef INTERNAL_BENCH
+			logTime('T', CPFInterface::getInstance().platform().nanotime() - startCreate, pTask->getClassID());
+#endif
+        }
+        if(bResult) {
+			lua.retScriptPtr(pTask);
 		} else {
 			CKLBTaskMgr::getInstance().setCurrentTask(pTask);
             KLBDELETE(pTask);

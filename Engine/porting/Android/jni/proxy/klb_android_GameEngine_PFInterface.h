@@ -95,7 +95,7 @@ JNIEXPORT void JNICALL JAVA_FUNC(onActivityResume) ( void );
  * Method:    WebViewControlEvent
  * Signature: ()V
  */
-JNIEXPORT void JNICALL JAVA_FUNC(WebViewControlEvent) ( JNIEnv *, jobject, jobject, jint );
+JNIEXPORT void JNICALL JAVA_FUNC(WebViewControlEvent) ( JNIEnv *, jobject, jobject, jint, jstring );
 
 /*
  * Class:     klb_android_GameEngine_PFInterface

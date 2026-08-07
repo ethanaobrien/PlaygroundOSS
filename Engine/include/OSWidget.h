@@ -64,6 +64,7 @@ public:
     typedef enum {
         WEB_SET_SCALESPAGETOFIT,	// iOSの UIWebViewにおける scalePageToFit プロパティ設定
         WEB_BGCOLOR_NORMAL,			// webviewの背景色
+        WEB_SET_WHITEURL,			// WebViewで許可するURLの設定
     } WEBCMD;
     
     

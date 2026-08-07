@@ -16,14 +16,15 @@
 #include "CAndroidFont.h"
 #include "CPFInterface.h"
 
-CAndroidFont::CAndroidFont(int size, const char * fontName)
+CAndroidFont::CAndroidFont(int size, const char * fontName, bool useDefaultFont)
 {
 //	fontName = NULL;	// ハングするので一旦 //
+	CJNI::setJNIEnv(CJNI::getJNIEnv());
 	// フォント管理クラスを取得(static class)
 	jclass cls_fntManage = CJNI::getJNIEnv()->FindClass(JNI_FONTMANAGER_LOAD_PATH);
 
 	// Paint作成函数ID取得
-	jmethodID mtd_createPaint = getEnv()->GetStaticMethodID(cls_fntManage, "CreatePaint", "(Ljava/lang/String;)Landroid/graphics/Paint;");
+	jmethodID mtd_createPaint = getEnv()->GetStaticMethodID(cls_fntManage, "CreatePaint", "(Ljava/lang/String;Z)Landroid/graphics/Paint;");
 
 	// エイリアスからフォント名を取得
 	const char* fntName = NULL;
@@ -41,7 +42,7 @@ CAndroidFont::CAndroidFont(int size, const char * fontName)
 	}
 
 	// 指定フォント名でPaintを作成
-	jobject local_font = CJNI::getJNIEnv()->CallStaticObjectMethod( cls_fntManage, mtd_createPaint, strj );
+	jobject local_font = CJNI::getJNIEnv()->CallStaticObjectMethod( cls_fntManage, mtd_createPaint, strj, (jboolean)useDefaultFont );
 
 	// グローバル的な変数として設定
 	m_paint = getEnv()->NewGlobalRef(local_font);
@@ -65,7 +66,6 @@ CAndroidFont::CAndroidFont(int size, const char * fontName)
 
 	CJNI::getJNIEnv()->DeleteLocalRef(cls_fntManage);
 	CJNI::getJNIEnv()->DeleteLocalRef(strj);
-	CJNI::getJNIEnv()->DeleteLocalRef(local_font);
 }
 
 CAndroidFont::~CAndroidFont()
@@ -97,9 +97,6 @@ CAndroidFont::setTextSize(float size)
 	m_f_top		= -(float)getEnv()->GetFloatField(local_obj, m_top);
 	m_f_bottom	= -(float)getEnv()->GetFloatField(local_obj, m_bottom);
 
-	DEBUG_PRINT("ascent:%f descent:%f top:%f bottom:%f", m_f_ascent, m_f_descent, m_f_top, m_f_bottom);
-    
-#if defined __LOVELIVE
 	// Loveliveだけは既にあるヒント画面などの見た目維持のため小細工します  2013/05/07  
 	// Lovelive Font Hack  2013/05/07  
 	const float HEIGHT_CHANGE_HINT_SIZE = 32;
@@ -120,8 +117,6 @@ CAndroidFont::setTextSize(float size)
 		m_f_top = 18.7375f;
 		m_f_bottom = -5.2625f;
 	}
-#endif
-
 	CJNI::getJNIEnv()->DeleteLocalRef(cls_fntManage);
 	CJNI::getJNIEnv()->DeleteLocalRef(local_obj);
     CJNI::getJNIEnv()->DeleteLocalRef(clfontmetrics);

@@ -20,13 +20,16 @@
 //
 
 CKLBNode* gm_animatedList = NULL;
+u8 gm_animationUpdateMarker = 0;
+
+static const u8 ANIMATION_LIST_LINKED = 0xff;
 
 /*static*/void CKLBSystem::removeFromAnimation	(CKLBNode* pNode) {
-	klb_assert(pNode,"null pointer");
+	klb_assertNull(pNode,"null pointer");
 //	klb_assert(((pNode->m_pAnimationNext != NULL) ||
 //			(pNode->m_pAnimationPrev != NULL) || (gm_animatedList == pNode)), "already removed from animation list");
 
-	klb_assert(pNode->isAnimating(), "already removed");
+	klb_assertNull(pNode->isAnimating(), "already removed");
 
 	pNode->m_isAnimated = false;
 
@@ -51,10 +54,10 @@ CKLBNode* gm_animatedList = NULL;
 }
 
 /*static*/void CKLBSystem::addToAnimation		(CKLBNode* pNode) {
-	klb_assert(pNode, "null pointer");
-	klb_assert(!pNode->isAnimating(), "already added");
+	klb_assertNull(pNode, "null pointer");
+	klb_assertNull(!pNode->isAnimating(), "already added");
 
-	pNode->m_isAnimated = true;
+	pNode->m_isAnimated = ANIMATION_LIST_LINKED;
 
 //	klb_assert(((pNode->m_pAnimationNext == NULL) &&
 //			(pNode->m_pAnimationPrev == NULL)), "alread in animation list");
@@ -75,22 +78,34 @@ CKLBNode* gm_animatedList = NULL;
 #include "CPFInterface.h"
 
 /*static*/void CKLBSystem::performAnimationUpdate(u32 milliSecDelta) {
-
-	CKLBNode* pNode = gm_animatedList;
+	u8 marker = ++gm_animationUpdateMarker;
+	if (marker == ANIMATION_LIST_LINKED) {
+		marker = 1;
+	}
+	gm_animationUpdateMarker = marker;
 	
 //	int count = 0;
 //	int countSWF = 0;
 //	s64 start = CPFInterface::getInstance().platform().nanotime();
 
-	while (pNode) {
-		CKLBNode* pNextNode = pNode->m_pAnimationNext;	// Delete can occur inside animate, backup next.
-		pNode->animate(milliSecDelta);
+	bool animated;
+	do {
+		animated = false;
+		CKLBNode* pNode = gm_animatedList;
+		while (pNode) {
+			CKLBNode* pNextNode = pNode->m_pAnimationNext;	// Delete can occur inside animate, backup next.
+			if (pNode->m_isAnimated != gm_animationUpdateMarker) {
+				pNode->m_isAnimated = gm_animationUpdateMarker;
+				pNode->animate(milliSecDelta);
+				animated = true;
+			}
 //		if (pNode->getClassID() == CLS_KLBSWFMOVIE) {
 //			countSWF++;
 //		}
 //		count++;
-		pNode = pNextNode;
-	}
+			pNode = pNextNode;
+		}
+	} while (animated);
 
 //	s64 end = CPFInterface::getInstance().platform().nanotime();
 //	end -= start;

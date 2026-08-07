@@ -43,6 +43,7 @@ enum {
 
 	UI_FORM_SET_GROUP,          // フォームをグループに所属させる(フォーム間排他)
 	UI_FORM_SET_VOLUME,
+	UI_FORM_GET_DESIGNRECT,
 };
 
 
@@ -63,6 +64,7 @@ static IFactory::DEFCMD cmd[] = {
 
 	{ "UI_FORM_SET_GROUP",		UI_FORM_SET_GROUP       },
 //	{ "UI_FORM_SET_VOLUME",		UI_FORM_SET_VOLUME      }, Private for now.
+	{ "UI_FORM_GET_DESIGNRECT",	UI_FORM_GET_DESIGNRECT  },
 	{ "ACTION_UNDEF",	ACTION_UNDEF    },
 	{ "ACTION_PUSH",	ACTION_PUSH     },
 	{ "ACTION_RELEASE",	ACTION_RELEASE  },
@@ -72,8 +74,6 @@ static IFactory::DEFCMD cmd[] = {
 	{ "ACTION_FOCUS",	ACTION_FOCUS    },
 	{ "ACTION_CUSTOM",	ACTION_CUSTOM   },
 	{ "ACTION_CLICK",   ACTION_CLICK    },
-
-
 	// サブコマンド定数定義
 	{ "FORM_NODE_POINTER",			CKLBFormIF::FORM_NODE_POINTER   },
 	{ "FORM_NODE_RECURSIVE",		CKLBFormIF::FORM_NODE_RECURSIVE },
@@ -84,29 +84,31 @@ static IFactory::DEFCMD cmd[] = {
 	{ "FORM_NODE_VISIBLE",			CKLBFormIF::FORM_NODE_VISIBLE   },
 	{ "FORM_NODE_ORDER",			CKLBFormIF::FORM_NODE_ORDER     },
 	{ "FORM_NODE_GET_ORDER",		CKLBFormIF::FORM_NODE_GET_ORDER },
+	{ "FORM_NODE_GET_TRANS",		CKLBFormIF::FORM_NODE_GET_TRANS },
 	{ "FORM_NODE_TASK",				CKLBFormIF::FORM_NODE_TASK      },
-
 	{ "FORM_UIE_SET_ENABLED",		CKLBFormIF::FORM_UIE_SET_ENABLED    },
 	{ "FORM_UIE_GET_ENABLED",		CKLBFormIF::FORM_UIE_GET_ENABLED    },
 	{ "FORM_UIE_SET_ASSET",			CKLBFormIF::FORM_UIE_SET_ASSET      },
-
+	{ "FORM_UIE_GET_ASSET_NAME",	CKLBFormIF::FORM_UIE_GET_ASSET_NAME },
 	{ "FORM_UIS_SET_CLICK",			CKLBFormIF::FORM_UIS_SET_CLICK  },
 	{ "FORM_UIS_SET_STICK",			CKLBFormIF::FORM_UIS_SET_STICK  },
 	{ "FORM_UIS_SET_RADIO",			CKLBFormIF::FORM_UIS_SET_RADIO  },
 	{ "FORM_UIS_GET_STICK",			CKLBFormIF::FORM_UIS_GET_STICK  },
 	{ "FORM_UIS_SET_CALLBACK",		CKLBFormIF::FORM_UIS_SET_CALLBACK   },
-
 	{ "FORM_CONT_VIEWOFFSET",		CKLBFormIF::FORM_CONT_VIEWOFFSET        },
 	{ "FORM_CONT_GET_RADIO_VALUE",	CKLBFormIF::FORM_CONT_GET_RADIO_VALUE   },
-
 	{ "FORM_TEXT_SET",				CKLBFormIF::FORM_TEXT_SET       },
 	{ "FORM_TEXT_GET",				CKLBFormIF::FORM_TEXT_GET       },
+	{ "FORM_TEXT_SET",				CKLBFormIF::FORM_TEXT_SET       },
 
 	{ "FORM_WEB_SET_URI",			CKLBFormIF::FORM_WEB_SET_URI    },
 	{ "FORM_WEB_GET_URI",			CKLBFormIF::FORM_WEB_GET_URI    },
 
 	{ "FORM_LBL_SET_TEXT",			CKLBFormIF::FORM_LBL_SET_TEXT   },
 	{ "FORM_LBL_GET_TEXT",			CKLBFormIF::FORM_LBL_GET_TEXT   },
+	{ "FORM_LBL_SET_TEXTELLIPSIS",	CKLBFormIF::FORM_LBL_SET_TEXTELLIPSIS },
+	{ "FORM_LBL_SET_FIT",			CKLBFormIF::FORM_LBL_SET_FIT    },
+	{ "FORM_LBL_SET_COLOR",			CKLBFormIF::FORM_LBL_SET_COLOR  },
 
 	{ "FORM_ASSET_NORMAL",			CKLBUIElement::NORMAL_ASSET     },
 	{ "FORM_ASSET_DISABLED",		CKLBUIElement::DISABLED_ASSET   },
@@ -117,7 +119,8 @@ static IFactory::DEFCMD cmd[] = {
 	{0, 0}
 };
 
-static CKLBTaskFactory<CKLBUIForm> factory("UI_Form", CLS_KLBUIFORM, cmd);
+static CKLBTaskFactory<CKLBUIForm> factory("UI_Form", CLS_KLBUIFORM, cmd, "UI_FormWithSize");
+CKLBDataTask* CKLBUIForm::ms_dataTask = NULL;
 
 
 // Allowed Property Keys
@@ -131,15 +134,11 @@ CKLBLuaPropTask::PROP_V2 CKLBUIForm::ms_propItems[] = {
 
 enum {
 	ARG_PARENT = 1,
-
 	ARG_ORDER,
 	ARG_X,
 	ARG_Y,
-
 	ARG_ASSET,
-
 	ARG_EXCLUSIVE,
-
 	ARG_MODAL,
 
 	ARG_URGENT,
@@ -149,13 +148,15 @@ enum {
 };
 
 CKLBUIForm::CKLBUIForm()
-: CKLBUITask    ()
-, m_modalStack  (false)
+: CKLBUITask    (P_UIAFTER)
+, m_modalStack  ()
 , m_asset       (NULL)
+, m_dataSource  (NULL)
 , m_bInputEnable(true) 
 {
 	m_formIF = this;
 	m_newScriptModel = true;
+	m_dataSourceSubscription.configure(NULL, this);
 }
 
 CKLBUIForm::~CKLBUIForm() 
@@ -169,15 +170,28 @@ CKLBUIForm::getClassID()
 	return CLS_KLBUIFORM;
 }
 
-CKLBUIForm* 
-CKLBUIForm::create(CKLBUITask* pParent, CKLBNode* pNode, u32 order, float x, float y, bool bAssetFile, const char* asset, bool bExclusive, bool modal, bool urgent) {
+CKLBUIForm*
+CKLBUIForm::create(CKLBUITask* pParent, CKLBNode* pNode, u32 order, float x, float y, bool bAssetFile, const char* asset, bool bExclusive, bool modal, bool urgent,
+	u32 formWidth, u32 formHeight, CKLBDataTask* dataTask) {
 	CKLBUIForm* pTask = KLBNEW(CKLBUIForm);
     if (!pTask) { return NULL; }
-	if (!pTask->init(pParent, pNode, order, x,y,bAssetFile,asset,bExclusive,modal, urgent)) {
+	if (!pTask->init(pParent, pNode, order, x,y,bAssetFile,asset,bExclusive,modal, urgent, formWidth, formHeight, dataTask)) {
 		KLBDELETE(pTask);
 		return NULL;
 	}
 	return pTask;
+}
+
+void
+CKLBUIForm::setDataTask(CKLBDataTask* dataTask)
+{
+	ms_dataTask = dataTask;
+}
+
+CKLBDataTask*
+CKLBUIForm::getDataTask()
+{
+	return ms_dataTask;
 }
 
 void 
@@ -205,10 +219,11 @@ CKLBUIForm::setGlobalVolume_r(CKLBNode* pNode, float volume)
 }
 
 bool
-CKLBUIForm::init(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, bool bAssetFile, const char* asset, bool bExclusive, bool modal, bool urgent) 
+CKLBUIForm::init(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, bool bAssetFile, const char* asset, bool bExclusive, bool modal, bool urgent,
+	u32 formWidth, u32 formHeight, CKLBDataTask* dataTask)
 {
 	if (!setupNode()) return false;
-	bool bResult = initCore(order, x, y, bAssetFile, asset, 0, bExclusive, modal, urgent);
+	bool bResult = initCore(order, x, y, bAssetFile, asset, 0, bExclusive, modal, urgent, formWidth, formHeight, dataTask);
 	bResult = registUI(parent, bResult);
 	if (pNode) {
 		parent->getNode()->removeNode(getNode());
@@ -218,7 +233,8 @@ CKLBUIForm::init(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float 
 }
 
 bool
-CKLBUIForm::initCore(u32 order, float x, float y, bool bAssetFile, const char* asset, u32 size, bool bExclusive, bool modal, bool urgent)
+CKLBUIForm::initCore(u32 order, float x, float y, bool bAssetFile, const char* asset, size_t size, bool bExclusive, bool modal, bool urgent,
+	u32 formWidth, u32 formHeight, CKLBDataTask* dataTask)
 {
 	if (!setupPropertyList((const char**)ms_propItems, SizeOfArray(ms_propItems))) {
 		return false;
@@ -227,6 +243,10 @@ CKLBUIForm::initCore(u32 order, float x, float y, bool bAssetFile, const char* a
 	setInitPos(x, y);
 
 	klb_assert((((s32)order) >= 0), "Order Problem");
+	// A zero size selects a file path; otherwise the composite is in memory.
+	// The caller-facing asset value is retained before form construction.
+	// Modal state is established before any nested UI tasks are created.
+	// This keeps child modal-stack ordering consistent during asset loading.
 
 	m_order = order;
 
@@ -245,41 +265,51 @@ CKLBUIForm::initCore(u32 order, float x, float y, bool bAssetFile, const char* a
 	// form を作る前に自身をモーダルスタックに積む。
 	m_modalStack.push();
 
-	m_ctrlList.pGroup           = NULL;
-	m_ctrlList.pGrpPrev         = NULL;
-	m_ctrlList.pGrpNext         = NULL;
-
-	m_ctrlList.pBegin           = NULL;
-	m_ctrlList.next             = NULL;
 	m_ctrlList.bEnable          = true;
 	m_ctrlList.bExclusive       = bExclusive;
-	m_ctrlList.bWorking         = false;
-	m_ctrlList.pCallbackIF      = NULL;
-	m_ctrlList.nativeCallback   = NULL;
-	m_ctrlList.pID              = NULL;
 
 	CKLBUISystem::setFormList(&m_ctrlList);
 	// DEBUG_PRINT(" FORM:ctrl: %p", &m_ctrlList);
 
 	CKLBAssetManager& pAssetManager = CKLBAssetManager::getInstance();
+	if(dataTask) {
+		m_dataSourceSubscription.setNotifier(true, dataTask);
+	}
 	if(bAssetFile) {
-		m_pFormNode = CKLBUtility::createCompositeNodeScript(this, m_asset, m_order, &m_handle, pAssetManager.getPlugin('P'));
+		m_pFormNode = CKLBUtility::createCompositeNodeScript(this, m_asset, m_order, &m_handle,
+			pAssetManager.getPlugin('P'), formWidth, formHeight, dataTask);
 	} else {
 		m_pFormNode = NULL;
 		CKLBAsset * pAsset = CKLBUtility::readAsset((u8 *)m_asset, size, &m_handle, pAssetManager.getPlugin('P'));
 		if(!pAsset) {
-			CKLBScriptEnv::getInstance().error("could not load asset: %s", m_asset);
+			CKLBScriptEnv::getInstance().error("CKLBUIForm : could not load asset: %s", m_asset);
 		} else {
-			m_pFormNode = ((CKLBCompositeAsset*)pAsset)->createSubTree(this, m_order);
+			CKLBCompositeAsset* pComposite = (CKLBCompositeAsset*)pAsset;
+			pComposite->setFormSize(formWidth, formHeight);
+			pComposite->setDirectComposite(false);
+			if(dataTask) {
+				IDataSourceUpdateNotifier* notifier = dataTask;
+				pComposite->setRecord(notifier->getDataSource());
+			}
+			m_pFormNode = pComposite->createSubTree(this, m_order);
 			if(!m_pFormNode) {
 				CKLBScriptEnv::getInstance().error("Node create failed. Json arg.");
 			}
 		}
 	}
-	CKLBUISystem::setFormList(NULL);
+	CKLBUISystem::resetFormList();
 	if(!m_pFormNode) {
 		// フォームのツリー生成に失敗した場合、すべてをご破算にしてタスク生成を失敗させる
 		return false;
+	}
+	CKLBCompositeAsset* pComposite = (CKLBCompositeAsset*)CKLBDataHandler::getPointer(m_handle);
+	m_designRectCount = (u16)pComposite->getDesignRectCount();
+	klb_assertNull(m_designRectCount < DESIGN_RECT_MAX,
+		"limit of 20 NAMED format rect per form reached.");
+	for(u32 i = 0; i < m_designRectCount; ++i) {
+		DESIGN_RECT& rect = m_designRect[i];
+		pComposite->getDesignRect(i, rect.name, rect.pNode,
+			rect.x, rect.y, rect.width, rect.height);
 	}
 	// フォーム単位として登録する
 	CKLBTouchEventUIMgr::getInstance().registForm(&m_ctrlList);
@@ -303,36 +333,59 @@ CKLBUIForm::initCore(u32 order, float x, float y, bool bAssetFile, const char* a
 bool
 CKLBUIForm::initUI(CLuaState& lua)
 {
+	return initUI(lua, 0);
+}
+
+bool
+CKLBUIForm::initUISecondary(CLuaState& lua)
+{
+	return initUI(lua, 2);
+}
+
+bool
+CKLBUIForm::initUI(CLuaState& lua, int argumentOffset)
+{
 	int argc = lua.numArgs();
-    if(argc < ARG_REQUIRE || argc > ARG_NUMS) { return false; }
+	if(argc < ARG_REQUIRE + argumentOffset || argc > ARG_NUMS + argumentOffset) { return false; }
 
 	const char* asset;
 	bool bAssetFile = true;
-	u32 size = 0;
-	if(lua.isString(ARG_ASSET)) {
+	size_t size = 0;
+	if(lua.isString(ARG_ASSET + argumentOffset)) {
 		// 指定されたassetが文字列であれば、パス名として使用
-		asset = lua.getString(ARG_ASSET);
+		asset = lua.getString(ARG_ASSET + argumentOffset);
 	} else {
 		// 指定されたassetが文字列でなければ、おそらくLuaテーブル。
 		// Luaテーブルを元にJSONを生成し、それをassetとして使用する。
 		bAssetFile = false;
-		lua.retValue(ARG_ASSET);
+		lua.retValue(ARG_ASSET + argumentOffset);
 		asset = CKLBUtility::lua2BJson(lua,size);
 		lua.pop(1);
 	}
 
-	bool bExclusive = (argc >= ARG_EXCLUSIVE)	? lua.getBool(ARG_EXCLUSIVE)	: false;
-	bool modal		= (argc >= ARG_MODAL)		? lua.getBool(ARG_MODAL)		: false;
-	bool urgent		= (argc >= ARG_URGENT)		? lua.getBool(ARG_URGENT)		: false;
-	
-	bool res = initCore(lua.getInt(ARG_ORDER),
-						lua.getFloat(ARG_X), 
-						lua.getFloat(ARG_Y),
+	bool bExclusive = (argc >= ARG_EXCLUSIVE + argumentOffset)	? lua.getBool(ARG_EXCLUSIVE + argumentOffset)	: false;
+	bool modal		= (argc >= ARG_MODAL + argumentOffset)		? lua.getBool(ARG_MODAL + argumentOffset)		: false;
+	bool urgent		= (argc >= ARG_URGENT + argumentOffset)		? lua.getBool(ARG_URGENT + argumentOffset)		: false;
+	u32 formWidth  = (u32)-1;
+	u32 formHeight = (u32)-1;
+	if(argumentOffset) {
+		formWidth  = lua.getInt(2);
+		formHeight = lua.getInt(3);
+	}
+	CKLBDataTask* dataTask = getDataTask();
+	setDataTask(NULL);
+
+	bool res = initCore(lua.getInt(ARG_ORDER + argumentOffset),
+						lua.getFloat(ARG_X + argumentOffset), 
+						lua.getFloat(ARG_Y + argumentOffset),
 						bAssetFile,
 						asset, size,
 						bExclusive,
 						modal,
-						urgent);
+						urgent,
+						formWidth,
+						formHeight,
+						dataTask);
 
 	if(!bAssetFile) {
 		KLBDELETEA(asset);
@@ -344,6 +397,8 @@ CKLBUIForm::initUI(CLuaState& lua)
 void
 CKLBUIForm::dieUI()
 {
+	m_dataSourceSubscription.setNotifier(false, NULL);
+
 	// モーダル制御
 	setVisible(false);	// フォームが無効になるので、スタックから取り除く処理。
 
@@ -558,6 +613,29 @@ CKLBUIForm::commandUI(CLuaState& lua, int argc, int cmd)
 			}
 			lua.retBoolean(result);
 			ret = 1;
+		}
+		break;
+	case UI_FORM_GET_DESIGNRECT:
+		{
+			if(argc == 3 && !lua.isNil(3)) {
+				const char* name = lua.getString(3);
+				for(s64 i = 0; i < m_designRectCount; i++) {
+					DESIGN_RECT& rect = m_designRect[i];
+					if(strcmp(rect.name, name) == 0) {
+						lua.retString(rect.pNode->getName());
+						lua.retFloat(rect.x);
+						lua.retFloat(rect.y);
+						lua.retFloat(rect.width);
+						lua.retFloat(rect.height);
+						ret = 5;
+						break;
+					}
+				}
+			}
+			if(ret == 0) {
+				lua.retBoolean(false);
+				ret = 1;
+			}
 		}
 		break;
 	}

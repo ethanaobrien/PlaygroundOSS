@@ -92,7 +92,7 @@ CKLBAsyncFilecopy::ThreadLoader(void * /* hThread */, void * data)
 	// Open Source
 	IReadStream* pSrc	= NULL;
 	if (p->m_fileNameSrc) {
-		pSrc = pfif.openReadStream(p->m_fileNameSrc, pfif.useEncryption());
+		pSrc = pfif.openReadStream(p->m_fileNameSrc, false);
 	}
 
 	// Create Tmp
@@ -124,7 +124,7 @@ CKLBAsyncFilecopy::ThreadLoader(void * /* hThread */, void * data)
 			}
 			
 			bool readOK		= pSrc->readBlock(block, size);
-			u32  writeSize	= pDest->writeTmp(block, size);
+			size_t writeSize = pDest->writeTmp(block, size);
 			
 			if (readOK && (writeSize == size)) { 
 				p->m_doneSize += size;

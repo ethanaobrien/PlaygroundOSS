@@ -19,7 +19,7 @@
 class CKLBModalStack
 {
 public:
-	CKLBModalStack(bool bModal = false, bool bUrgent = false);
+	CKLBModalStack();
 	virtual ~CKLBModalStack();
 
 	inline bool isUrgent() const { return m_bUrgent; }

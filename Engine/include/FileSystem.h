@@ -37,6 +37,7 @@ public:
 	};
 
 	virtual ~IReadStream() { }
+	virtual		bool	isUserEncrypted() = 0;
 	
 	virtual		s32		getSize		()	= 0;	// -1 : Undefined, >= 0 file size
 	virtual		s32		getPosition	()	= 0;
@@ -44,8 +45,8 @@ public:
 	virtual		u16		readU16		()	= 0;	// Use cast to support s16
 	virtual		u32		readU32		()	= 0;	// Use cast to support s32
     
-    virtual     int     readU16arr  (u16 * pBufferU16, int items) = 0;
-    virtual     int     readU32arr  (u32 * pBufferU32, int items) = 0;
+    virtual     size_t  readU16arr  (u16 * pBufferU16, size_t items) = 0;
+    virtual     size_t  readU32arr  (u32 * pBufferU32, size_t items) = 0;
     
 	virtual		float	readFloat	()	= 0;	//
 	virtual		bool	readBlock	(void* buffer, u32 byteSize)	= 0;

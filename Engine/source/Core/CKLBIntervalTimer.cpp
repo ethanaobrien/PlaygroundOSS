@@ -103,8 +103,18 @@ CKLBIntervalTimer::initScript(CLuaState& lua)
 	const char * callback = lua.getString(ARG_CALLBACK);
 	bool b_repeat = (argc >= ARG_REPEAT) ? lua.getBool(ARG_REPEAT) : false;
 	CKLBTask* pParent = NULL;
-	if (argc >= ARG_PARENT) { pParent = (CKLBTask*)lua.getPointer(ARG_PARENT); }
-	return init(pParent, lua.getInt(ARG_TIMER_ID),lua.getInt(ARG_INTERVAL), b_repeat, callback, INTERVALTIMER_TIME, true);
+	if (argc >= ARG_PARENT) { pParent = (CKLBTask*)lua.getScriptPtr(ARG_PARENT); }
+
+	if(b_repeat) {
+		return init(pParent, lua.getInt(ARG_TIMER_ID),lua.getInt(ARG_INTERVAL), true, callback, INTERVALTIMER_TIME, true);
+	}
+
+	CKLBTaskMgr& mgr = CKLBTaskMgr::getInstance();
+	CKLBRegistedTaskList* pRegList = mgr.getRegistedTaskList();
+	mgr.setRegistedTaskList(NULL);
+	bool result = init(pParent, lua.getInt(ARG_TIMER_ID),lua.getInt(ARG_INTERVAL), false, callback, INTERVALTIMER_TIME, true);
+	mgr.setRegistedTaskList(pRegList);
+	return result;
 }
 
 void

@@ -49,7 +49,7 @@ public:
 
 	inline int  getNowPos() {
 		float pos = (float)getPosition();
-		return (int)loopRound(pos);
+		return (int)pos;
 	}
 	inline int  getNowBar() {
 		float pos = (float)getBarPosition();
@@ -65,6 +65,14 @@ public:
 	virtual int  getBarPosition ()                      = 0;
 	virtual void execute        (u32 deltaT)            = 0;
 	virtual bool stillScrolling ()                      = 0;
+
+	// Optional hooks for scroll managers which track direct touch interaction.
+	// The standard managers inherit these no-op implementations; kinetic
+	// managers use them to seed, update, and finish their physics state.
+	virtual void setScrollEnable        (bool /*enable*/)    {}
+	virtual void setScrollPhysicsInit   (int /*position*/)   {}
+	virtual void setScrollPhysicsTarget (int /*position*/)   {}
+	virtual void onScrollDragEnd        (int /*position*/)   {}
 protected:
 	float loopRound(float pos);
 
@@ -117,7 +125,7 @@ public:
 		const char * callback,
 		u32 colorNormal, u32 colorSelect, bool vert, bool active, bool hide_mode = false);
 
-	void die                ();
+	void die                (bool deleteScrollMgr = true);
 
 	void setSliderSize      (s32 value);
 	void setSliderSizeMin   (s32 value);
@@ -128,6 +136,7 @@ public:
 
 	inline void setOverScroll   (bool overscroll)   { m_overScroll = overscroll; }
 	inline void setShortHide    (bool shortHide)    { m_bShortHide = shortHide;  }
+	inline void setShowUpdate   (bool showUpdate)   { m_showUpdate = showUpdate; }
 
 	inline void setVisible      (bool visible) {
 		m_visible = visible;
@@ -135,10 +144,17 @@ public:
 			s32  size = m_vertical ? m_height : m_width;
 			if(m_slider_size >= size && m_bShortHide) visible = false;
 			m_pNode->setVisible(visible);
+		} else {
+			reset();
 		}
 	}
 
-	inline void setEnable       (bool enable)       { m_enable = enable; }
+	inline void setEnable       (bool enable) {
+		m_enable = enable;
+		if(!enable) {
+			reset();
+		}
+	}
 
 	inline void setVertical     (bool vertical) {
 		if (vertical != m_vertical) {
@@ -176,6 +192,18 @@ public:
 	void setPosition    (int pos, int dir = 0);	// dir = スクロール方向指定
 	void setMargin      (int top, int bottom);
 	void setCtrlStatus  (bool status);
+	inline void setScrollEnable(bool enable) {
+		if(m_pScrMgr) { m_pScrMgr->setScrollEnable(enable); }
+	}
+	inline void setScrollPhysicsInit(int position) {
+		if(m_pScrMgr) { m_pScrMgr->setScrollPhysicsInit(position); }
+	}
+	inline void setScrollPhysicsTarget(int position) {
+		if(m_pScrMgr) { m_pScrMgr->setScrollPhysicsTarget(position); }
+	}
+	inline void onScrollDragEnd(int position) {
+		if(m_pScrMgr) { m_pScrMgr->onScrollDragEnd(position); }
+	}
 	int getPosition     ();
 	int getBarPosition  ();
 
@@ -190,6 +218,7 @@ public:
 	void execute(u32 deltaT);
 
 private:
+	void reset          ();
 	void procUserCtrl   ();
 	void updateDisplay  ();
 	void recompute      ();
@@ -214,6 +243,7 @@ private:
 	bool				m_enable;
 	bool				m_overScroll;
 	bool				m_bShortHide;
+	bool				m_showUpdate;
 
 	typedef enum {
 		S_WAIT,				//!< 待機中

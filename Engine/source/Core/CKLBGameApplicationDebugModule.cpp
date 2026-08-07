@@ -20,6 +20,11 @@
 #include "CKLBAsset.h"
 #include "CKLBDrawTask.h"
 #include "CKLBLuaLibSOUND.h"
+#include "CKLBUISystem.h"
+#include "CKLBUIForm.h"
+#include "CKLBUIList.h"
+
+#include <string>
 
 static void parseBuffer(char* command, char** args, int* argc) {
 	char*	parse		= command;
@@ -44,6 +49,37 @@ static void parseBuffer(char* command, char** args, int* argc) {
 	*argc = argRes;
 }
 
+void CKLBGameApplication::dumpScene(CKLBNode* node) {
+	m_sceneDumpDepth++;
+	CKLBUITask* task = node->getUITask();
+	if (task) {
+		printf("%s", std::string(m_sceneDumpDepth, ' ').c_str());
+
+		if (task->getClassID() == CLS_KLBUIFORM) {
+			CKLBUIForm* form = static_cast<CKLBUIForm*>(task);
+			printf("[%d] %s %s\n", task->getOrder(), node->getName(), form->getAsset());
+		} else if (task->getClassID() == CLS_KLBUILIST) {
+			CKLBUIList* list = static_cast<CKLBUIList*>(task);
+			printf("[%d-%d] %s\n", task->getOrder(), list->getMaxOrder(), node->getName());
+		} else {
+			printf("[%d] %s\n", task->getOrder(), node->getName());
+		}
+	} else if (dynamic_cast<CKLBUIElement*>(node) && node->getName()) {
+		printf("%s", std::string(m_sceneDumpDepth, ' ').c_str());
+		printf("[%d] %s\n", node->getPriority(), node->getName());
+	}
+
+	CKLBNode* child = node->getChild();
+	while (child) {
+		dumpScene(child);
+		child = child->getBrother();
+	}
+	--m_sceneDumpDepth;
+	if (m_sceneDumpDepth == 1) {
+		printf("\n");
+	}
+}
+
 bool CKLBGameApplication::executeCommand(const char* command) {
 	char	commandL[1000];
 	char*	commArgs[10];
@@ -51,7 +87,7 @@ bool CKLBGameApplication::executeCommand(const char* command) {
 
 	bool	result = false;
 	// Copy string
-	int l = strlen(command);
+	size_t l = strlen(command);
 	memcpy(commandL, command, l+1);
 	
 	// Make sure previous stuff is cleaned.
@@ -134,15 +170,22 @@ bool CKLBGameApplication::executeCommand(const char* command) {
 		if (strcmp("RELOAD", commArgs[0])==0) {
 			CKLBAssetManager::getInstance().restoreAsset();
 			result = true;
-		} else		if (strcmp("PLAY", commArgs[0]) == 0) {
+		} else
+		if (strcmp("PRIORITY", commArgs[0]) == 0) {
+			m_sceneDumpDepth = 0;
+			CKLBDrawResource& res = CKLBDrawResource::getInstance();
+			dumpScene(res.getRoot());
+			result = true;
+		} else
+		if (strcmp("PLAY", commArgs[0]) == 0) {
 			this->pauseGame(false);
 			result = true;
 		} else
 		if (strcmp("DUMP", commArgs[0]) == 0) {
 			if (argCount >= 2) {
-				if (strcmp("SCENE", commArgs[1]) == 0) {
-					CKLBDrawResource& res = CKLBDrawResource::getInstance();
-					res.getRoot()->dump(0, 0xFFFFFFFF);
+					if (strcmp("SCENE", commArgs[1]) == 0) {
+						CKLBDrawResource& res = CKLBDrawResource::getInstance();
+						res.getRoot()->dump(0, 0xFFFFFFFF);
 					result = true;
 				} else
 				if (strcmp("TASKS", commArgs[1]) == 0) {

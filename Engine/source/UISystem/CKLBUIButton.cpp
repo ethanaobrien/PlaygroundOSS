@@ -67,18 +67,7 @@ CKLBUIButton* CKLBUIButton::create(CKLBTask* pParentTask, const char * funcName)
 bool CKLBUIButton::init(CKLBTask* pTask, const char* funcname) {
 	if(funcname) setStrC(m_luaFunc, funcname);
 
-	m_ctrlList.pGroup			= NULL;
-	m_ctrlList.pGrpPrev			= NULL;
-	m_ctrlList.pGrpNext			= NULL;
-
-	m_ctrlList.pBegin			= NULL;
-	m_ctrlList.next				= NULL;
 	m_ctrlList.bEnable			= true;
-	m_ctrlList.bExclusive		= false;
-	m_ctrlList.bWorking			= false;
-	m_ctrlList.pCallbackIF		= NULL;
-	m_ctrlList.nativeCallback	= NULL;
-	m_ctrlList.pID				= NULL;
 
     bool result = regist(pTask, P_AFTER);
     if(!result) {

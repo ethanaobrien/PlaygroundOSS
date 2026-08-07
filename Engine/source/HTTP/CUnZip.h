@@ -47,7 +47,7 @@ public:
 	inline unsigned long numEntry() { return m_globalInfo.number_entry; }
 	bool readCurrentFileInfo();
 	bool extractCurrentFile	(const char * extract_root);
-	bool isFinishExtract	();
+	bool isFinishExtract	(bool * hasError);
 	bool gotoNextFile		();
 
 	inline int getFinishedEntry() { return m_finished_entry; }
@@ -57,12 +57,17 @@ public:
 
 protected:
 	// ファイル個別の展開が終了したときに、そのファイルのパス名と展開サイズを引数として呼び出される。
-	virtual bool afterExtract(const char * extract_path, bool isDirectory, size_t size);
+	bool afterExtract(const char * extract_path, bool isDirectory, size_t size);
 
-private:
-	bool	make_directory			(const char * dir_name);
+protected:
+	static bool make_directory		(const char * dir_name);
 	bool	CreateDirectoryReflex	(const char * strPath);
-	bool	IsFileExist				(const char * strFilename);
+	static bool IsFileExist			(const char * strFilename);
+	inline bool abortCurrentFile() {
+		if (m_targetPath) delete [] m_targetPath;
+		m_targetPath = NULL;
+		return false;
+	}
 
 	s32		ThreadExtract			(void * hThread, void * data);
 
@@ -72,7 +77,6 @@ private:
 	unzFile			m_hUnzip;
 	unz_global_info	m_globalInfo;
     unz_file_info	m_fileInfo;
-	char			m_currentPath[512];
 	int				m_lenPath;
 
 	ITmpFile	*	m_wrfile;
@@ -80,15 +84,46 @@ private:
 
 	char		*	m_targetPath;
 	bool			m_extractFinish;
+	volatile bool	m_writeError;
 	void		*	m_hThread;
 
 	int				m_finished_entry;
+	int				m_finished_file;
 
 	bool			m_bReady;
+	char			m_currentPath[512];
 
 	enum {
 		BUF_SIZE = 8192
 	};
+};
+
+// Full-archive extraction worker used by CKLBUpdateZip. The archive path is
+// owned by the worker; extraction itself runs through the platform thread API.
+class CKLBSubThreadUnzip : public CUnZip
+{
+public:
+	CKLBSubThreadUnzip(const char * zipPath);
+	virtual ~CKLBSubThreadUnzip();
+
+	bool unCompress(const char * extractRoot);
+	bool isFinishExtract();
+	bool hasError() const { return m_error; }
+	s32 getErrorStatus() const { return m_status; }
+
+protected:
+	bool afterExtract(const char * extractPath, bool isDirectory, size_t size, bool forceRemove);
+
+private:
+	static s32 ThreadExtractEntry(void * hThread, void * data);
+	s32 ThreadExtract(const char * extractRoot);
+	s32 extractCurrentFile(const char * extractRoot);
+
+	bool		m_abnormalFile;
+	const char *	m_extractRoot;
+	const char *	m_zipPath;
+	bool		m_error;
+	s32		m_status;
 };
 
 

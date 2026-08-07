@@ -123,8 +123,15 @@ public:
 	inline float getStart()				{ return m_fStart;		}
 	inline void	 setStart(float start)	{
 		if (start != m_fStart) {
+			if (start < 0.0f) {
+				start = 0.0f;
+			} else if (start > 1.0f) {
+				start = 1.0f;
+			} else if (__isnanf(start)) {
+				start = 0.0f;
+			}
 			m_fStart = start;
-			m_fNormValue = (m_fValue - m_fStart) / (m_fEnd - m_fStart); 
+			m_fNormValue = (m_fValue - m_fStart) / (m_fEnd - m_fStart);
 			REFRESH_B;
 		}
 	}
@@ -132,8 +139,15 @@ public:
 	inline float getEnd()				{ return m_fEnd;		}
 	inline void	 setEnd(float end)		{
 		if (end != m_fEnd) {
+			if (end < 0.0f) {
+				end = 0.0f;
+			} else if (end > 1.0f) {
+				end = 1.0f;
+			} else if (__isnanf(end)) {
+				end = 0.0f;
+			}
 			m_fEnd = end;
-			m_fNormValue = (m_fValue - m_fStart) / (m_fEnd - m_fStart); 
+			m_fNormValue = (m_fValue - m_fStart) / (m_fEnd - m_fStart);
 			REFRESH_B;
 		}
 	}
@@ -153,6 +167,13 @@ public:
 	inline float getValue()				{ return m_fValue;		}
 	inline void	 setValue(float value)	{
 		if (value != m_fValue) {
+			if (value < 0.0f) {
+				value = 0.0f;
+			} else if (value > 1.0f) {
+				value = 1.0f;
+			} else if (__isnanf(value)) {
+				value = 0.0f;
+			}
 			m_fValue = value;
 			m_fNormValue = (value - m_fStart) / (m_fEnd - m_fStart); 
 			REFRESH_B;

@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -58,7 +58,7 @@ enum {
 };
 
 CKLBUIClip::CKLBUIClip()
-: CKLBUITask    (CKLBTask::P_UIAFTER)
+: CKLBUITask    (CKLBTask::P_MENU)
 , m_clipHandle  (NULL)
 {
 	m_newScriptModel = true;
@@ -134,12 +134,12 @@ CKLBUIClip::initCore(u32 base_order, u32 max_order,
 		return false;
 	}
 
-	klb_assert((((s32)base_order) >= 0), "Order Problem");
-	klb_assert((((s32)max_order ) >= 0), "Order Problem");
+	klb_assertNull((((s32)base_order) >= 0), "Order Problem");
+	klb_assertNull((((s32)max_order ) >= 0), "Order Problem");
 
 	m_basePriority  = base_order;
 	m_endPriority   = max_order;
-	
+
 	m_clipX         = x;
 	m_clipY         = y;
 	m_clipWidth     = (int)clip_width;

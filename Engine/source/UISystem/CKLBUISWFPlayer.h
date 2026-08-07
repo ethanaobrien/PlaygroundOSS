@@ -120,6 +120,11 @@ private:
 	};
 
 	void receiveMsg	(CKLBObject* emitter, u32 msgID, u32 msgParam);
+	void notifyAssetUpdate(const char* assetName, CKLBAsset* asset);
+
+	// Refreshes every dynamic sprite of the movie sub tree that still draws
+	// the reloaded image.
+	void refreshReplacedImage(CKLBNode* node, const char* assetName, CKLBImageAsset* image);
 
 	bool init(CKLBUITask * pParent, CKLBNode * pNode,
 			  u32 order, float x, float y, const char * asset,
@@ -131,8 +136,7 @@ private:
 					const char * movie_name, const char * complete_callback,
 					const char ** asset_list = NULL, int replace_cnt = 0);
 
-	const char **   replaceAssets       (CLuaState& lua, int pos, int * retcnt);
-	bool            removeReplaceList   (const char ** list, int cnt);
+	void            removeReplaceList   (const char ** list, int cnt);
 	void            reachFrame          (const char* label, const char* callBack);
 
 };

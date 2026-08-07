@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,8 +30,8 @@ void CTextureBase::assignSWAlphaBuffer(u8* pBuffer) {
 }
 
 u32	CTextureBase::isAlpha	(float u,float v) {
-	klb_assert(((u >= 0.0f) && (u <= 1.0f)),"Out of range UV");
-	klb_assert(((v >= 0.0f) && (v <= 1.0f)),"Out of range UV");
+	klb_assertNull(((u >= 0.0f) && (u <= 1.0f)),"Out of range UV");
+	klb_assertNull(((v >= 0.0f) && (v <= 1.0f)),"Out of range UV");
 	// Optimize : have (width/tile)  (height/tile) as float already.
 	int x		= ((int)(u * (this->getWidth ())))>>3;
 	int y		= ((int)(v * (this->getHeight())))>>3;
@@ -143,19 +143,20 @@ void	CTextureBase::releaseSubTexture(CSubTexture* /*pSubTex*/) {
 }
 
 void CTextureBase::updateTextureFromFrame(u32 mipLevel, s32 dstX, s32 dstY, s32 srcX, s32 srcY, s32 srcW, s32 srcH) {
-	dglBindTexture(GL_TEXTURE_2D,pMaster->getWorkingTexture());
+	dglBindTexture(pMaster->textureTarget, pMaster->getWorkingTexture());
 
 	dstX += this->x;
 	dstY += this->y;
 
-	dglCopyTexSubImage2D (GL_TEXTURE_2D, mipLevel, dstX, dstY, srcX, srcY, srcW, srcH);
+	dglCopyTexSubImage2D (pMaster->textureTarget, mipLevel, dstX, dstY, srcX, srcY, srcW, srcH);
 }
 
 bool	CTextureBase::updateTexture(s32 x, s32 y, s32 width, s32 height, void* data, s32 dataSize) {
 	x = this->x + x;
 	y = this->y + y;
 
-	dglBindTexture(GL_TEXTURE_2D,pMaster->getWorkingTexture());
+	dglGetError();
+	dglBindTexture(pMaster->textureTarget, pMaster->getWorkingTexture());
 
 	dglPixelStorei(GL_PACK_ALIGNMENT,	1);
 	dglPixelStorei(GL_UNPACK_ALIGNMENT,	1);
@@ -163,20 +164,22 @@ bool	CTextureBase::updateTexture(s32 x, s32 y, s32 width, s32 height, void* data
 		#ifdef STD_OPENGL
 			#pragma message ("Warning : feature not supported with standard OpenGL for now")
 		#else
-			dglCompressedTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height,
+			dglCompressedTexSubImage2D(pMaster->textureTarget, 0, x, y, width, height,
 					pMaster->format,
 					dataSize,
 					data);
 		#endif
 	} else {
-		dglTexSubImage2D (GL_TEXTURE_2D, 0, x, y, width, height,
+		dglTexSubImage2D (pMaster->textureTarget, 0, x, y, width, height,
 				pMaster->channels,
 				pMaster->format,
 				data);
 	}
 
-	if (dglGetError()) {
-		klb_assertAlways("Invalid texture update");
+	GLenum error = dglGetError();
+	if (error) {
+		klb_assertAlways("Invalid texture update : error = %d, b = %d, x = %d, y = %d, w = %d, h = %d, f = %d, p = %p, isCompressed = %d",
+			error, pMaster->textureTarget, x, y, width, height, pMaster->format, data, pMaster->isCompressed);
 		return false;
 	} else {
 		return true;

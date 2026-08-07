@@ -19,8 +19,8 @@
 #include "KLBPlatformMetrics.h"
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
-size_t KLBOpenSLSoundAsset::read_func(void *ptr, size_t size, size_t nmemb, void *datasource) {
-	KLBOpenSLSoundAsset* me = (KLBOpenSLSoundAsset*)datasource;
+size_t KLBOpenSLOldSoundAsset::read_func(void *ptr, size_t size, size_t nmemb, void *datasource) {
+	KLBOpenSLOldSoundAsset* me = (KLBOpenSLOldSoundAsset*)datasource;
 
 	// http://xiph.org/vorbis/doc/vorbisfile/callbacks.html
 	// > short reads mean nothing special (short reads are not treated as error conditions)
@@ -35,8 +35,8 @@ size_t KLBOpenSLSoundAsset::read_func(void *ptr, size_t size, size_t nmemb, void
 	return bytes_read;
 }
 
-int KLBOpenSLSoundAsset::seek_func(void *datasource, ogg_int64_t offset, int whence) {
-	KLBOpenSLSoundAsset* me = (KLBOpenSLSoundAsset*)datasource;
+int KLBOpenSLOldSoundAsset::seek_func(void *datasource, ogg_int64_t offset, int whence) {
+	KLBOpenSLOldSoundAsset* me = (KLBOpenSLOldSoundAsset*)datasource;
 
 	unsigned int new_pos = me->src_location;
 	// DEBUG_PRINT("new_pos initiated as %d", new_pos);
@@ -50,15 +50,15 @@ int KLBOpenSLSoundAsset::seek_func(void *datasource, ogg_int64_t offset, int whe
 	// DEBUG_PRINT("AUDIO; seek_func(current=%d, offset=%d, whence=%d, new=%d)", me->src_location, (unsigned int)offset, whence, new_pos);
 	me->src_location = new_pos;
 	
-	fseek(me->fp, me->src_location + (me->decryptor.m_useNew ? 4 : 0), SEEK_SET);
+	fseek(me->fp, me->src_location + me->decryptor.getHeaderSize(), SEEK_SET);
 	me->decryptor.gotoOffset(me->src_location);
 	// TODO: update PCM buffer offset(pcm_total_read_pos)
 
 	return 0;
 }
 
-int KLBOpenSLSoundAsset::close_func(void *datasource) {
-	KLBOpenSLSoundAsset* me = (KLBOpenSLSoundAsset*)datasource;
+int KLBOpenSLOldSoundAsset::close_func(void *datasource) {
+	KLBOpenSLOldSoundAsset* me = (KLBOpenSLOldSoundAsset*)datasource;
 	// DEBUG_PRINT("AUDIO; close_func()");
 	if (me->fp != NULL) {
 		fclose(me->fp);
@@ -67,29 +67,28 @@ int KLBOpenSLSoundAsset::close_func(void *datasource) {
 	return 0;
 }
 
-long KLBOpenSLSoundAsset::tell_func(void *datasource) {
-	KLBOpenSLSoundAsset* me = (KLBOpenSLSoundAsset*)datasource;
+long KLBOpenSLOldSoundAsset::tell_func(void *datasource) {
+	KLBOpenSLOldSoundAsset* me = (KLBOpenSLOldSoundAsset*)datasource;
 	// DEBUG_PRINT("AUDIO; tell_func(): pos=%d", (unsigned int)me->src_location);
 
 	return (long)me->src_location;
 }
 
-KLBOpenSLSoundAsset::KLBOpenSLSoundAsset(const char * path, bool is_se) :
+KLBOpenSLOldSoundAsset::KLBOpenSLOldSoundAsset(const char * path, bool is_se) :
 pcm_samples(NULL),
 fp(NULL),
 src_location(0),
 src_buf_flags(0x00),
 pcm_buffer_read_pos(0),
 pcm_buffer_consumed_pos(0),
-pcm_total_read_pos(0)
+pcm_total_read_pos(0),
+decryptor(0x0e)
 {
-    DEBUG_PRINT("AUDIO; construct KLBOpenSLSoundAsset(path: %s)", path);
-	KLBOpenSLSoundAsset::is_se = is_se;
+	KLBOpenSLOldSoundAsset::is_se = is_se;
 	src_path = path;
-    src_full_path = CAndroidPathConv::getInstance().fullpath(path, ".ogg");
-    // DEBUG_PRINT("path=%s, fullpath=%s", path, src_full_path);
+    src_full_path = CKLBPathConv::getInstance().fullpath(path, ".ogg");
+	// DEBUG_PRINT("path=%s, fullpath=%s", path, src_full_path);
 	fp = fopen(src_full_path, "rb");
-	assert(fp != NULL);
 
 	fseek(fp, 0, SEEK_END);
 	fgetpos(fp, (fpos_t*)&src_file_size);
@@ -107,68 +106,65 @@ pcm_total_read_pos(0)
 		this->src_buf_flags |= 0x04;
 	}
 
-	decryptor.decryptSetup((const u8*)src_full_path, hdr);
-	if (decryptor.m_useNew) {
-		src_file_size -= 4;
-	}
-	else {
+	if (CPFInterface::getInstance().platform().useEncryption()) {
+		u32 headerSize = 0;
+		decryptor.decryptSetup((const u8*)src_full_path, hdr, &headerSize);
+		FILE* input = fp;
+		if (input && headerSize >= 5) {
+			u8 extendedHeader[128];
+			u32 extendedHeaderSize = headerSize - 4;
+			fread(extendedHeader, 1, extendedHeaderSize, input);
+			decryptor.finishSetup(extendedHeader, src_full_path);
+		}
+		src_file_size -= headerSize;
+		fseek(fp, headerSize, SEEK_SET);
+	} else {
 		fseek(fp, 0, SEEK_SET);
 	}
 
-    DEBUG_PRINT("AUDIO; src_file=%s, src_file_size=%d", src_full_path, src_file_size);
-    DEBUG_PRINT("AUDIO; allocating Vorbis-file object");
 	vf = (OggVorbis_File*)calloc(1, sizeof(OggVorbis_File));
     // DEBUG_PRINT("AUDIO; setting callbacks");
     ov_callbacks callbacks;
-	callbacks.read_func = &KLBOpenSLSoundAsset::read_func;
-	callbacks.seek_func = &KLBOpenSLSoundAsset::seek_func;
-	callbacks.close_func = &KLBOpenSLSoundAsset::close_func;
-	callbacks.tell_func = &KLBOpenSLSoundAsset::tell_func;
+	callbacks.read_func = &KLBOpenSLOldSoundAsset::read_func;
+	callbacks.seek_func = &KLBOpenSLOldSoundAsset::seek_func;
+	callbacks.close_func = &KLBOpenSLOldSoundAsset::close_func;
+	callbacks.tell_func = &KLBOpenSLOldSoundAsset::tell_func;
     // DEBUG_PRINT("AUDIO; opening ogg-vorbis stream");
-    int iRet = ov_open_callbacks(this, vf, NULL, 0, callbacks);
-    // DEBUG_PRINT("AUDIO; ov_open_callbacks returned %d", iRet);
-
-    assert(0 == iRet);
+    ov_open_callbacks(this, vf, NULL, 0, callbacks);
 
 	vorbis_info* vi = ov_info(vf, -1);
 	ogg_int64_t uiPCMSamples = ov_pcm_total(vf, -1);
     // DEBUG_PRINT("AUDIO; total PCM samples=%d", uiPCMSamples);
-	assert(0 < uiPCMSamples);
-	DEBUG_PRINT("uiPCMSamples size: %lld, channels: %d, version: %d, %ldHz", uiPCMSamples, vi->channels, vi->version, vi->rate);
 	if (uiPCMSamples == OV_EINVAL) {
 		// TODO: proper error handling
 		return;
 	}
 	playtime_ms = (int)((uiPCMSamples * 1000) / vi->rate);
 	channels = vi->channels;
-    DEBUG_PRINT("AUDIO; total channels=%d", channels);
 	pcm_total_samples = (unsigned int)uiPCMSamples * channels;
 	pcm_buffer_size = isFullyBuffered() ? pcm_total_samples : min(pcm_total_samples, MAX_BUFFER_SAMPLES);
 	pcm_samples = (short*)malloc(pcm_buffer_size * sizeof(s16));
 	pcm_sampling_rate = vi->rate;
-    DEBUG_PRINT("AUDIO; PCM buffer size=%d, PCM samples addr=%d", pcm_buffer_size, (int)pcm_samples);
 }
 
-KLBOpenSLSoundAsset::~KLBOpenSLSoundAsset()
+KLBOpenSLOldSoundAsset::~KLBOpenSLOldSoundAsset()
 {
-	DEBUG_PRINT("AUDIO; unloading asset: %s", src_full_path);
-	KLBOpenSLEngine::getInstance()->unload(this);
+	src_buf_flags |= 0x04;
 	// REPORT_METRICS("about to clear vf");
 	if (vf != NULL) {
 		this->closeVorbisFile();
 	}
 	// REPORT_METRICS("about to free pcm_samples");
 	free(pcm_samples);
-	// REPORT_METRICS("about to free vf");
-	free(vf);
 	// REPORT_METRICS("done");
 	delete [] src_full_path;
 }
 
-void KLBOpenSLSoundAsset::closeVorbisFile()
+void KLBOpenSLOldSoundAsset::closeVorbisFile()
 {
 	if (vf != NULL) {
 		ov_clear(vf);
+		free(vf);
 		vf = NULL;
 	}
 	// close file for sure (actually, this should've been done in ov_clear())
@@ -179,12 +175,12 @@ void KLBOpenSLSoundAsset::closeVorbisFile()
 	}
 }
 
-void KLBOpenSLSoundAsset::stopAll()
+void KLBOpenSLOldSoundAsset::stopAll()
 {
 	KLBOpenSLEngine::getInstance()->discardCorrespondingSoundHandles(this);
 }
 
-void KLBOpenSLSoundAsset::prepare(int frames)
+void KLBOpenSLOldSoundAsset::prepare(int frames)
 {
 	if (frames == -1) {
 		is_se = true;
@@ -192,15 +188,17 @@ void KLBOpenSLSoundAsset::prepare(int frames)
 	// DEBUG_PRINT("AUDIO; performing prepare(%d against %d)", frames, pcm_buffer_size);
 	if (pcm_buffer_size < frames)
 	{
-		DEBUG_PRINT("AUDIO; quitting prepare");
 		// TODO: proper error handling
 		return;
 	}
 	readVorbisSamples(frames);
 }
 
-void KLBOpenSLSoundAsset::readVorbisSamplesImpl(int samplesToRead) {
+void KLBOpenSLOldSoundAsset::readVorbisSamplesImpl(int samplesToRead, ogg_int64_t sampleOffset) {
 	bool close_vorbis_after_reading = false;
+	if (!vf) {
+		return;
+	}
 	if (pcm_buffer_size < samplesToRead)
 	{
 		// too large samples count specified
@@ -208,7 +206,6 @@ void KLBOpenSLSoundAsset::readVorbisSamplesImpl(int samplesToRead) {
 		return;
 	}
 	if (pcm_total_samples == pcm_total_read_pos) {
-		DEBUG_PRINT("AUDIO; end of buffer reached");
 		return;
 	}
 	// DEBUG_PRINT("start pos=%d, total samples=%d, total read=%d, samplesToRead=%d, offset=%d", (int)pcm_samples, pcm_total_samples, pcm_total_read_pos, samplesToRead, pcm_buffer_read_pos);
@@ -235,12 +232,10 @@ void KLBOpenSLSoundAsset::readVorbisSamplesImpl(int samplesToRead) {
 	else
 	{
 		int buffer_size_overflow = pcm_buffer_read_pos + samplesToRead - pcm_buffer_size;
-		DEBUG_PRINT("bufsize to overflow=%d", buffer_size_overflow);
 		if (0 < buffer_size_overflow)
 		{
 			// this should normally never happen (or, adjust buffer size not to happen)
 			unsigned int buf_read_first_phase = pcm_buffer_size - pcm_buffer_read_pos;
-			DEBUG_PRINT("read on first page=%d", buf_read_first_phase);
 			readVorbisSamples(buf_read_first_phase);
 			pcm_buf_read_start_pos += buf_read_first_phase;
 			samplesToRead -= buf_read_first_phase;
@@ -249,6 +244,9 @@ void KLBOpenSLSoundAsset::readVorbisSamplesImpl(int samplesToRead) {
 	int currentSection = 0;
 	s64 bytesRead = 0;
 	int bufPos = 0;
+	if (sampleOffset >= 0) {
+		ov_pcm_seek(vf, sampleOffset);
+	}
 	// DEBUG_PRINT("performing actual Vorbis->PCM decode: addr=%d", (int)pcm_buf_read_start_pos);
 	do
 		{
@@ -258,7 +256,9 @@ void KLBOpenSLSoundAsset::readVorbisSamplesImpl(int samplesToRead) {
 			bufPos += (int)bytesRead >> 1; /* divide by 2 for buffer=short */
 		} while (0 < bytesRead && bufPos < samplesToRead);
 	pcm_buffer_read_pos += samplesToRead;
-	pcm_total_read_pos += samplesToRead;
+	u32 continuedReadPos = pcm_total_read_pos + samplesToRead;
+	s32 seekedReadPos = (s32)(sampleOffset + samplesToRead);
+	pcm_total_read_pos = (sampleOffset < 0) ? continuedReadPos : seekedReadPos;
 	if (close_vorbis_after_reading)
 	{
 		closeVorbisFile();
@@ -266,7 +266,7 @@ void KLBOpenSLSoundAsset::readVorbisSamplesImpl(int samplesToRead) {
 	// DEBUG_PRINT("snd buffer filled with %d samples(pcm_buffer_read_pos=%d against pcm_buffer_size=%d)", bufPos, pcm_buffer_read_pos, pcm_buffer_size);
 }
 
-void KLBOpenSLSoundAsset::fetchNextPcmBuffer(KLBOpenSLSoundHandle* soundHandle) {
+void KLBOpenSLOldSoundAsset::fetchNextPcmBuffer(KLBOpenSLOldSoundHandle* soundHandle) {
 	// DEBUG_PRINT("AUDIO; fetching next pcm buf. bits=%d", soundHandle->getPcmDepth() * 8);
 	if (!isFullyBuffered()) {
 		// DEBUG_PRINT("AUDIO; pcm_buffer_read_pos=%d, pcm_buffer_consumed_pos=%d, pcm_total_samples=%d, pcm_total_read_pos=%d, soundHandle->consumed_pos=%d, pcm_buffer_size=%d", pcm_buffer_read_pos, pcm_buffer_consumed_pos, pcm_total_samples, pcm_total_read_pos, soundHandle->consumed_pos, pcm_buffer_size);
@@ -297,19 +297,19 @@ void KLBOpenSLSoundAsset::fetchNextPcmBuffer(KLBOpenSLSoundHandle* soundHandle) 
 	return;
 }
 
-void KLBOpenSLSoundAsset::close()
+void KLBOpenSLOldSoundAsset::close()
 {
 
 }
 
-KLBOpenSLSoundHandle* KLBOpenSLSoundAsset::play(KLBOpenSLSoundAsset::REPEAT_MODE mode, s32 _milisec, float _tgtVol, float _startVol)
+KLBOpenSLOldSoundHandle* KLBOpenSLOldSoundAsset::play(KLBOpenSLOldSoundAsset::REPEAT_MODE mode, s32 _milisec, float _tgtVol, float _startVol)
 {
-	DEBUG_PRINT("playing sound asset \"%s\" (mode=%d)", src_full_path, mode);
-	if (!isFullyBuffered() && mode == KLBOpenSLSoundAsset::INFINITE_LOOP)
+	if (!isFullyBuffered() && mode == KLBOpenSLOldSoundAsset::INFINITE_LOOP)
 	{
 		// TODO: implement looping for BGMs
 	}
-	KLBOpenSLSoundHandle* soundHandle = KLBOpenSLEngine::getInstance()->assignSoundHandle(this);
+	KLBOpenSLOldSoundHandle* soundHandle = KLBOpenSLEngine::getInstance()->assignSoundHandle(this);
+	soundHandle->setVolume(_tgtVol);
 	soundHandle->play(_milisec, _tgtVol, _startVol);
 	return soundHandle;
 }

@@ -80,7 +80,7 @@ class WebViewItem
 //			}
 			// native://が見つかったのでコントロールイベントを通知
 			m_tmpUrl = _str;//_str.substring(findPos);
-			PFInterface.getInstance().WebViewControlEvent(m_web, PFInterface.WEBVIEW_STATUS.E_URLJUMP.GetNum());
+			PFInterface.getInstance().WebViewControlEvent(m_web, PFInterface.WEBVIEW_STATUS.E_URLJUMP.GetNum(), "");
 		}
 	}
 	
@@ -218,7 +218,7 @@ class WebViewItem
 				}
 
 				m_tmpUrl = url.substring(native_protocol_begin + WebViewItem.NATIVE_PROTOCOL.length());
-				PFInterface.getInstance().WebViewControlEvent(webView, PFInterface.WEBVIEW_STATUS.E_URLJUMP.GetNum());
+				PFInterface.getInstance().WebViewControlEvent(webView, PFInterface.WEBVIEW_STATUS.E_URLJUMP.GetNum(), "");
 				return true;
 			}
 			
@@ -227,7 +227,7 @@ class WebViewItem
 			public void onPageStarted(WebView view, String url, Bitmap favicon)
 			{
 				super.onPageStarted(view, url, favicon);
-				PFInterface.getInstance().WebViewControlEvent(view, PFInterface.WEBVIEW_STATUS.E_DIDSTARTLOADWEB.GetNum());
+				PFInterface.getInstance().WebViewControlEvent(view, PFInterface.WEBVIEW_STATUS.E_DIDSTARTLOADWEB.GetNum(), "");
 			}
 			
 			// ロードが完了
@@ -235,7 +235,7 @@ class WebViewItem
 			public void onPageFinished(WebView view, String url)
 			{
 				super.onPageFinished(view, url);
-				PFInterface.getInstance().WebViewControlEvent(view, PFInterface.WEBVIEW_STATUS.E_DIDLOADENDWEB.GetNum());
+				PFInterface.getInstance().WebViewControlEvent(view, PFInterface.WEBVIEW_STATUS.E_DIDLOADENDWEB.GetNum(), m_web.getUrl());
 			}
 			
 			// ロードがエラー
@@ -243,7 +243,7 @@ class WebViewItem
 			public void onReceivedError(WebView view, int errorCode, String description, String failingUrl)
 			{
 				super.onReceivedError(view, errorCode, description, failingUrl);
-				PFInterface.getInstance().WebViewControlEvent(view, PFInterface.WEBVIEW_STATUS.E_FAILEDLOADWEB.GetNum());
+				PFInterface.getInstance().WebViewControlEvent(view, PFInterface.WEBVIEW_STATUS.E_FAILEDLOADWEB.GetNum(), "");
 			}
 		});
 		

@@ -20,19 +20,30 @@
 
 #include "CKLBNetAPIKeyChain.h"
 
+extern void KLBUnregisterObjectName(void* object, const char* className);
+extern void KLBRegisterObjectName(void* object, const char* className, int flags);
 
 CKLBNetAPIKeyChain::CKLBNetAPIKeyChain()
 : m_token   (NULL)
 , m_region  (NULL)
+, m_bundleVersion(NULL)
 , m_client  (NULL)
 , m_cKey    (NULL)
 , m_appID   (NULL)
-, m_userID  (NULL) 
+, m_userID  (NULL)
+, m_language(NULL)
+, m_payloadCipherKeyLength(KEY_LENGTH)
+, m_macKeyLength(KEY_LENGTH)
 {
+	KLBRegisterObjectName(this, "CKLBNetAPIKeyChain", 0);
+	memset(m_payloadCipherKey, 0, sizeof(m_payloadCipherKey));
+	memset(m_requestMACKey, 0, sizeof(m_requestMACKey));
+	memset(m_sessionMACKey, 0, sizeof(m_sessionMACKey));
 }
 
 CKLBNetAPIKeyChain::~CKLBNetAPIKeyChain()
 {
+	KLBUnregisterObjectName(this, "CKLBNetAPIKeyChain");
 	release();
 }
 
@@ -49,6 +60,8 @@ CKLBNetAPIKeyChain::release() {
 	m_token		= NULL;
     KLBDELETEA(m_region);
 	m_region	= NULL;
+    KLBDELETEA(m_bundleVersion);
+	m_bundleVersion = NULL;
     KLBDELETEA(m_client);
 	m_client	= NULL;
     KLBDELETEA(m_cKey);
@@ -57,4 +70,6 @@ CKLBNetAPIKeyChain::release() {
 	m_appID		= NULL;
 	KLBDELETEA(m_userID);
 	m_userID	= NULL; // 2012.11.27  解放漏れがあったので修正
+	KLBDELETEA(m_language);
+	m_language = NULL;
 }

@@ -118,7 +118,7 @@ CKLBGenericTask::initScript(CLuaState &lua)
     const char * name_die  = lua.getString(ARGS_DIE);
     const char * arr_index = lua.getString(ARGS_ARRAY);
 	CKLBTask::TASK_PHASE phase = (CKLBTask::TASK_PHASE)((argc >= ARGS_PHASE) ? lua.getInt(ARGS_PHASE) : P_NORMAL);
-	CKLBTask * pParent = (argc >= ARGS_PARENT) ? (CKLBTask *)lua.getPointer(ARGS_PARENT) : NULL;
+	CKLBTask * pParent = (argc >= ARGS_PARENT) ? (CKLBTask *)lua.getScriptPtr(ARGS_PARENT) : NULL;
 
 	return init(pParent, phase, name_exec, name_die, arr_index);
 }

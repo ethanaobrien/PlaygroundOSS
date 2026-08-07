@@ -20,20 +20,18 @@
 #include "Message.h"
 #include "CKLBDataHandler.h"
 #include "CKLBUtility.h"
-;
 // Command Values
 enum {
 	UI_SWF_PLAY = 0,
 	UI_SWF_STOP,
 	UI_SWF_GOTOFRAME,
 	UI_SWF_REACHFRAME,
-	UI_SWF_GETFRAME,
+	UI_SWF_GETFRAMETOTAL,
+	UI_SWF_GETFRAMECURRENT,
 	UI_SWF_SETFRAMERATE,
 	UI_SWF_SETFRAMERATE_SCALE,
 	UI_SWF_SETIMAGE,
-
 	//	UI_SWF_REPLACE_ASSETS,		// 廃止
-
 	UI_SWF_IS_ANIM,
 	UI_SWF_SETSEVOLUME,
 };
@@ -42,13 +40,12 @@ static IFactory::DEFCMD cmd[] = {
 	{"UI_SWF_STOP",			UI_SWF_STOP},
 	{"UI_SWF_GOTOFRAME",	UI_SWF_GOTOFRAME},
 	{"UI_SWF_REACHFRAME",	UI_SWF_REACHFRAME},
-//	{"UI_SWF_GETFRAME",		UI_SWF_GETFRAME},
+	{"UI_SWF_GETFRAMETOTAL",	UI_SWF_GETFRAMETOTAL},
+	{"UI_SWF_GETFRAMECURRENT",	UI_SWF_GETFRAMECURRENT},
 	{"UI_SWF_SETFRAMERATE",	UI_SWF_SETFRAMERATE},
 	{"UI_SWF_SETFRAMERATE_SCALE", UI_SWF_SETFRAMERATE_SCALE },
 //	{"UI_SWF_SETIMAGE",		UI_SWF_SETIMAGE},
-
 //	{"UI_SWF_REPLACE_ASSETS", UI_SWF_REPLACE_ASSETS },
-
 	{"UI_SWF_IS_ANIM",		UI_SWF_IS_ANIM },
 	{"UI_SWF_SETSEVOLUME",	UI_SWF_SETSEVOLUME },
 	{0, 0}
@@ -62,32 +59,24 @@ CKLBLuaPropTask::PROP_V2 CKLBUISWFPlayer::ms_propItems[] = {
 	{	"order",	UINTEGER,	(setBoolT)&CKLBUISWFPlayer::setOrder,	(getBoolT)&CKLBUISWFPlayer::getOrder,		0	},
 	{	"asset",	R_STRING,	NULL,									(getBoolT)&CKLBUISWFPlayer::getAsset,		0	},
 	{	"mvname",	R_STRING,	NULL,									(getBoolT)&CKLBUISWFPlayer::getMovieName,	0	},
-
 	{	"callback",	STRING,		(setBoolT)&CKLBUISWFPlayer::setCallBack,(getBoolT)&CKLBUISWFPlayer::getCallBack,	0	},
-
 	{	"play",		BOOLEANT,	(setBoolT)&CKLBUISWFPlayer::setPlay,	(getBoolT)&CKLBUISWFPlayer::getPlay,		0	}
 };
 
 enum {
 	ARG_PARENT = 1,
-
 	ARG_ORDER,
 	ARG_X,
 	ARG_Y,
-
 	ARG_ASSET,
 	ARG_MVNAME,
 	ARG_CALLBACK,
-
 	ARG_ASSET_REPLACE,
-
 	ARG_REQUIRE = ARG_MVNAME,
 	ARG_NUMS = ARG_ASSET_REPLACE
 };
-
-
 CKLBUISWFPlayer::CKLBUISWFPlayer()
-: CKLBUITask    ()
+: CKLBUITask    (P_UIAFTER)
 , m_beginLabel  (NULL)
 , m_flashHandle (0)
 , m_callBack    (NULL)
@@ -120,7 +109,6 @@ CKLBUISWFPlayer::create(CKLBUITask * pParent, CKLBNode * pNode,
 {
 	CKLBUISWFPlayer * pTask = KLBNEW(CKLBUISWFPlayer);
     if(!pTask) { return NULL; }
-
 	if(!pTask->init(pParent, pNode, order, x, y, asset, movie_name, complete_callback,
 					replace_list, asset_cnt)) {
 		KLBDELETE(pTask);
@@ -136,10 +124,8 @@ CKLBUISWFPlayer::init(CKLBUITask * pParent, CKLBNode * pNode,
                       const char ** replace_list, int asset_cnt)
 {
     if(!setupNode()) { return false; }
-
 	// ユーザ定義初期化を呼び、初期化に失敗したら終了。
 	bool bResult = initCore(order, x, y, asset, movie_name, complete_callback, replace_list, asset_cnt);
-
 	// 初期化処理終了後の登録。失敗時の処理も適切に行う。
 	bResult = registUI(pParent, bResult);
 	if(pNode) {
@@ -198,8 +184,12 @@ CKLBUISWFPlayer::initCore(u32 order,
 	if(complete_callback) { setStrC(m_callBack, complete_callback); }
 
 	// Asset をロードし、CKLBSWFAssetを作る。
+	CKLBAssetManager& assetManager = CKLBAssetManager::getInstance();
+	bool assetNotFoundEnable = assetManager.getAssetNotFoundEnable();
+	assetManager.setAssetNotFoundEnable(false);
 	CKLBSWFAsset* pSWFAsset;
 	pSWFAsset = (CKLBSWFAsset *)CKLBUtility::loadAssetScript(m_asset, &m_flashHandle);
+	assetManager.setAssetNotFoundEnable(assetNotFoundEnable);
     if(!pSWFAsset) { return false; }
 
 	// CKLBSWFAsset から、addMovie でCKLBSWFMovieを作る。
@@ -298,8 +288,11 @@ CKLBUISWFPlayer::commandUI(CLuaState& lua, int argc, int cmd)
 	case UI_SWF_GOTOFRAME:
 		{
 			const char * label = lua.getString(3);
-			//u16 fnum;
-			gotoFrame(label);
+			u16 fnum;
+			m_pSWFNode->findCodeFrame((char *)label, &fnum);
+			m_pSWFNode->gotoFrame(fnum);
+			lua.retBoolean(fnum != NULL_IDX);
+			ret = 1;
 		}
 		break;
 	case UI_SWF_REACHFRAME:
@@ -310,8 +303,17 @@ CKLBUISWFPlayer::commandUI(CLuaState& lua, int argc, int cmd)
 			reachFrame(label, luafunc);
 		}
 		break;
-	case UI_SWF_GETFRAME:
+	case UI_SWF_GETFRAMETOTAL:
 		{
+			lua.retInt(m_pSWFNode->getFrameTotal());
+			ret = 1;
+		}
+		break;
+	case UI_SWF_GETFRAMECURRENT:
+		{
+			u16 frame = m_pSWFNode->getFrameCurrent();
+			lua.retInt((frame == NULL_IDX) ? 0 : frame);
+			ret = 1;
 		}
 		break;
 	case UI_SWF_SETFRAMERATE:
@@ -382,55 +384,59 @@ CKLBUISWFPlayer::commandUI(CLuaState& lua, int argc, int cmd)
 	return ret;
 }
 
-const char **
-CKLBUISWFPlayer::replaceAssets(CLuaState& lua, int pos, int * retcnt)
-{
-	const char ** list = KLBNEWA(const char *, REPLACE_BLOCK);
-	int max     = REPLACE_BLOCK;
-	int cnt     = 0;
-	int cntmax  = 0;
-	lua.retValue(pos);
-	lua.retNil();
-	while(lua.tableNext()) {
-		const char * string = lua.getString(-1);
-
-		// lua配列の indexは nextでとると順不同になる可能性があるため、
-		// 実際のindex値を取得しておく
-		lua.retValue(-2);
-		int index = lua.getInt(-1);
-		lua.pop(1);
-
-		// 現在のバッファが index を収容しきれないようであれば、
-		// 収容できるサイズまで拡張する
-		cnt = index - 1;
-        if(cntmax < cnt) { cntmax = cnt; }
-		while(cnt >= max) {
-			const char ** tmplist = KLBNEWA(const char *, max + REPLACE_BLOCK);
-            for(int i = 0; i < max; i++) { tmplist[i] = list[i]; }
-			KLBDELETEA(list);
-			list = tmplist;
-			max += REPLACE_BLOCK;
-		}
-		list[cnt] = CKLBUtility::copyString(string);
-		lua.pop(1);
-	}
-	lua.pop(1);
-
-	*retcnt = (cntmax + 1) / 2;
-	return list;
-}
-
-bool
+void
 CKLBUISWFPlayer::removeReplaceList(const char ** list, int cnt)
 {
-    if(!list) { return true; }
-
-	bool result = false;
-
     for(int i = 0; i < cnt * 2; i++) { KLBDELETEA(list[i]); }
 	KLBDELETEA(list);
+}
 
-	return result;
+void
+CKLBUISWFPlayer::notifyAssetUpdate(const char* assetName, CKLBAsset* asset)
+{
+	// A reloaded image must be pushed into the movie itself: the flash sub
+	// tree owns its sprites and is never rebuilt by the asset manager.
+	refreshReplacedImage(m_pSWFNode, assetName, static_cast<CKLBImageAsset*>(asset));
+}
+
+void
+CKLBUISWFPlayer::refreshReplacedImage(CKLBNode* node, const char* assetName, CKLBImageAsset* image)
+{
+	for(u32 index = 0; index < node->getRenderCount(); index++) {
+		CKLBRenderCommand* command = node->getRenderList()[index];
+		if(command && command->getCommandType() == RENDERCOMMAND_SPRITE) {
+			CKLBSprite* sprite = static_cast<CKLBSprite*>(command);
+			CKLBImageAsset* previousImage = sprite->m_pImageAsset;
+			if(previousImage && previousImage->getFileSource()
+			 && strcmp(previousImage->getFileSource(), assetName) == 0
+			 && sprite->getGeometryType() == CKLBSprite::GEOMETRY_DYNAMIC) {
+				CKLBDynSprite* dynamicSprite = static_cast<CKLBDynSprite*>(sprite);
+				dynamicSprite->setTexture(image);
+
+				memcpy(dynamicSprite->getSrcUVBuffer(),
+					image->getUVBuffer(),
+					image->getVertexCount() * 2 * sizeof(float));
+				memcpy(dynamicSprite->getSrcIndexBuffer(),
+					image->getIndexBuffer(),
+					image->getIndexCount() * sizeof(u16));
+
+				// The movie matrix places the sprite, so the flash path
+				// refreshes the geometry without any sprite translation.
+				float* destinationXY = dynamicSprite->getSrcXYBuffer();
+				float* sourceXY = image->getXYBuffer();
+				const float translationX = 0.0f;
+				const float translationY = 0.0f;
+				for(u32 vertex = 0; vertex < image->getVertexCount(); ++vertex) {
+					*destinationXY++ = *sourceXY++ + translationX;
+					*destinationXY++ = *sourceXY++ + translationY;
+				}
+			}
+		}
+	}
+
+	for(CKLBNode* child = node->getChild(); child; child = child->getBrother()) {
+		refreshReplacedImage(child, assetName, image);
+	}
 }
 
 void

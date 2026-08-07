@@ -32,7 +32,7 @@ static struct FONTLIST {
 class CAndroidFont : public CJNI
 {
 public:
-	CAndroidFont(int size, const char * fontName = 0);
+	CAndroidFont(int size, const char * fontName = 0, bool useDefaultFont = false);
 	virtual ~CAndroidFont();
 
 	void setAntiAlias(bool aa);

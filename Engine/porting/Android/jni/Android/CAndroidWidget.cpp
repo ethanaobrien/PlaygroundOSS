@@ -119,7 +119,7 @@ CAndroidTextWidget::CAndroidTextWidget(CAndroidRequest * pParent)
 CAndroidTextWidget::~CAndroidTextWidget()
 {
 	jvalue val;
-	m_pParent->callJavaMethod(val, "textbox_destroy", 'Z', "I", m_hIndex);
+	m_pParent->callJavaMethod(NULL, val, "textbox_destroy", 'Z', "I", m_hIndex);
 
 	if(m_prev) {
 		m_prev->m_next = m_next;
@@ -150,13 +150,11 @@ CAndroidTextWidget::create(IWidget::CONTROL type, int id, const char * caption,
 	case PASSWDBOX:
 		passwd = true;
 	case TEXTBOX:
-		DEBUG_PRINT("x:%d y:%d width:%d height:%d caption:%s passwd:%d", x, y, width, height, caption, passwd);
-		m_pParent->callJavaMethod(jval, "textbox_create", 'I', "IIIISZ", x, y, width, height, caption, passwd);
+		m_pParent->callJavaMethod(NULL, jval, "textbox_create", 'I', "IIIISZ", x, y, width, height, caption, passwd);
 		hIndex = jval.i;
 		break;
 	}
 
-	DEBUG_PRINT("CAndroidTextWidget::create() hIndex = %d", hIndex);
 	if(hIndex < 0) return false;
 
 	return init(hIndex, id, x, y, width, height);
@@ -166,7 +164,7 @@ void
 CAndroidTextWidget::update()
 {
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "textbox_update", 'V', "IIIIIZZ",
+	m_pParent->callJavaMethod(NULL, jval, "textbox_update", 'V', "IIIIIZZ",
 							m_hIndex, m_x, m_y, m_width, m_height, m_bEnable, m_bVisible);
 
 }
@@ -175,7 +173,7 @@ int
 CAndroidTextWidget::getTextLength()
 {
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "textbox_getText", 'S', "I", m_hIndex);
+	m_pParent->callJavaMethod(NULL, jval, "textbox_getText", 'S', "I", m_hIndex);
 	jstring jstr = (jstring)jval.l;
 	// GetStringLengthではバイト数ではなくてUnicode文字のカウントだけするみたいなので変更  2013/03/25   //
 	return CJNI::getJNIEnv()->GetStringUTFLength(jstr);
@@ -185,7 +183,7 @@ bool
 CAndroidTextWidget::getText(char * pBuf, int maxlen)
 {
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "textbox_getText", 'S', "I", m_hIndex);
+	m_pParent->callJavaMethod(NULL, jval, "textbox_getText", 'S', "I", m_hIndex);
 	const char * str = CJNI::getJNIEnv()->GetStringUTFChars((jstring)jval.l, 0);
 
 	int i = 0;
@@ -200,7 +198,7 @@ bool
 CAndroidTextWidget::setText(const char * string)
 {
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "textbox_setText", 'Z', "IS", m_hIndex, string);
+	m_pParent->callJavaMethod(NULL, jval, "textbox_setText", 'Z', "IS", m_hIndex, string);
 	return (bool)jval.z;
 }
 
@@ -208,7 +206,7 @@ void
 CAndroidTextWidget::setMaxlen(int maxlen)
 {
   jvalue jval;
-  m_pParent->callJavaMethod(jval, "textbox_setMaxlen", 'V', "II", m_hIndex, maxlen);
+  m_pParent->callJavaMethod(NULL, jval, "textbox_setMaxlen", 'V', "II", m_hIndex, maxlen);
 }
 
 
@@ -230,7 +228,7 @@ CAndroidTextWidget::set_move(int x,int y,int width,int height)
 	}
 	
     jvalue jval;
-	m_pParent->callJavaMethod(jval, "textbox_update", 'V', "IIIIIZZ",
+	m_pParent->callJavaMethod(NULL, jval, "textbox_update", 'V', "IIIIIZZ",
 							m_hIndex, m_x, m_y, m_width, m_height, m_bEnable, m_bVisible);
 }
 
@@ -248,7 +246,7 @@ CAndroidTextWidget::cmd(int cmd, ...)
 			const char * placeholder = va_arg(ap, const char *);
 
 			jvalue jval;
-			m_pParent->callJavaMethod(jval, "textbox_sethint", 'V', "IS", GetIndex(), placeholder);
+			m_pParent->callJavaMethod(NULL, jval, "textbox_sethint", 'V', "IS", GetIndex(), placeholder);
 
 			break;
 		}
@@ -260,7 +258,7 @@ CAndroidTextWidget::cmd(int cmd, ...)
 			jmethodID methodID = 0;
 			jclass cls_pfif = CJNI::getJNIEnv()->FindClass(JNI_LOAD_PATH);
 			methodID = CJNI::getJNIEnv()->GetStaticMethodID(cls_pfif, "textbox_setpaint", "(ILandroid/graphics/Paint;)V");
-			jint ret = CJNI::getJNIEnv()->CallStaticIntMethod(cls_pfif, methodID, GetIndex(), (jobject)m_pFont->getPaint());
+			CJNI::getJNIEnv()->CallStaticVoidMethod(cls_pfif, methodID, GetIndex(), (jobject)m_pFont->getPaint());
 			CJNI::getJNIEnv()->DeleteLocalRef(cls_pfif);
 
 			break;
@@ -301,7 +299,7 @@ CAndroidTextWidget::cmd(int cmd, ...)
 					m_alignType = ALIGN_LEFT;
 			}
 			jvalue jval;
-			m_pParent->callJavaMethod(jval, "textbox_setAlignment", 'V', "II", GetIndex(), m_alignType);
+			m_pParent->callJavaMethod(NULL, jval, "textbox_setAlignment", 'V', "II", GetIndex(), m_alignType);
 			break;
 		}
 		default:
@@ -348,7 +346,7 @@ CAndroidWebWidget::CAndroidWebWidget(CAndroidRequest * pParent)
 CAndroidWebWidget::~CAndroidWebWidget()
 {
 	jvalue val;
-	m_pParent->callJavaMethod(val, "webview_destroy", 'Z', "I", m_hIndex);
+	m_pParent->callJavaMethod(NULL, val, "webview_destroy", 'Z', "I", m_hIndex);
 
 	if(m_prev) {
 		m_prev->m_next = m_next;
@@ -365,8 +363,9 @@ CAndroidWebWidget::~CAndroidWebWidget()
 bool
 CAndroidWebWidget::create(IWidget::CONTROL type, int id, const char * caption,
 							int x, int y, int width, int height,
-							const char * token, const char * region, const char * client,
-							const char * consumerKey, const char * applicationId, const char * userID)
+							const char * token, const char * region, const char * bundleVersion,
+							const char * client, const char * consumerKey, const char * applicationId,
+							const char * userID, const char * language)
 {
 	jvalue jval;
 	int hIndex = -1;
@@ -382,16 +381,17 @@ CAndroidWebWidget::create(IWidget::CONTROL type, int id, const char * caption,
 		nojump = true;
 	case WEBVIEW:
 		m_pParent->logging("WebView create!");
-		m_pParent->callJavaMethod(jval, "webview_create", 'I', "IIIISSSSSSSZ",
+		m_pParent->callJavaMethod(NULL, jval, "webview_create", 'I', "IIIISSSSSSSSZS",
 				x, y, width, height,
-				caption, token, region, client, consumerKey, applicationId, userID, nojump);
+				caption, token, region, bundleVersion, client, consumerKey, applicationId, userID,
+				nojump, language);
 		hIndex = jval.i;
 
 		// 背景色設定
-		m_pParent->callJavaMethod(jval, "webview_setColor", 'V', "III", hIndex, m_bgalpha, m_bgcolor);
+		m_pParent->callJavaMethod(NULL, jval, "webview_setColor", 'V', "III", hIndex, m_bgalpha, m_bgcolor);
 
 		// ズーム設定
-		m_pParent->callJavaMethod(jval, "webview_setZoom", 'V', "IZ", m_hIndex, m_bZoom);
+		m_pParent->callJavaMethod(NULL, jval, "webview_setZoom", 'V', "IZ", m_hIndex, m_bZoom);
 
 		m_pParent->logging("Create finished.: handle = %d", hIndex);
 		break;
@@ -413,7 +413,7 @@ CAndroidWebWidget::cmd(int cmd, ...)
 			int pagetofit = va_arg(ap, int);
 			m_bZoom = (pagetofit) ? true : false;
 			jvalue jval;
-			m_pParent->callJavaMethod(jval, "webview_setZoom", 'V', "IZ", m_hIndex, m_bZoom);
+			m_pParent->callJavaMethod(NULL, jval, "webview_setZoom", 'V', "IZ", m_hIndex, m_bZoom);
 			break;
 		}
 
@@ -425,7 +425,14 @@ CAndroidWebWidget::cmd(int cmd, ...)
 			m_bgalpha = bgalpha;
 			m_bgcolor = bgcolor;
 			jvalue jval;
-			m_pParent->callJavaMethod(jval, "webview_setColor", 'V', "III", m_hIndex, m_bgalpha, m_bgcolor);
+			m_pParent->callJavaMethod(NULL, jval, "webview_setColor", 'V', "III", m_hIndex, m_bgalpha, m_bgcolor);
+			break;
+		}
+		case WEB_SET_WHITEURL:
+		{
+			const char * whiteUrl = va_arg(ap, const char *);
+			jvalue jval;
+			m_pParent->callJavaMethod(NULL, jval, "webview_setWhiteUrl", 'V', "IS", m_hIndex, whiteUrl);
 			break;
 		}
 		default:
@@ -437,7 +444,7 @@ void
 CAndroidWebWidget::update()
 {
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "webview_update", 'V', "IIIIIZZ",
+	m_pParent->callJavaMethod(NULL, jval, "webview_update", 'V', "IIIIIZZ",
 							m_hIndex, m_x, m_y, m_width, m_height, m_bEnable, m_bVisible);
 
 }
@@ -446,7 +453,7 @@ int
 CAndroidWebWidget::getTextLength()
 {
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "webview_getText", 'S', "I", m_hIndex);
+	m_pParent->callJavaMethod(NULL, jval, "webview_getText", 'S', "I", m_hIndex);
 	jstring jstr = (jstring)jval.l;
 	return CJNI::getJNIEnv()->GetStringLength(jstr);
 }
@@ -455,7 +462,7 @@ bool
 CAndroidWebWidget::getText(char * pBuf, int maxlen)
 {
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "webview_getText", 'S', "I", m_hIndex);
+	m_pParent->callJavaMethod(NULL, jval, "webview_getText", 'S', "I", m_hIndex);
 	const char * str = CJNI::getJNIEnv()->GetStringUTFChars((jstring)jval.l, 0);
 
 	int i = 0;
@@ -470,7 +477,7 @@ int
 CAndroidWebWidget::getTmpTextLength()
 {
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "webview_getTmpText", 'S', "I", m_hIndex);
+	m_pParent->callJavaMethod(NULL, jval, "webview_getTmpText", 'S', "I", m_hIndex);
 	jstring jstr = (jstring)jval.l;
 
 	return CJNI::getJNIEnv()->GetStringUTFLength(jstr);
@@ -480,7 +487,7 @@ bool
 CAndroidWebWidget::getTmpText(char * pBuf, int maxlen)
 {
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "webview_getTmpText", 'S', "I", m_hIndex);
+	m_pParent->callJavaMethod(NULL, jval, "webview_getTmpText", 'S', "I", m_hIndex);
 	const char * str = CJNI::getJNIEnv()->GetStringUTFChars((jstring)jval.l, 0);
 
 	int i = 0;
@@ -495,7 +502,7 @@ bool
 CAndroidWebWidget::setText(const char * string)
 {
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "webview_setText", 'Z', "IS", m_hIndex, string);
+	m_pParent->callJavaMethod(NULL, jval, "webview_setText", 'Z', "IS", m_hIndex, string);
 	return (bool)jval.z;
 }
 
@@ -503,7 +510,7 @@ void
 CAndroidWebWidget::set_move(int x,int y,int width,int height)
 {
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "webview_update", 'V', "IIIIIZZ",
+	m_pParent->callJavaMethod(NULL, jval, "webview_update", 'V', "IIIIIZZ",
 							m_hIndex, m_x, m_y, m_width, m_height, m_bEnable, m_bVisible);
 }
 
@@ -550,7 +557,7 @@ CAndroidMovieWidget::CAndroidMovieWidget(CAndroidRequest * pParent)
 CAndroidMovieWidget::~CAndroidMovieWidget()
 {
 	jvalue val;
-	m_pParent->callJavaMethod(val, "movieview_destroy", 'Z', "I", m_hIndex);
+	m_pParent->callJavaMethod(NULL, val, "movieview_destroy", 'Z', "I", m_hIndex);
 
 	if(m_prev) {
 		m_prev->m_next = m_next;
@@ -584,10 +591,10 @@ CAndroidMovieWidget::create(IWidget::CONTROL type, int id, const char * caption,
 		char * buf = new char [ len + 1 ];
 		strcpy(buf, caption);
 		m_asset = buf;
-		CAndroidPathConv& pathconv = CAndroidPathConv::getInstance();
+		CKLBPathConv& pathconv = CKLBPathConv::getInstance();
 		const char * fullpath = pathconv.fullpath(caption);
 
-		m_pParent->callJavaMethod(jval, "movieview_create", 'I', "IIIISZ",
+		m_pParent->callJavaMethod(NULL, jval, "movieview_create", 'I', "IIIISZ",
 				x, y, width, height, fullpath, true);
 		hIndex = jval.i;
 		m_pParent->logging("Create finished.: handle = %d", hIndex);
@@ -601,7 +608,7 @@ void
 CAndroidMovieWidget::update()
 {
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "movieview_update", 'V', "IIIIIZZ",
+	m_pParent->callJavaMethod(NULL, jval, "movieview_update", 'V', "IIIIIZZ",
 							m_hIndex, m_x, m_y, m_width, m_height, m_bEnable, m_bVisible);
 
 }
@@ -632,11 +639,11 @@ CAndroidMovieWidget::setText(const char * string)
 	if(m_asset) delete [] m_asset;
 	m_asset = buf;
 
-	CAndroidPathConv& pathconv = CAndroidPathConv::getInstance();
+	CKLBPathConv& pathconv = CKLBPathConv::getInstance();
 	const char * fullpath = pathconv.fullpath(string);
 
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "movieview_setText", 'Z', "IS", m_hIndex, fullpath);
+	m_pParent->callJavaMethod(NULL, jval, "movieview_setText", 'Z', "IS", m_hIndex, fullpath);
 	return (bool)jval.z;
 }
 
@@ -645,7 +652,7 @@ CAndroidMovieWidget::cmd(int cmd, ...)
 {
 	jvalue jval;
 	if(cmd == IWidget::MV_PLAY) m_status = 0;
-	m_pParent->callJavaMethod(jval, "movieview_cmd", 'V', "II", m_hIndex, cmd);
+	m_pParent->callJavaMethod(NULL, jval, "movieview_cmd", 'V', "II", m_hIndex, cmd);
 }
 
 CAndroidMovieWidget *
@@ -670,7 +677,7 @@ void
 CAndroidMovieWidget::set_move(int x,int y,int width,int height)
 {
 	jvalue jval;
-	m_pParent->callJavaMethod(jval, "movieview_update", 'V', "IIIIIZZ",
+	m_pParent->callJavaMethod(NULL, jval, "movieview_update", 'V', "IIIIIZZ",
 							m_hIndex, m_x, m_y, m_width, m_height, m_bEnable, m_bVisible);
 }
 
@@ -696,7 +703,7 @@ CAndroidActivityIndicator::CAndroidActivityIndicator(CAndroidRequest * pParent)
 CAndroidActivityIndicator::~CAndroidActivityIndicator()
 {
     jvalue jval;
-    m_pParent->callJavaMethod(jval, "indicator_destroy", 'Z', "I",0);
+    m_pParent->callJavaMethod(NULL, jval, "indicator_destroy", 'Z', "I",0);
 
 	if(m_prev) {
 		m_prev->m_next = m_next;
@@ -726,7 +733,7 @@ CAndroidActivityIndicator::create(IWidget::CONTROL type, int id, const char * ca
 	case ACTIVITYINDICATOR:
 		m_pParent->logging("Indicator create!");
 
-        m_pParent->callJavaMethod(jval, "indicator_create", 'I', "IIIIZ",x, y, width, height, true);
+        m_pParent->callJavaMethod(NULL, jval, "indicator_create", 'I', "IIIIZ",x, y, width, height, true);
 		m_pParent->logging("Indicator Create finished.");
 		break;
 	}
@@ -738,7 +745,7 @@ CAndroidActivityIndicator::set_move(int x, int y, int width, int height)
 {
 	m_pParent->logging("Indicator set move");
     jvalue jval;
-	m_pParent->callJavaMethod(jval, "indicator_update", 'V', "IIIIIZZ",
+	m_pParent->callJavaMethod(NULL, jval, "indicator_update", 'V', "IIIIIZZ",
 							m_hIndex, x, y, width, height, m_bEnable, m_bVisible);
 }
 

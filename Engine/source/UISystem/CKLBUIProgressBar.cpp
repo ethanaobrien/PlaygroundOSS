@@ -26,6 +26,7 @@ enum {
 	UI_PROGRESS_SET_IMAGE,
 	UI_PROGRESS_MAX,
 	UI_PROGRESS_GET,
+	UI_PROGRESS_GETANIM,
 
 	UI_PROGRESS_FILTER_VISIBLE,
 	UI_PROGRESS_FILTER_COLOR,
@@ -38,6 +39,7 @@ static IFactory::DEFCMD cmd[] = {
 	{ "UI_PROGRESS_SET_IMAGE",	UI_PROGRESS_SET_IMAGE   },
 	{ "UI_PROGRESS_MAX",		UI_PROGRESS_MAX         },
 	{ "UI_PROGRESS_GET",		UI_PROGRESS_GET         },
+	{ "UI_PROGRESS_GETANIM",	UI_PROGRESS_GETANIM     },
 
 	{ "UI_PROGRESS_FILTER_VISIBLE",	UI_PROGRESS_FILTER_VISIBLE  },
 	{ "UI_PROGRESS_FILTER_COLOR",	UI_PROGRESS_FILTER_COLOR    },
@@ -49,7 +51,7 @@ static CKLBTaskFactory<CKLBUIProgressBar> factory("UI_ProgressBar", CLS_KLBUIPRO
 
 
 CKLBUIProgressBar::CKLBUIProgressBar()
-: CKLBUITask    ()
+: CKLBUITask    (P_UIAFTER)
 , m_texHandle   (0)
 , m_bFilterSW   (false)
 , m_bColAnim    (false)
@@ -178,8 +180,8 @@ CKLBUIProgressBar::initUI(CLuaState& lua)
 	float y      = lua.getFloat(ARG_Y);
 	float width  = lua.getFloat(ARG_WIDTH);
 	float height = lua.getFloat(ARG_HEIGHT);
-	const char * img_full  = lua.getString(ARG_IMG_FULL);
-	const char * img_empty = lua.getString(ARG_IMG_EMPTY);
+	const char * img_full  = lua.isNil(ARG_IMG_FULL)  ? NULL : lua.getString(ARG_IMG_FULL);
+	const char * img_empty = lua.isNil(ARG_IMG_EMPTY) ? NULL : lua.getString(ARG_IMG_EMPTY);
 
 	bool  vert  = (argc >= ARG_VERT)  ? lua.getBool(ARG_VERT)   : false;
 	int   anim  = (argc >= ARG_ANIM)  ? lua.getInt(ARG_ANIM)    : 0;
@@ -205,7 +207,7 @@ CKLBUIProgressBar::initCore(u32 order,
 	// 起動関数のパラメータとして初期値を受け取る
 	setInitPos(x, y);
 
-	klb_assert((((s32)order) >= 0), "Order Problem");
+	klb_assertNull((((s32)order) >= 0), "Order Problem");
 
 	setOrder(order);
 	setWidth(width);
@@ -235,7 +237,7 @@ CKLBUIProgressBar::initCore(u32 order,
 
 	// イメージの取得
 	const char * imgname[3];
-	const char * asset_name = m_fullImage;
+	const char * asset_name = m_fullImage ? m_fullImage : m_emptyImage;
 	imgname[0] = m_fullImage;
 	imgname[1] = m_emptyImage;
 	imgname[2] = m_filterImage;
@@ -275,13 +277,25 @@ CKLBUIProgressBar::initCore(u32 order,
 			return false;
 		}
 
-		klb_assert(m_pTex[i]->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT), "Must use a standard rectangular image in ProgressBar task.");
+		klb_assertNull(m_pTex[i]->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT), "Must use a standard rectangular image in ProgressBar task.");
 	}
-	m_vertices = 8;
-	m_indices = 12;
+	m_vertices = 0;
+	m_indices = 0;
+	if(m_pTex[0]) {
+		m_vertices += 4;
+		m_indices += 6;
+	}
+	if(m_pTex[1]) {
+		m_vertices += 4;
+		m_indices += 6;
+	}
 	if(imgname[2]) {
 		m_vertices += 4;
 		m_indices += 6;
+	}
+	if(!m_vertices) {
+		CKLBDataHandler::releaseHandle(m_texHandle);
+		return false;
 	}
 	m_pDynSprite = pRdrMgr.allocateCommandDynSprite(m_vertices, m_indices); // 三角形4個分 (+ フィルタで計6個)
 	m_pNode = KLBNEW(CKLBNode);
@@ -356,6 +370,12 @@ CKLBUIProgressBar::commandUI(CLuaState& lua, int argc, int cmd)
 		{
 			float val = getValue();
 			lua.retDouble(val);
+			ret = 1;
+		}
+		break;
+	case UI_PROGRESS_GETANIM:
+		{
+			lua.retDouble(m_lastValue);
 			ret = 1;
 		}
 		break;
@@ -464,7 +484,7 @@ CKLBUIProgressBar::execute(u32 deltaT)
 		m_animTime += deltaT;
 		while(m_animTime > m_animfreq) { m_animTime -= m_animfreq; }
 		float theta = 2.0f * M_PI * m_animTime / (float)m_animfreq;
-		float value = (sin(theta) + 1.0f) / 2.0f;
+		float value = (sin((double)theta) + 1.0) / 2.0;
 
 		u32 col = 0;
 		int shift = 0;
@@ -492,11 +512,12 @@ CKLBUIProgressBar::setupProgressBarConstant() {
 	//
 	u16* pBuff = m_pDynSprite->getSrcIndexBuffer();
 	memcpy(pBuff, CKLBUIProgressBar::ms_indices, m_indices*sizeof(u16));
-	m_pDynSprite->setTexture(m_pTex[0]);
+	m_pDynSprite->setTexture(m_pTex[0] ? m_pTex[0] : m_pTex[1]);
 
 	m_idx_a = (p_start < p_end) ? E_full : E_empty;
 	m_idx_b = (p_start < p_end) ? E_empty : E_full;
 	m_idx_c = E_filter;
+	CKLBImageAsset* pTexA = m_pTex[m_idx_a];
 
 	//
 	// Setup Constant UV
@@ -504,27 +525,46 @@ CKLBUIProgressBar::setupProgressBarConstant() {
 	float* verticesUV = m_pDynSprite->getSrcUVBuffer();
 	if (!p_vert) {
 		// 左端uv
-		m_pTex[m_idx_a]->getUV(0, &(verticesUV[0]), &(verticesUV[1]));
-		m_pTex[m_idx_a]->getUV(3, &(verticesUV[4]), &(verticesUV[5]));
+		if(pTexA) {
+			m_pTex[m_idx_a]->getUV(0, &(verticesUV[0]), &(verticesUV[1]));
+			m_pTex[m_idx_a]->getUV(3, &(verticesUV[4]), &(verticesUV[5]));
+		}
 		// 右端uv
-		m_pTex[m_idx_b]->getUV(1, &(verticesUV[10]), &(verticesUV[11]));
-		m_pTex[m_idx_b]->getUV(2, &(verticesUV[14]), &(verticesUV[15]));
+		if(m_pTex[m_idx_b]) {
+			if(pTexA) {
+				m_pTex[m_idx_b]->getUV(1, &(verticesUV[10]), &(verticesUV[11]));
+				m_pTex[m_idx_b]->getUV(2, &(verticesUV[14]), &(verticesUV[15]));
+			} else {
+				m_pTex[m_idx_b]->getUV(1, &(verticesUV[2]), &(verticesUV[3]));
+				m_pTex[m_idx_b]->getUV(2, &(verticesUV[6]), &(verticesUV[7]));
+			}
+		}
 	} else {
 		// 右端uv
-		m_pTex[m_idx_b]->getUV(3, &(verticesUV[12]), &(verticesUV[13]));
-		m_pTex[m_idx_b]->getUV(2, &(verticesUV[14]), &(verticesUV[15]));
+		if(m_pTex[m_idx_b]) {
+			if(pTexA) {
+				m_pTex[m_idx_b]->getUV(3, &(verticesUV[12]), &(verticesUV[13]));
+				m_pTex[m_idx_b]->getUV(2, &(verticesUV[14]), &(verticesUV[15]));
+			} else {
+				m_pTex[m_idx_b]->getUV(3, &(verticesUV[4]), &(verticesUV[5]));
+				m_pTex[m_idx_b]->getUV(2, &(verticesUV[6]), &(verticesUV[7]));
+			}
+		}
 		// 上端uv
-		m_pTex[m_idx_a]->getUV(0, &(verticesUV[0]), &(verticesUV[1]));
-		m_pTex[m_idx_a]->getUV(1, &(verticesUV[2]), &(verticesUV[3]));
+		if(m_pTex[m_idx_a]) {
+			m_pTex[m_idx_a]->getUV(0, &(verticesUV[0]), &(verticesUV[1]));
+			m_pTex[m_idx_a]->getUV(1, &(verticesUV[2]), &(verticesUV[3]));
+		}
 	}
 
 	// フィルタがある場合、フィルタ各頂点のUVを指定する
 	// フィルタは分断されず伸縮されるため、すべてのUVを事前に設定してよい。
 	if(m_pTex[m_idx_c]) {
-		m_pTex[m_idx_c]->getUV(0, &(verticesUV[16]), &(verticesUV[17]));
-		m_pTex[m_idx_c]->getUV(1, &(verticesUV[18]), &(verticesUV[19]));
-		m_pTex[m_idx_c]->getUV(2, &(verticesUV[22]), &(verticesUV[23]));
-		m_pTex[m_idx_c]->getUV(3, &(verticesUV[20]), &(verticesUV[21]));
+		int filterVertex = (m_vertices - 4) * 2;
+		m_pTex[m_idx_c]->getUV(0, &(verticesUV[filterVertex    ]), &(verticesUV[filterVertex + 1]));
+		m_pTex[m_idx_c]->getUV(1, &(verticesUV[filterVertex + 2]), &(verticesUV[filterVertex + 3]));
+		m_pTex[m_idx_c]->getUV(2, &(verticesUV[filterVertex + 6]), &(verticesUV[filterVertex + 7]));
+		m_pTex[m_idx_c]->getUV(3, &(verticesUV[filterVertex + 4]), &(verticesUV[filterVertex + 5]));
 	}
 
 	//
@@ -532,32 +572,37 @@ CKLBUIProgressBar::setupProgressBarConstant() {
 	//
 	float* verticesXY = m_pDynSprite->getSrcXYBuffer();
 	if (!p_vert) {
-		// xy の操作
-		// 左パーツ(idx_a)
-		verticesXY[0] = 0.0f;
-		verticesXY[1] = 0.0f;
+		if(m_pTex[m_idx_a]) {
+			// xy の操作
+			// 左パーツ(idx_a)
+			verticesXY[0] = 0.0f;
+			verticesXY[1] = 0.0f;
 
-		// [2] : Variable
-		verticesXY[3] = 0.0f;
+			// [2] : Variable
+			verticesXY[3] = 0.0f;
 
-		verticesXY[4] = 0.0f;
-		verticesXY[5] = p_height;
+			verticesXY[4] = 0.0f;
+			verticesXY[5] = p_height;
 
-		// [6] : Variable
-		verticesXY[7] = p_height;
+			// [6] : Variable
+			verticesXY[7] = p_height;
+			verticesXY += 8;
+		}
 
-		// 右パーツ(idx_b)
-		// [8] : Variable
-		verticesXY[9] = 0.0f;
+		if(m_pTex[m_idx_b]) {
+			// 右パーツ(idx_b)
+			// [0] : Variable
+			verticesXY[1] = 0.0f;
 
-		verticesXY[10] = p_width;
-		verticesXY[11] = 0.0f;
+			verticesXY[2] = p_width;
+			verticesXY[3] = 0.0f;
 
-		// [12] : Variable
-		verticesXY[13] = p_height;
+			// [4] : Variable
+			verticesXY[5] = p_height;
 
-		verticesXY[14] = p_width;
-		verticesXY[15] = p_height;
+			verticesXY[6] = p_width;
+			verticesXY[7] = p_height;
+		}
 
 		if(m_pTex[m_idx_c]) {
 			if(m_idx_a == E_full) {
@@ -587,22 +632,26 @@ CKLBUIProgressBar::setupProgressBarConstant() {
 			}
 		}
 	} else {
-		// 上パーツ
-		verticesXY[0] = 0.0f;
-		verticesXY[1] = 0.0f;
-		verticesXY[2] = p_width;
-		verticesXY[3] = 0.0f;
-		verticesXY[4] = 0.0f;
-		verticesXY[6] = p_width;
+		if(m_pTex[m_idx_a]) {
+			// 上パーツ
+			verticesXY[0] = 0.0f;
+			verticesXY[1] = 0.0f;
+			verticesXY[2] = p_width;
+			verticesXY[3] = 0.0f;
+			verticesXY[4] = 0.0f;
+			verticesXY[6] = p_width;
+			verticesXY += 8;
+		}
 
-
-		// 下パーツ
-		verticesXY[8] = 0.0f;
-		verticesXY[10] = p_width;
-		verticesXY[12] = 0.0f;
-		verticesXY[13] = p_height;
-		verticesXY[14] = p_width;
-		verticesXY[15] = p_height;
+		if(m_pTex[m_idx_b]) {
+			// 下パーツ
+			verticesXY[0] = 0.0f;
+			verticesXY[2] = p_width;
+			verticesXY[4] = 0.0f;
+			verticesXY[5] = p_height;
+			verticesXY[6] = p_width;
+			verticesXY[7] = p_height;
+		}
 
 		if(m_pTex[m_idx_c]) {
 			if(m_idx_a == E_full) {
@@ -660,10 +709,16 @@ CKLBUIProgressBar::setBorder(float value)
 		//
 		// Geometry Change
 		//
-		verticesXY[2]   = p_border;
-		verticesXY[6]   = p_border;
-		verticesXY[8]   = p_border;
-		verticesXY[12]  = p_border;
+		if(m_pTex[m_idx_a]) {
+			verticesXY[2] = p_border;
+			verticesXY[6] = p_border;
+			verticesXY += 8;
+		}
+		if(m_pTex[m_idx_b]) {
+			verticesXY[0] = p_border;
+			verticesXY[4] = p_border;
+			verticesXY += 8;
+		}
 		if(m_pTex[m_idx_c]) {
 			if(m_idx_a == E_full) {
 				m_filterXY[2] = p_border;
@@ -682,31 +737,42 @@ CKLBUIProgressBar::setBorder(float value)
 		// m_pTex[idx_a]->getUV(0, &(verticesUV[0]), &(verticesUV[1]));
 		// m_pTex[idx_a]->getUV(3, &(verticesUV[4]), &(verticesUV[5]));
 
-		m_pTex[m_idx_a]->getUV(1, &u, &v);
-		verticesUV[2] = verticesUV[0] + (u - verticesUV[0]) * rate;
-		verticesUV[3] = verticesUV[1] + (v - verticesUV[1]) * rate;
-		m_pTex[m_idx_a]->getUV(2, &u, &v);
-		verticesUV[6] = verticesUV[4] + (u - verticesUV[4]) * rate;
-		verticesUV[7] = verticesUV[5] + (v - verticesUV[5]) * rate;
+		if(m_pTex[m_idx_a]) {
+			m_pTex[m_idx_a]->getUV(1, &u, &v);
+			verticesUV[2] = verticesUV[0] + (u - verticesUV[0]) * rate;
+			verticesUV[3] = verticesUV[1] + (v - verticesUV[1]) * rate;
+			m_pTex[m_idx_a]->getUV(2, &u, &v);
+			verticesUV[6] = verticesUV[4] + (u - verticesUV[4]) * rate;
+			verticesUV[7] = verticesUV[5] + (v - verticesUV[5]) * rate;
+			verticesUV += 8;
+		}
 
 		// 右端uv
 		// m_pTex[idx_b]->getUV(1, &(verticesUV[10]), &(verticesUV[11]));
 		// m_pTex[idx_b]->getUV(2, &(verticesUV[14]), &(verticesUV[15]));
 
-		m_pTex[m_idx_b]->getUV(0, &u, &v);
-		verticesUV[8] = u + (verticesUV[10] - u) * rate;
-		verticesUV[9] = v + (verticesUV[11] - v) * rate;
-		m_pTex[m_idx_b]->getUV(3, &u, &v);
-		verticesUV[12] = u + (verticesUV[14] - u) * rate;
-		verticesUV[13] = v + (verticesUV[15] - v) * rate;
+		if(m_pTex[m_idx_b]) {
+			m_pTex[m_idx_b]->getUV(0, &u, &v);
+			verticesUV[0] = u + (verticesUV[2] - u) * rate;
+			verticesUV[1] = v + (verticesUV[3] - v) * rate;
+			m_pTex[m_idx_b]->getUV(3, &u, &v);
+			verticesUV[4] = u + (verticesUV[6] - u) * rate;
+			verticesUV[5] = v + (verticesUV[7] - v) * rate;
+		}
 	} else {			// 縦方向成長
 		//
 		// Geometry Change
 		//
-		verticesXY[5]   = p_border;
-		verticesXY[7]   = p_border;
-		verticesXY[9]   = p_border;
-		verticesXY[11]  = p_border;
+		if(m_pTex[m_idx_a]) {
+			verticesXY[5] = p_border;
+			verticesXY[7] = p_border;
+			verticesXY += 8;
+		}
+		if(m_pTex[m_idx_b]) {
+			verticesXY[1] = p_border;
+			verticesXY[3] = p_border;
+			verticesXY += 8;
+		}
 
 		if(m_pTex[m_idx_c]) {
 			if(m_idx_a == E_full) {
@@ -725,30 +791,35 @@ CKLBUIProgressBar::setBorder(float value)
 		// m_pTex[idx_a]->getUV(0, &(verticesUV[0]), &(verticesUV[1]));
 		// m_pTex[idx_a]->getUV(1, &(verticesUV[2]), &(verticesUV[3]));
 
-		m_pTex[m_idx_a]->getUV(3, &u, &v);
-		verticesUV[4] = verticesUV[0] + (u - verticesUV[0]) * rate;
-		verticesUV[5] = verticesUV[1] + (v - verticesUV[1]) * rate;
+		if(m_pTex[m_idx_a]) {
+			m_pTex[m_idx_a]->getUV(3, &u, &v);
+			verticesUV[4] = verticesUV[0] + (u - verticesUV[0]) * rate;
+			verticesUV[5] = verticesUV[1] + (v - verticesUV[1]) * rate;
 
-		m_pTex[m_idx_a]->getUV(2, &u, &v);
-		verticesUV[6] = verticesUV[2] + (u - verticesUV[2]) * rate;
-		verticesUV[7] = verticesUV[3] + (v - verticesUV[3]) * rate;
+			m_pTex[m_idx_a]->getUV(2, &u, &v);
+			verticesUV[6] = verticesUV[2] + (u - verticesUV[2]) * rate;
+			verticesUV[7] = verticesUV[3] + (v - verticesUV[3]) * rate;
+			verticesUV += 8;
+		}
 
 		// 右端uv
 		// m_pTex[idx_b]->getUV(3, &(verticesUV[12]), &(verticesUV[13]));
 		// m_pTex[idx_b]->getUV(2, &(verticesUV[14]), &(verticesUV[15]));
 
-		m_pTex[m_idx_b]->getUV(0, &u, &v);
-		verticesUV[8] = u + (verticesUV[12] - u) * rate;
-		verticesUV[9] = v + (verticesUV[13] - v) * rate;
+		if(m_pTex[m_idx_b]) {
+			m_pTex[m_idx_b]->getUV(0, &u, &v);
+			verticesUV[0] = u + (verticesUV[4] - u) * rate;
+			verticesUV[1] = v + (verticesUV[5] - v) * rate;
 
-		m_pTex[m_idx_b]->getUV(1, &u, &v);
-		verticesUV[10] = u + (verticesUV[14] - u) * rate;
-		verticesUV[11] = v + (verticesUV[14] - v) * rate;
+			m_pTex[m_idx_b]->getUV(1, &u, &v);
+			verticesUV[2] = u + (verticesUV[6] - u) * rate;
+			verticesUV[3] = v + (verticesUV[7] - v) * rate;
+		}
 	}
 
 	if(m_bFilterSW && m_pTex[m_idx_c]) {
 		// filter が指定されていて、なおかつ有効になっていれば頂点情報を反映する
-		memcpy(verticesXY + 16, m_filterXY, 8 * sizeof(float));
+		memcpy(verticesXY, m_filterXY, 8 * sizeof(float));
 	}
 	m_pDynSprite->mark(CKLBDynSprite::MARK_CHANGE_UV | CKLBDynSprite::MARK_CHANGE_XY);
 	m_pNode->markUpMatrix();
@@ -779,6 +850,25 @@ CKLBUIProgressBar::setImg(bool isEmpty, const char* imageName)
 			}
 		}
 
+		/*
+		 * Runtime image changes stay within the texture assigned at setup.
+		 *
+		 * Accepted names may carry asset, install, or external prefixes.
+		 * The scheme is removed before looking up the image in that texture.
+		 * This preserves the caller-facing path while resolving the atlas key
+		 * inside the already retained texture asset.
+		 *
+		 * Both empty and full images must belong to the same texture atlas.
+		 * Standard rectangular metadata is required because the progress
+		 * geometry derives its four corners directly from the image UVs.
+		 * Optional filtering may then adjust those vertices without replacing
+		 * the texture ownership established during task initialization.
+		 *
+		 * The task keeps the original path for property reads and callbacks,
+		 * while the renderer keeps the resolved image for drawing.
+		 * The deferred refresh flag rebuilds UV and vertex state only after
+		 * the selected side changes.
+		 */
 		CKLBImageAsset* image = m_pTexAsset->getImage(imgname);
 
 		if(!image) {
@@ -786,7 +876,7 @@ CKLBUIProgressBar::setImg(bool isEmpty, const char* imageName)
 			return false;
 		}
 
-		klb_assert(image->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT), "Must use a standard rectangular image in ProgressBar task.");
+		klb_assertNull(image->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT), "Must use a standard rectangular image in ProgressBar task.");
 
 		if(isEmpty) {
 			setStrC(m_emptyImage,imageName);
@@ -814,8 +904,14 @@ CKLBUIProgressBar::setFilterColor(u32 argb)
 
 	// Memory RGBA
 	u32 rgba = *((u32*)v);
-	for(int i = 8; i < 12; i++) {
-		m_pDynSprite->setVertexColor(m_pNode,i, rgba);
+	if(m_pTex[m_idx_c]) {
+		int filterVertex = (m_vertices - 4) * 2;
+		if(filterVertex < (m_vertices - 2) * 2) {
+			for(int i = 0; i < 4; i++) {
+				int vertex = filterVertex + i;
+				m_pDynSprite->setVertexColor(m_pNode, vertex, rgba);
+			}
+		}
 	}
 	m_FilterCol = argb;
 }
@@ -828,7 +924,8 @@ CKLBUIProgressBar::setFilterVisible(bool visible)
 	// filter を disable したときは、filter用頂点を全て 0.0f にすることで表示されないようにする。
 	if(!visible && m_pTex[m_idx_c]) {
 		float* verticesXY = m_pDynSprite->getSrcXYBuffer();
-		for(int i = 16; i < 24; i++) verticesXY[i] = 0.0f;
+		int filterVertex = (m_vertices - 4) * 2;
+		for(int i = 0; i < 8; i++) verticesXY[filterVertex + i] = 0.0f;
 	}
 }
 

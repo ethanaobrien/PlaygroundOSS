@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -112,7 +112,7 @@ enum {
 };
 
 CKLBUIPieChart::CKLBUIPieChart() 
-: CKLBUITask()
+: CKLBUITask(P_UIAFTER)
 {
 	setNotAlwaysActive();
 	m_newScriptModel = true;
@@ -195,7 +195,7 @@ CKLBUIPieChart::initCore(u32 order, float x, float y, float width, float height,
 	}
 	setInitPos(x, y);
 
-	klb_assert((((s32)order) >= 0), "Order Problem");
+	klb_assertNull((((s32)order) >= 0), "Order Problem");
 
 	m_order = order;
 	m_start = start;
@@ -224,7 +224,7 @@ CKLBUIPieChart::initCore(u32 order, float x, float y, float width, float height,
 		return false;
 	}
 
-	klb_assert(m_pImgAsset->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT), "Must use a standard rectangular image in PieChart task.");
+	klb_assertNull(m_pImgAsset->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT), "Must use a standard rectangular image in PieChart task.");
 	m_pDynSprite->setTexture(m_pImgAsset);
 	m_pNode->setRender(m_pDynSprite);
 	m_pNode->setRenderOnDestroy(true);
@@ -324,10 +324,8 @@ CKLBUIPieChart::execute(u32 deltaT)
 		float rate = (!p_anim) ? 1.0f : ((float)m_iTimeCnt/p_anim);
 		if(rate > 1.0f) rate = 1.0f;
 
-		float value = m_nowRate + (m_value - m_nowRate) * rate;
-
 		// アニメーション中に書き換える
-		setVertices(value);
+		setVertices(rate);
 
 		if(rate >= 1.0f) {
 			m_bAnim     = false;
@@ -365,20 +363,31 @@ CKLBUIPieChart::setVertices(float value)
 	// 表示しない場合
     if(!visible) { return; }
 
-	float half_w, half_h, ub, vb, uw, vh;
+	float half_w, half_h, ub, vb, uw, vh, ur, vr;
 	half_w = m_texWidth / 2.0f;
 	half_h = m_texHeight / 2.0f;
 	m_pImgAsset->getUV(0, &ub, &vb);
 	m_pImgAsset->getUV(2, &uw, &vh);
+	m_pImgAsset->getUV(1, &ur, &vr);
+	bool rotated = ((vr - vb) > (ur - ub));
 	uw -= ub;
 	vh -= vb;
 
 	// とりあえず頂点データをフルで作る
-	for(int i = 0; i < 17; i++) {
-		m_vertices[i].x = half_w * ms_vertMaster[i].x;
-		m_vertices[i].y = half_h * ms_vertMaster[i].y;
-		m_vertices[i].u = ub + uw * ms_vertMaster[i].u;
-		m_vertices[i].v = vb + vh * ms_vertMaster[i].v;
+	if(rotated) {
+		for(int i = 0; i < 17; i++) {
+			m_vertices[i].x = half_w * ms_vertMaster[i].x;
+			m_vertices[i].y = half_h * ms_vertMaster[i].y;
+			m_vertices[i].u = ub + uw * ms_vertMaster[i].v;
+			m_vertices[i].v = vb + vh * ms_vertMaster[i].u;
+		}
+	} else {
+		for(int i = 0; i < 17; i++) {
+			m_vertices[i].x = half_w * ms_vertMaster[i].x;
+			m_vertices[i].y = half_h * ms_vertMaster[i].y;
+			m_vertices[i].u = ub + uw * ms_vertMaster[i].u;
+			m_vertices[i].v = vb + vh * ms_vertMaster[i].v;
+		}
 	}
 
 	// min, max に合わせて必要な三角形の頂点をいじる
@@ -489,7 +498,7 @@ CKLBUIPieChart::changeAsset(const char* asset)
 		return false;
 	}
 
-	klb_assert(m_pImgAsset->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT), "Must use a standard rectangular image in PieChart task.");
+	klb_assertNull(m_pImgAsset->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT), "Must use a standard rectangular image in PieChart task.");
 	m_pDynSprite->setTexture(m_pImgAsset);
 	m_pNode->setRender(m_pDynSprite);
 	m_pNode->setRenderOnDestroy(true);

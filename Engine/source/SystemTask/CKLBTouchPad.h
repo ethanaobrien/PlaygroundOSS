@@ -53,6 +53,13 @@ public:
 
     // キューに入力アイテムを追加(システム側からアイテムを追加する際に使用)
     void addQueue(int id, IClientRequest::INPUT_TYPE type, int x, int y);
+
+    // End every active touch before device-key input takes over.
+    void releaseAllTouches();
+
+    // Close stale touches when input processing starts after an interruption.
+    void beginFrame();
+    void invalidateActiveTouchState();
     
     // 座標変換マトリクスを設定する
     void setConvertMatrix(float * matrix);
@@ -99,6 +106,8 @@ public:
 	}
 
 private:
+	void addQueueUnlocked(int id, IClientRequest::INPUT_TYPE type, int x, int y);
+
 	bool			m_bDoingProcess;
     float           m_matrix[6];    // 座標変換マトリクス
     
@@ -107,6 +116,7 @@ private:
     int             m_read;         // 読み出し先頭
     int             m_get;          // 取得点
 	u32				m_maskIgnoreFinger;
+	u32				m_activeFingerMask;
 	bool			m_ignoreOutScreen;
     
     enum {
@@ -114,7 +124,20 @@ private:
     };
     
     PAD_ITEM    m_itemQueue[ QUEUE_SIZE ];
+
+	enum {
+		MAX_ACTIVE_TOUCHES = 10,
+		TOUCH_POSITION_COMPONENTS = 2,
+		TOUCH_X = 0,
+		TOUCH_Y = 1
+	};
+
+	bool            m_activeTouchStateValid;
+	int             m_lastTouchPosition[MAX_ACTIVE_TOUCHES * TOUCH_POSITION_COMPONENTS];
 };
+
+void KLBInitGlobalMutex();
+void KLBFreeGlobalMutex();
 
 /*!
 * \class CKLBTouchPad

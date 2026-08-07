@@ -20,21 +20,6 @@
 //   Asset Instance
 // #######################################################
 
-CKLBAudioAsset::CKLBAudioAsset()
-: CKLBAbstractAsset ()
-, m_resName         (NULL)
-, m_handle          (NULL)
-{
-}
-
-CKLBAudioAsset::~CKLBAudioAsset()
-{
-	if (m_handle) {
-		release();
-		m_handle = NULL;
-	}
-}
-
 bool CKLBAudioAsset::init(const char* url) {
 	m_handle = CPFInterface::getInstance().platform().loadAudio(url, true);
 	return m_handle != NULL;
@@ -60,6 +45,21 @@ void CKLBAudioAsset::release() {
 	CPFInterface::getInstance().platform().releaseAudio(m_handle);
 }
 
+CKLBAudioAsset::CKLBAudioAsset()
+: CKLBAbstractAsset ()
+, m_resName         (NULL)
+, m_handle          (NULL)
+{
+}
+
+CKLBAudioAsset::~CKLBAudioAsset()
+{
+	if (m_handle) {
+		release();
+		m_handle = NULL;
+	}
+}
+
 // #######################################################
 //   Asset Manager
 // #######################################################
@@ -74,7 +74,7 @@ KLBAudioAssetPlugin::~KLBAudioAssetPlugin()
 }
 
 /*virtual*/
-CKLBAbstractAsset*	KLBAudioAssetPlugin::loadAsset(u8* /*stream*/, u32 /*streamSize*/) {
+CKLBAbstractAsset*	KLBAudioAssetPlugin::loadAsset(u8* /*stream*/, size_t /*streamSize*/) {
 	klb_assertAlways("loadAsset not support with KLBAudioAssetPlugin, please use loadByFileName instead.");
 	return NULL;
 }

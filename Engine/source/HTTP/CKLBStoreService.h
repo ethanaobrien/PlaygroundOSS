@@ -60,12 +60,15 @@ public:
 
 private:
     int cbStoreFailed			(const OSCTRL * item);
+	int cbStoreCanceled			(const OSCTRL * item);
     int cbStorePurchashed		(const OSCTRL * item);
     int cbStorePurchashing		(const OSCTRL * item);
+	int cbStoreDeferred			(const OSCTRL * item);
     int cbStoreRestore			(const OSCTRL * item);
     int cbStoreRestoreCompleted	(const OSCTRL * item);
     int cbStoreRestoreFailed	(const OSCTRL * item);
     int cbStoreGetProducts		(const OSCTRL * item);
+	int cbStoreGetProductsFailed	(const OSCTRL * item);
     
 	inline void execCallback(IClientRequest::EVENT_TYPE status, const char * itemId = "", const char * data = "") {
 		if(m_callback) CKLBScriptEnv::getInstance().call_storeEvent(m_callback, this, status, itemId, data);

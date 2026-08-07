@@ -17,11 +17,17 @@
 #include "mem.h"
 #include "CKLBDrawTask.h"
 #include "CKLBSprite3D.h"
+#include "CKLBUtility.h"
+#include "CKLBDataHandler.h"
+#include "CKLBTask.h"
+
+extern void KLBUnregisterObjectName(void* object, const char* className);
+extern void KLBRegisterObjectName(void* object, const char* className, int flags);
 
 u32	gUseOffsetSystem = 1;
 
 // Prototypes
-u32  searchID(u8* stream, const char* name);
+static inline u32 searchID(u8* stream, const char* name);
 u32  getColor(u32 code);
 bool crossLine(float x1, float y1, float x2, float y2, float px, float py, float cx, float cy);
 
@@ -34,11 +40,15 @@ void useOffsetForImages(bool use) {
 
 CKLBRenderingManager::CKLBRenderingManager():
 	m_pListStart			(NULL),
+	m_pDefaultStateCommand	(NULL),
 	m_pAllocatedSpriteList	(NULL),
+	m_pWhiteTexture			(NULL),
+	m_pWhiteTextureUsage	(NULL),
 	m_pIdxBuffer			(NULL),
 	m_pVerBuffer			(NULL),
 	m_pColBuffer			(NULL),
-	m_pRenderWatchDog		(NULL),
+	m_pMaskUVBuffer		(NULL),
+	m_pRenderWatchDog		(&m_innerWatchDog),
 	m_pRenderLastModify		(NULL),
 	m_pVShader				(NULL),
 	m_pPShader				(NULL),
@@ -49,33 +59,21 @@ CKLBRenderingManager::CKLBRenderingManager():
 	m_bRenderOverDraw		(false),
 	m_coloring				(false)
 {
+	KLBRegisterObjectName(this, "CKLBRenderingManager", 0);
+	initShaderSystem();
 	setRenderMode(m_renderMode);
 }
 
 CKLBRenderingManager::~CKLBRenderingManager() {
+	KLBUnregisterObjectName(this, "CKLBRenderingManager");
 	_release();
 }
 
 void CKLBRenderingManager::_release() {
-	/* NEVER DESTROY THE RENDER QUEUE BUT
-	   DESTROY THE LIST OF ALLOCATED RENDER ITEM !!!! */
-	/*	### NO ###
-	CKLBRenderCommand* pCommand = m_pAllocatedSpriteList;
-	while (pCommand) {
-		CKLBRenderCommand* pNext = pCommand->m_pNext;
-		if (pNext != m_pRenderWatchDog) {
-			// KLBDELETE(pCommand);
-		}
-		pCommand = pNext;
-	}*/
-	// ### YES ###
-	CKLBRenderCommand* pRenderQueue = m_pListStart;
-	while (pRenderQueue != m_pRenderWatchDog) {
-		CKLBRenderCommand* pRenderQueueNext = pRenderQueue->m_pNext;
-		KLBDELETE(pRenderQueue);
-		pRenderQueue = pRenderQueueNext;
+	while (m_pAllocatedSpriteList) {
+		releaseCommand(m_pAllocatedSpriteList);
 	}
-
+	m_pDefaultStateCommand = NULL;
 	m_pListStart = m_pRenderWatchDog;
 
 	CKLBOGLWrapper&		pOGLMgr			= CKLBOGLWrapper::getInstance();
@@ -94,6 +92,11 @@ void CKLBRenderingManager::_release() {
 		m_pColBuffer = NULL;
 	}
 
+	if (m_pMaskUVBuffer) {
+		pOGLMgr.releaseVertexBuffer(m_pMaskUVBuffer);
+		m_pMaskUVBuffer = NULL;
+	}
+
 	if (m_pShaderInstance) {
 		m_pShaderSet->releaseInstance(m_pShaderInstance);
 		m_pShaderInstance = NULL;
@@ -102,6 +105,16 @@ void CKLBRenderingManager::_release() {
 	if (m_pShaderSet) {
 		pOGLMgr.releaseShaderSet(m_pShaderSet);
 		m_pShaderSet = NULL;
+	}
+
+	if (m_pWhiteTextureUsage) {
+		m_pWhiteTexture->releaseUsage(m_pWhiteTextureUsage);
+		m_pWhiteTextureUsage = NULL;
+	}
+
+	if (m_pWhiteTexture) {
+		pOGLMgr.releaseTexture(m_pWhiteTexture);
+		m_pWhiteTexture = NULL;
 	}
 
 	destroyShaderSystem();
@@ -136,6 +149,12 @@ static const SVertexEntry cteListColor[2] = {
 	{ /*NA*/0,/*NA*/0,/*NA*/false,	END_LIST}	// Mark end of list.
 };
 
+static const SVertexEntry cteListMaskUV[2] = {
+	//	StreamID	Offset	VBO?	Type
+	{		4,		0,		false,	VEC2 | TEXTURE},
+	{ /*NA*/0,/*NA*/0,/*NA*/false,	END_LIST}
+};
+
 bool CKLBRenderingManager::setup(u16 maxVertexCount, u16 maxIndexCount) {
 	// -------------------------------------------------------------------
 	//   OpenGL Initialize.
@@ -149,8 +168,10 @@ bool CKLBRenderingManager::setup(u16 maxVertexCount, u16 maxIndexCount) {
 	//dglActiveTexture(GL_TEXTURE0);
 	//dglTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 
+#ifndef OPENGL2
 	dglActiveTexture(GL_TEXTURE1);
 	dglTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+#endif
 	//--------------------------------------------------------------------
 
 	CKLBOGLWrapper&		pOGLMgr
@@ -158,6 +179,7 @@ bool CKLBRenderingManager::setup(u16 maxVertexCount, u16 maxIndexCount) {
 	m_pIdxBuffer	= pOGLMgr.createIndexBuffer(maxIndexCount, false);
 	m_pVerBuffer	= pOGLMgr.createVertexBuffer(maxVertexCount, &cteListVertex[0]);
 	m_pColBuffer	= pOGLMgr.createVertexBuffer(maxVertexCount, &cteListColor[0]);
+	m_pMaskUVBuffer = pOGLMgr.createVertexBuffer(maxVertexCount, &cteListMaskUV[0]);
 
 	// TODO RP : Hardcoded shader, vertex format.
 	//   Render state,
@@ -188,14 +210,20 @@ bool CKLBRenderingManager::setup(u16 maxVertexCount, u16 maxIndexCount) {
 
 	// Create shader vertex & pixel
 	SRenderState::RENDER_MODE mode = SRenderState::TEXTURE_MUL_COLOR;
-	m_pVShader		= pOGLMgr.createShader(mode, CKLBOGLWrapper::VERTEX_SHADER, paramsVert);
-	m_pPShader		= pOGLMgr.createShader(mode, CKLBOGLWrapper::PIXEL_SHADER, paramsShader);
+	const char* vertexSource = pOGLMgr.getShaderSource(mode, CKLBOGLWrapper::VERTEX_SHADER);
+	m_pVShader		= pOGLMgr.createShader(vertexSource, CKLBOGLWrapper::VERTEX_SHADER, paramsVert);
+	const char* pixelSource  = pOGLMgr.getShaderSource(mode, CKLBOGLWrapper::PIXEL_SHADER);
+	m_pPShader		= pOGLMgr.createShader(pixelSource, CKLBOGLWrapper::PIXEL_SHADER, paramsShader);
 
 	// Map the shader together.
 	m_pShaderSet	= pOGLMgr.createShaderSet(m_pVShader, m_pPShader);
 	// Create instance of shader for param
 	m_pShaderInstance = m_pShaderSet->createInstance();
 	// ----------------------------------------------
+
+	static u32 whitePixel = 0xFFFFFFFF;
+	m_pWhiteTexture = pOGLMgr.createTexture(1, 1, GL_UNSIGNED_BYTE, CKLBOGLWrapper::RGBA, &whitePixel, sizeof(whitePixel));
+	m_pWhiteTextureUsage = m_pWhiteTexture->createUsage();
 
 /*
 	float val = 0.45f;
@@ -205,17 +233,24 @@ bool CKLBRenderingManager::setup(u16 maxVertexCount, u16 maxIndexCount) {
 	//   Manager Initialize.
 	// -------------------------------------------------------------------
 
-	m_pRenderWatchDog				= &m_innerWatchDog;
+	m_innerWatchDog.m_pPrev			= NULL;
+	m_innerWatchDog.m_pNext			= NULL;
 	m_pListStart					= m_pRenderWatchDog;
-	m_pRenderWatchDog->m_uiOrder	= 0xFFFFFFFF;	// Always at the end.
+	m_pRenderWatchDog->m_uiOrder	= 0x7FFFFFFF;	// Always at the end.
 	m_pRenderLastModify				= m_pRenderWatchDog;
 
-#ifdef USE_PREMULALPHA
-	state.setBlend(SRenderState::ADDITIVE_ALPHA);
-#else
-	state.setBlend(SRenderState::ALPHA);
-#endif
-	// state.setTextMode(false); UNDEFINED BY DEFAULT.
+	m_pDefaultStateCommand = allocateCommandState();
+	m_pDefaultStateCommand->setRenderTarget(pOGLMgr.getDefaultFrame());
+	m_pDefaultStateCommand->setClearColor(true, 0.0f, 0.0f, 0.0f, 0.0f);
+	m_pDefaultStateCommand->setScissor(false);
+	m_pDefaultStateCommand->setUse(true, true, NULL);
+	addToRendering(m_pDefaultStateCommand, 0x80000000);
+
+	alphaState.setBlend(SRenderState::ALPHA);
+	noAlphaState.setBlend(SRenderState::NO_ALPHA);
+	additiveState.setBlend(SRenderState::ADDITIVE);
+	additiveAlphaState.setBlend(SRenderState::ADDITIVE_ALPHA);
+	subtractiveState.setBlend(SRenderState::SUBTRACTIVE);
 
 	// Dest
 	/*
@@ -268,7 +303,7 @@ bool CKLBRenderingManager::setup(u16 maxVertexCount, u16 maxIndexCount) {
 	);
 
 	// Create Shader Instance
-	void* shaderI = this->instanceShader(def, 2000, 0x40000000);
+	void* shaderI = this->instanceShader(def, 2000);
 
 	// Setup Shader Parameter
 	float valuef = 300.0f;
@@ -276,7 +311,7 @@ bool CKLBRenderingManager::setup(u16 maxVertexCount, u16 maxIndexCount) {
 	// ===========================================================
 	*/
 
-	return (m_pIdxBuffer && m_pVerBuffer && m_pColBuffer && m_pVShader && m_pShaderSet && m_pShaderInstance);
+	return (m_pIdxBuffer && m_pVerBuffer && m_pColBuffer && m_pMaskUVBuffer && m_pVShader && m_pShaderSet && m_pShaderInstance && m_pDefaultStateCommand);
 }
 
 void CKLBRenderingManager::setRenderMode(u32 mode) {
@@ -295,27 +330,38 @@ void CKLBRenderingManager::setRenderMode(u32 mode) {
 	}
 }
 
-CKLBSprite* CKLBRenderingManager::allocateCommandSprite(CKLBImageAsset* pImage, u32 priority) {
-	klb_assert(m_pRenderWatchDog, "CKLBRenderingManager::setup not done first");
-	klb_assert(pImage, "Null Image definition");
+void CKLBRenderingManager::registerCommand(CKLBRenderCommand* pCommand) {
+	pCommand->m_pAllocNext = m_pAllocatedSpriteList;
+	if (m_pAllocatedSpriteList) {
+		m_pAllocatedSpriteList->m_pAllocPrev = pCommand;
+	}
+	m_pAllocatedSpriteList = pCommand;
+}
+
+CKLBSprite* CKLBRenderingManager::allocateCommandSprite(CKLBImageAsset* pImage, u32 priority, bool deferScale9Recompute) {
+	klb_assertNull(m_pRenderWatchDog, "CKLBRenderingManager::setup not done first");
+	klb_assertNull(pImage, "Null Image definition");
 	bool isScale9	= (pImage->hasStandardAttribute(CKLBImageAsset::IS_SCALE9) != 0);
 	bool isStdRect	= (pImage->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT) != 0);
 	CKLBSprite* pSpr = isScale9 ? KLBNEW(CKLBSpriteScale9) : isStdRect ? KLBNEW(CKLBSprite4_6) : KLBNEW(CKLBSprite);
 	if (pSpr) {
 		if (isScale9) {
-			if (((CKLBDynSprite*)pSpr)->setTriangleCount(16, 54)) {
+			if (((CKLBDynSprite*)pSpr)->setTriangleCount(16, 54, true)) {
 				// SETUP BEFORE USE IMAGE !
 				pSpr->m_renderOffset	= (pImage->m_renderOffset * gUseOffsetSystem);
 				pSpr->m_uiOrder			= priority + pSpr->m_renderOffset;
 
-				((CKLBSpriteScale9*)pSpr)->useImage(pImage);
+				CKLBSpriteScale9* scale9 = (CKLBSpriteScale9*)pSpr;
+				if (deferScale9Recompute) {
+					scale9->beginSizeUpdate();
+				}
+				scale9->useImage(pImage);
 				pSpr->m_pAllocNext			= m_pAllocatedSpriteList;
 				if (m_pAllocatedSpriteList) {
 					m_pAllocatedSpriteList->m_pAllocPrev = pSpr;
 				}
 				m_pAllocatedSpriteList		= pSpr;
 				pSpr->m_uiStatus			= FLAG_XYUPDATE | FLAG_COLORUPDATE | FLAG_UVUPDATE;
-				pSpr->m_pState				= &this->state;
 				return pSpr;
 			} else {
 				KLBDELETE(pSpr);
@@ -349,10 +395,9 @@ CKLBSprite* CKLBRenderingManager::allocateCommandSprite(CKLBImageAsset* pImage, 
 				if (m_pAllocatedSpriteList) {
 					m_pAllocatedSpriteList->m_pAllocPrev = pSpr;
 				}
+				m_pAllocatedSpriteList		= pSpr;
 				pSpr->m_uiStatus			= FLAG_XYUPDATE | FLAG_COLORUPDATE | FLAG_UVUPDATE;
 				pSpr->m_uiOrder				= priority + (pImage->m_renderOffset * gUseOffsetSystem);
-				m_pAllocatedSpriteList		= pSpr;
-				pSpr->m_pState				= &this->state;
 			} else {
 				if (arr)	{ KLBDELETEA(arr);		}
 
@@ -367,14 +412,13 @@ CKLBSprite* CKLBRenderingManager::allocateCommandSprite(CKLBImageAsset* pImage, 
 CKLBDynSprite* CKLBRenderingManager::allocateCommandDynSprite(u16 vertexCount, u16 indexCount, u32 priority) {
 	CKLBDynSprite* pSpr = KLBNEW(CKLBDynSprite);
 	if (pSpr) {
-		if (pSpr->setTriangleCount(vertexCount, indexCount)) {
+		if (pSpr->setTriangleCount(vertexCount, indexCount, true)) {
 			pSpr->m_pAllocNext			= m_pAllocatedSpriteList;
 			if (m_pAllocatedSpriteList) {
 				m_pAllocatedSpriteList->m_pAllocPrev = pSpr;
 			}
 			m_pAllocatedSpriteList		= pSpr;
 			pSpr->m_uiOrder				= priority;
-			pSpr->m_pState				= &this->state;
 			return pSpr;
 		}
 		KLBDELETE(pSpr);
@@ -405,7 +449,6 @@ CKLBSprite* CKLBRenderingManager::allocateCommandSprite(u16 maxVertexCount, u16 
 			pSpr->m_uiColor = 0xFFFFFFFF;	// Set default local color.
 			pSpr->m_uiOrder				= priority;
 			memset32(arrCol, 0xFFFFFFFF, maxVertexCount*sizeof(u32));
-			pSpr->m_pState				= &this->state;
 
 			pSpr->m_pTexture			= NULL;
 			pSpr->m_pAllocNext			= m_pAllocatedSpriteList;
@@ -426,8 +469,6 @@ CKLBSprite* CKLBRenderingManager::allocateCommandSprite(u16 maxVertexCount, u16 
 CKLBRenderState* CKLBRenderingManager::allocateCommandState() {
 	CKLBRenderState* pComm = KLBNEW(CKLBRenderState);
 	if (pComm) {
-		pComm->jump					= NULL;
-		pComm->end					= NULL;
 		pComm->pShaderInstance		= NULL;
 
 		pComm->m_scissor[0]			= 0.0f;
@@ -466,8 +507,6 @@ CKLBPolyline* CKLBRenderingManager::allocateCommandPolyline(u16 maxPointCount, u
 	CKLBPolyline* pLine = KLBNEW(CKLBPolyline);
 	if (pLine) {
 		if (pLine->setMaxPointCount(maxPointCount)) {
-			pLine->m_pState				= &this->state;
-
 			pLine->m_uiOrder			= priority;
 			pLine->m_pAllocNext			= m_pAllocatedSpriteList;
 			if (m_pAllocatedSpriteList) {
@@ -479,9 +518,14 @@ CKLBPolyline* CKLBRenderingManager::allocateCommandPolyline(u16 maxPointCount, u
 	return pLine;
 }
 
+bool CKLBRenderingManager::setClearColor(float r, float g, float b, float alpha) {
+	m_pDefaultStateCommand->setClearColor(true, r, g, b, alpha);
+	return true;
+}
+
 void CKLBRenderingManager::releaseCommand(CKLBRenderCommand* pCommand) {
-	klb_assert(m_pRenderWatchDog, "CKLBRenderingManager::setup not done first");
-	klb_assert(pCommand, "null pointer");
+	klb_assertNull(m_pRenderWatchDog, "CKLBRenderingManager::setup not done first");
+	klb_assertNull(pCommand, "null pointer");
 
 	//
 	// Remove from rendering path.
@@ -509,9 +553,9 @@ void CKLBRenderingManager::releaseCommand(CKLBRenderCommand* pCommand) {
 }
 
 void CKLBRenderingManager::removeFromRendering(CKLBRenderCommand* pRender) {
-	klb_assert(m_pRenderWatchDog, "CKLBRenderingManager::setup not done first");
-	klb_assert(pRender,"null pointer");
-	klb_assert((pRender->m_pNext || pRender->m_pPrev),"Item already not in rendering list");
+	klb_assertNull(m_pRenderWatchDog, "CKLBRenderingManager::setup not done first");
+	klb_assertNull(pRender,"null pointer");
+	klb_assertNull((pRender->m_pNext || pRender->m_pPrev),"Item already not in rendering list");
 
 	pRender->m_pNext->m_pPrev	= pRender->m_pPrev;
 	if (pRender->m_pPrev) {
@@ -532,12 +576,15 @@ void CKLBRenderingManager::removeFromRendering(CKLBRenderCommand* pRender) {
 
 void CKLBRenderingManager::initShaderSystem() {
 	for (int n=0; n < SHADER_DEF_MAX; n++) {
+		m_shaderDef[n].m_name			= NULL;
 		m_shaderDef[n].m_definition		= NULL;
-		m_shaderDef[n].m_paramList		= NULL;
 		m_shaderDef[n].m_pixelShader	= NULL;
+		m_shaderDef[n].m_pixelParamList	= NULL;
+		m_shaderDef[n].m_vertexParamList = NULL;
 	}
 	m_shaderInstanceList = NULL;
-	m_stackParamFiller	 = m_stackParam;
+	m_stackParamFiller[0] = m_stackParam[0];
+	m_stackParamFiller[1] = m_stackParam[1];
 }
 
 void CKLBRenderingManager::destroyShaderSystem() {
@@ -556,206 +603,381 @@ void CKLBRenderingManager::destroyShaderSystem() {
 		if (m_shaderDef[n].m_definition) {
 			pOGLMgr.releaseShaderSet(m_shaderDef[n].m_definition);
 		}
-		KLBDELETEA(m_shaderDef[n].m_paramList);
+		KLBDELETEA(m_shaderDef[n].m_pixelParamList);
+		KLBDELETEA(m_shaderDef[n].m_vertexParamList);
+		KLBDELETEA(m_shaderDef[n].m_name);
+		m_shaderDef[n].m_name			= NULL;
 		m_shaderDef[n].m_definition		= NULL;
-		m_shaderDef[n].m_paramList		= NULL;
 		m_shaderDef[n].m_pixelShader	= NULL;
+		m_shaderDef[n].m_pixelParamList	= NULL;
+		m_shaderDef[n].m_vertexParamList = NULL;
 	}
+	pOGLMgr.resetShader();
 }
 
-void CKLBRenderingManager::stackParameter(const char* name, u8 type, QUALITY_TYPE quality) {
+void CKLBRenderingManager::onResume() {
+	CKLBOGLWrapper::getInstance().onResume();
+}
+
+void CKLBRenderingManager::stackParameter(const char* name, u8 type, QUALITY_TYPE quality, bool pixelShader) {
 	u32 strLen = strlen(name) + 1;
-	klb_assert(strLen < 256, "Shader Param less than 255 char");
-	m_stackParamFiller[0] = type;		// Param Type
-	m_stackParamFiller[1] = strLen;		// String Size
-	m_stackParamFiller[2] = 0;			// Mapped Index
-	m_stackParamFiller[3] = (u8)quality;
-	m_stackParamFiller += 4;
+	klb_assertNull(strLen < 256, "Shader Param less than 255 char");
+	u8* end = pixelShader
+		? &m_stackParam[CKLBOGLWrapper::PIXEL_SHADER][SHADER_PARAM_STREAM_SIZE]
+		: &m_stackParam[CKLBOGLWrapper::VERTEX_SHADER][SHADER_PARAM_STREAM_SIZE];
+	u8** fillerReference = &m_stackParamFiller[pixelShader];
+	u8* filler = *fillerReference;
+	klb_assert(filler + 4 + strLen <= end,
+			   "Vertex or Pixel Shader build stack FULL (500 byte).");
+	filler[0] = type;		// Param Type
+	filler[1] = strLen;		// String Size
+	filler[2] = 0;			// Mapped Index
+	filler[3] = (u8)quality;
+	*fillerReference += 4;
 
 	// Copy C String after size and param.
-	memcpy(m_stackParamFiller, name, strLen);
-	m_stackParamFiller += strLen;
+	memcpy(*fillerReference, name, strLen);
+	*fillerReference += strLen;
 }
 
-void CKLBRenderingManager::completeParameter() {
-	m_stackParamFiller[0] = 0;
-	m_stackParamFiller[1] = 0;
-	m_stackParamFiller[2] = 0;
-	m_stackParamFiller[3] = 0;
-	m_stackParamFiller += 4;
+void CKLBRenderingManager::completeParameter(bool pixelShader) {
+	u8* end = pixelShader
+		? &m_stackParam[CKLBOGLWrapper::PIXEL_SHADER][SHADER_PARAM_STREAM_SIZE]
+		: &m_stackParam[CKLBOGLWrapper::VERTEX_SHADER][SHADER_PARAM_STREAM_SIZE];
+	u8*& filler = m_stackParamFiller[pixelShader];
+	klb_assert(filler + 4 <= end, "Vertex or Pixel Shader build stack FULL (500 byte).");
+	memset(filler, 0, 4);
+	filler += 4;
 }
 
-u32 CKLBRenderingManager::createShaderDefinition(const char* shaderCode) {
+u8* CKLBRenderingManager::buildShaderParameters(bool pixelShader, SParam* parameters, u32 parameterCapacity, u32 parameterCount) {
+	completeParameter(pixelShader);
 
-#ifdef OPENGL2
-	CKLBOGLWrapper&		pOGLMgr	= CKLBOGLWrapper::getInstance();
-	// 10 Param Max on stack.
-	SParam paramsShader[10] = {
-		// Name				Uniform?	StreamID	Data Type
-		//								or
-		//								UniformID
-		{	"texture"		,true		,1			,TEX2D    | TEXTURE },	// Index 0
-	};
+	u32 streamOffset = pixelShader ? SHADER_PARAM_STREAM_SIZE : 0;
+	u8* streamStart = &m_stackParam[0][0] + streamOffset;
+	int streamLength = m_stackParamFiller[pixelShader] - streamStart;
+	u8* parameterStream = KLBNEWA(u8, streamLength);
+	memcpy(parameterStream, streamStart, streamLength);
 
-	completeParameter();
-
-	//
-	// Copy Byte Stream Parameters.
-	//
-	int lenArray	= m_stackParamFiller - m_stackParam;
-	// COPY FIRST.
-	u8* pParam		= KLBNEWA(u8,lenArray);
-	if (!pParam) {
-		return NULL_IDX;
-	}
-	memcpy(pParam, m_stackParam, lenArray);
-
-	//
-	// Parse Byte Stream Parameter to build the shader.
-	//
-	SParam pTmpStruct;
-	u8* pParamStream = pParam;
-	int streamID = 1;	// "texture" is first.
-	while (pParamStream[1]!=0) {								// Name Length
-		pTmpStruct.name					= (const char*)&pParamStream[3];
-		pTmpStruct.isUniform			= true;
-		pTmpStruct.vertexORuniformID	= streamID + 1;
-		pTmpStruct.dType				= pParamStream[0];
-		pParamStream[2]					= streamID + 1;
-
-		paramsShader[streamID++]		= pTmpStruct;
-		pParamStream += pParamStream[1] + 3;						// Go to next item (3+String)
+	SParam parameter;
+	u8* entry = parameterStream;
+	while (entry[1] != 0) {
+		parameter.dType = entry[0];
+		entry[2] = parameterCount + 1;
+		klb_assert(parameterCount < parameterCapacity, "Too many shader parameters.");
+		parameter.name = (const char*)&entry[4];
+		parameter.isUniform = true;
+		parameter.vertexORuniformID = parameterCount + 1;
+		parameters[parameterCount++] = parameter;
+		entry += entry[1] + 4;
 	}
 
-	// Close List
-	paramsShader[streamID].name					= "";
-	paramsShader[streamID].isUniform			= false;
-	paramsShader[streamID].vertexORuniformID	= 0;
-	paramsShader[streamID].dType				= END_LIST;
-	
-	// Reset param stream buffer.
-	m_stackParamFiller	 = m_stackParam;
+	parameters[parameterCount].name = "";
+	parameters[parameterCount].isUniform = false;
+	parameters[parameterCount].vertexORuniformID = 0;
+	parameters[parameterCount].dType = END_LIST;
+	return parameterStream;
+}
 
-	CShader*			pixelShader		= pOGLMgr.createShader(shaderCode, CKLBOGLWrapper::PIXEL_SHADER, paramsShader);
-	CShaderSet*			shaderSet		= NULL;
-	if (pixelShader) {
-		// Map the shader together.
-		shaderSet	= pOGLMgr.createShaderSet(m_pVShader, pixelShader);
-		if (shaderSet) {
-			for (int n=0; n < SHADER_DEF_MAX; n++) {
-				if (!m_shaderDef[n].m_definition) {
-					m_shaderDef[n].m_definition		= shaderSet;
-					m_shaderDef[n].m_pixelShader	= pixelShader;
-					m_shaderDef[n].m_paramList		= pParam;
+bool CKLBRenderingManager::isShaderWhitespace(char character) {
+	return character < '!';
+}
 
-					return n;
+const char* CKLBRenderingManager::readShaderToken(
+	const char* source,
+	s32* tokenLength)
+{
+	if (!source) {
+		return NULL;
+	}
+	while (*source && isShaderWhitespace(*source)) {
+		source++;
+	}
+	const char* end = source;
+	while (*end && !isShaderWhitespace(*end)) {
+		end++;
+	}
+	*tokenLength = end - source;
+	return *source ? source : NULL;
+}
+
+bool CKLBRenderingManager::shaderTokenEquals(
+	const char* token,
+	s32 tokenLength,
+	const char* expected)
+{
+	if (!token || strlen(expected) != (size_t)tokenLength) {
+		return false;
+	}
+	for (s32 index = 0; index < tokenLength; index++) {
+		if ((u8)token[index] != (u8)expected[index]) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// GLSL ES requires a precision qualifier on every attribute, varying and uniform declaration;
+// this reports the first one lacking it, honouring "#ifdef GL_ES" / "#ifndef GL_ES" nesting.
+bool CKLBRenderingManager::checkPrecisionQualifier(const char* source, const char* shaderName) {
+	if (!source) { return true; }
+	const s32 CONDITION_MAX = 10;
+	bool conditionActive[CONDITION_MAX];	// the enclosing block was compiled in
+	bool conditionOnGLES[CONDITION_MAX];	// the open #if tested GL_ES
+	s32  depth = 0;
+	bool active = true, onGLES = false;
+	s32  declarationPending = 0;			// a storage keyword was just read
+	const char* token = source; s32 tokenLength = 0;
+	do {
+		token = readShaderToken(token + tokenLength, &tokenLength);
+		if (shaderTokenEquals(token, tokenLength, "/*")) {
+			while (*token && !((token[0] == '*') && (token[1] == '/'))) { token++; }
+			token = *token ? token + 2 : NULL;
+		} else if (shaderTokenEquals(token, tokenLength, "//")) {
+			while (*token && (*token != '\n')) { token++; }
+		} else {
+			bool isIfdef  = shaderTokenEquals(token, tokenLength, "#ifdef");
+			bool isIfndef = shaderTokenEquals(token, tokenLength, "#ifndef");
+			bool isElse   = shaderTokenEquals(token, tokenLength, "#else");
+			bool isEndif  = shaderTokenEquals(token, tokenLength, "#endif");
+			if (isIfdef || isIfndef) {
+				conditionOnGLES[depth] = onGLES; conditionActive[depth] = active;
+				token  = readShaderToken(token + tokenLength, &tokenLength);
+				onGLES = shaderTokenEquals(token, tokenLength, "GL_ES");
+				depth++;
+				active = active && !(isIfndef && onGLES);
+			} else if (isElse) {
+				if (onGLES && conditionActive[depth - 1]) { active = !active; }
+			} else if (isEndif) {
+				depth--;
+				active = conditionActive[depth];
+				onGLES = conditionOnGLES[depth];
+			} else if (active) {
+				if (declarationPending == 1) {
+					declarationPending = 0;
+					if (shaderTokenEquals(token, tokenLength, "vec2")
+					 || shaderTokenEquals(token, tokenLength, "vec3")
+					 || shaderTokenEquals(token, tokenLength, "vec4")
+					 || shaderTokenEquals(token, tokenLength, "float")) {
+						klb_assertAlways("%s Shader has no precision qualifier.", shaderName);
+					}
+				} else if (declarationPending == 0) {
+					declarationPending = shaderTokenEquals(token, tokenLength, "attribute")
+									  || shaderTokenEquals(token, tokenLength, "varying")
+									  || shaderTokenEquals(token, tokenLength, "uniform");
 				}
 			}
-			pOGLMgr.releaseShaderSet(shaderSet);
 		}
-		pOGLMgr.releaseShader(pixelShader);
+	} while (token);
+	return true;
+}
+
+u16 CKLBRenderingManager::createShaderDefinition(const char* name, const char* pixelShaderCode, const char* vertexShaderCode, u32 variant) {
+#ifdef OPENGL2
+	const u32 SHADER_SOURCE_MAX = 10000;
+	CKLBOGLWrapper& ogl = CKLBOGLWrapper::getInstance();
+	SParam pixelParameters[32] = {
+		{ "texture", true, 1, TEX2D | TEXTURE },
+		{ "mask",    true, 2, TEX2D | TEXTURE },
+		{ NULL,      true, 0, VEC1I           }
+	};
+	int pixelParameterCount = 0;
+	while (pixelParameters[pixelParameterCount].name) { pixelParameterCount++; }
+	u8* pixelParameterStream = buildShaderParameters(true, pixelParameters, 32, pixelParameterCount);
+	SParam vertexParameters[32] = {
+#if (VERTEX_SIZE == 4)
+		{ "pos_attr",     false, 1, VEC2     | VERTEX  },
+#else
+		{ "pos_attr",     false, 1, VEC3     | VERTEX  },
+#endif
+		{ "uv_attr",      false, 2, VEC2     | TEXTURE },
+		{ "col_attr",     false, 3, VEC4BYTE | COLOR   },
+		{ "uv_mask_attr", false, 4, VEC2     | TEXTURE },
+		{ NULL,           true,  0, VEC1I              }
+	};
+	int vertexParameterCount = 0;
+	while (vertexParameters[vertexParameterCount].name) { vertexParameterCount++; }
+	u8* vertexParameterStream = buildShaderParameters(false, vertexParameters, 32, vertexParameterCount);
+
+	char shaderSource[SHADER_SOURCE_MAX];
+	SRenderState::RENDER_MODE mode = (SRenderState::RENDER_MODE)variant;
+	if (!pixelShaderCode)  { pixelShaderCode  = ogl.getShaderSource(mode, CKLBOGLWrapper::PIXEL_SHADER);  }
+	if (!vertexShaderCode) { vertexShaderCode = ogl.getShaderSource(mode, CKLBOGLWrapper::VERTEX_SHADER); }
+	// A shader sampling a movie texture must declare the OES external texture extension first, then use the platform's sampler keyword in place of the "movieSampler2D" placeholder.
+	if (strstr(pixelShaderCode, "movieSampler2D")) {
+		u32 length = snprintf(shaderSource, SHADER_SOURCE_MAX, "%s\n%s", CPFInterface::getInstance().platform().getShaderExtension(1), pixelShaderCode);
+		pixelShaderCode = shaderSource;
+		klb_assert(length < SHADER_SOURCE_MAX, "Shader source more than 10 KB !");
 	}
+	char* pixelSource = CKLBUtility::replaceString(pixelShaderCode, "movieSampler2D", CPFInterface::getInstance().platform().getShaderExtension(0));
+	if (strstr(vertexShaderCode, "movieSampler2D")) {
+		u32 length = snprintf(shaderSource, SHADER_SOURCE_MAX, "%s\n%s", CPFInterface::getInstance().platform().getShaderExtension(1), vertexShaderCode);
+		vertexShaderCode = shaderSource;
+		klb_assert(length < SHADER_SOURCE_MAX, "Shader source more than 10 KB !");
+	}
+	char* vertexSource = CKLBUtility::replaceString(vertexShaderCode, "movieSampler2D", CPFInterface::getInstance().platform().getShaderExtension(0));
+	CShader* pixelShader = NULL;
+	if (pixelSource) { pixelShader = ogl.createShader(pixelSource, CKLBOGLWrapper::PIXEL_SHADER, pixelParameters); }
+	CShader* vertexShader = NULL;
+	if (vertexSource) { vertexShader = ogl.createShader(vertexSource, CKLBOGLWrapper::VERTEX_SHADER, vertexParameters); }
+	m_stackParamFiller[CKLBOGLWrapper::VERTEX_SHADER] = m_stackParam[CKLBOGLWrapper::VERTEX_SHADER];
+	m_stackParamFiller[CKLBOGLWrapper::PIXEL_SHADER] = m_stackParam[CKLBOGLWrapper::PIXEL_SHADER];
+	if (pixelShader && vertexShader) {
+		CShaderSet* shaderSet = ogl.createShaderSet(vertexShader, pixelShader);
+		if (shaderSet) {
+			for (int shader = 0; shader < SHADER_DEF_MAX; shader++) {
+				S_SHADERDEF& definition = m_shaderDef[shader];
+				if (!definition.m_definition) {
+					definition.m_definition = shaderSet;
+					// Both handles are retained only so they can be released with the set.
+					definition.m_pixelShader = pixelShader;
+					definition.m_vertexShader = vertexShader;
+					definition.m_pixelParamList = pixelParameterStream;
+					definition.m_vertexParamList = vertexParameterStream;
+					definition.m_refCount = 1;
+					definition.m_variant = variant;
+					definition.m_name = (char*)CKLBUtility::copyString(name);
+					free(pixelSource);
+					free(vertexSource);
+					return shader;
+				}
+			}
+			ogl.releaseShaderSet(shaderSet);
+		}
+	}
+	if (pixelShader) ogl.releaseShader(pixelShader);
+	if (vertexShader) ogl.releaseShader(vertexShader);
+	free(pixelSource);
+	free(vertexSource);
 #else
 	klb_assertAlways("OpenGL 1.1 Profile does not support shader APIs");
 #endif
 	return NULL_IDX;
 }
 
-void CKLBRenderingManager::destroyShaderDefinition(u32 shaderDefinition) {
-	if (!m_shaderDef[shaderDefinition].m_definition) {
+void CKLBRenderingManager::destroyShaderDefinition(u16 shaderDefinition) {
+	S_SHADERDEF& definition = m_shaderDef[shaderDefinition];
+	if (definition.m_definition && (--definition.m_refCount == 0)) {
 		CKLBOGLWrapper&		pOGLMgr	= CKLBOGLWrapper::getInstance();
 
-		KLBDELETEA(m_shaderDef[shaderDefinition].m_paramList);
-		m_shaderDef[shaderDefinition].m_paramList = NULL;
+		KLBDELETEA(definition.m_pixelParamList);
+		definition.m_pixelParamList = NULL;
+		KLBDELETEA(definition.m_vertexParamList);
+		definition.m_vertexParamList = NULL;
 
-		pOGLMgr.releaseShaderSet(m_shaderDef[shaderDefinition].m_definition);
-		pOGLMgr.releaseShader(m_shaderDef[shaderDefinition].m_pixelShader);
-		m_shaderDef[shaderDefinition].m_definition	= NULL;
-		m_shaderDef[shaderDefinition].m_pixelShader = NULL;
+		pOGLMgr.releaseShaderSet(definition.m_definition);
+		definition.m_definition = NULL;
+		definition.m_pixelShader = NULL;
+		definition.m_vertexShader = NULL;
+		definition.m_variant = 0xFFFF;
 	}
 }
 
-// Instance Slot
-void* CKLBRenderingManager::instanceShader(u32 shaderDefinition, u32 startRange, u32 endRange) {
-	//
-	klb_assert(startRange < endRange,						"Invalid Range");
-	klb_assert(shaderDefinition < SHADER_DEF_MAX,			"Invalid Shader Index");
-
-	S_SHADERINSTANCE* pInst = m_shaderInstanceList;
-	while (pInst) {
-		if (!(((pInst->m_min > startRange) && (pInst->m_max < endRange)) ||
-			  ((pInst->m_min < startRange) && (pInst->m_max > endRange)))) {
-			klb_assertAlways("Invalid Ranges");
-			return NULL;
+u16 CKLBRenderingManager::getShaderDefinition(const char* name) {
+	for(int shader = 0; shader < SHADER_DEF_MAX; shader++) {
+		if(m_shaderDef[shader].m_definition && !strcmp(m_shaderDef[shader].m_name, name)) {
+			return static_cast<u16>(shader);
 		}
-		pInst = pInst->m_pNext;
 	}
+	return 0xFFFF;
+}
 
-	pInst = KLBNEW(S_SHADERINSTANCE);
-	
-	CKLBRenderState* pStartState = this->allocateCommandState();
-	CKLBRenderState* pEndState   = this->allocateCommandState();
+u16 CKLBRenderingManager::createShaderDefinition(const char* name, u32 variant) {
+	for (int shader = 0; shader < SHADER_DEF_MAX; shader++) {
+		if (m_shaderDef[shader].m_variant == variant) {
+			m_shaderDef[shader].m_refCount = 1;
+			return shader;
+		}
+	}
+	return createShaderDefinition(name, NULL, NULL, variant);
+}
 
+// Instance Slot
+void* CKLBRenderingManager::instanceShader(u32 shaderDefinition,
+										   u32 startRange) {
+	klb_assertNull(shaderDefinition < SHADER_DEF_MAX, "Invalid Shader Index");
 
-	if (pInst && pStartState && pEndState && m_shaderDef[shaderDefinition].m_definition) {
-		pInst->m_pInstanceShader = m_shaderDef[shaderDefinition].m_definition->createInstance();
+	CKLBRenderState* pStartState = allocateCommandState();
+	S_SHADERINSTANCE* pInst = KLBNEW(S_SHADERINSTANCE);
+	u16 shaderIndex = shaderDefinition;
+	S_SHADERDEF& definition = m_shaderDef[shaderIndex];
+	if (definition.m_definition) {
+		pInst->m_pInstanceShader = definition.m_definition->createInstance();
 		if (pInst->m_pInstanceShader) {
 			pStartState->setUse(false, false, pInst->m_pInstanceShader);
-			pEndState->setUse(false,false,NULL);
-			pEndState->m_commandType = RENDERCOMMAND_UNSETSHADER;
-
-			// Shader Registered.
-			pInst->m_paramList		= m_shaderDef[shaderDefinition].m_paramList;
+			pInst->m_pixelParamList	= definition.m_pixelParamList;
+			pInst->m_vertexParamList = definition.m_vertexParamList;
+			pInst->m_pStartState	= pStartState;
+			pInst->m_pDefinition	= definition.m_definition;
+			pInst->m_shaderDefinition = shaderIndex;
 			pInst->m_pNext			= m_shaderInstanceList;
 			m_shaderInstanceList	= pInst;
-
-			// Setup Start & End
-			this->addToRendering(pStartState, startRange);
-			this->addToRendering(pEndState, endRange);
+			definition.m_refCount++;
+			addToRendering(pStartState, startRange);
 
 			return pInst;
 		}
 	}
 
-	// Handle Error.
 	KLBDELETE(pInst);
-	if (pStartState)	{ this->releaseCommand(pStartState);	}
-	if (pEndState)		{ this->releaseCommand(pEndState);		}
-
+	releaseCommand(pStartState);
 	return NULL;
 }
 
-void CKLBRenderingManager::removeShader(void* /*instanceShader*/) {
-
-	// TODO.	
-
+void CKLBRenderingManager::removeShader(void* instanceShader) {
+	S_SHADERINSTANCE* previous = NULL;
+	for (S_SHADERINSTANCE* instance = m_shaderInstanceList;
+		 instance;
+		 previous = instance, instance = instance->m_pNext) {
+		if (instance != instanceShader) {
+			continue;
+		}
+		if (previous) {
+			previous->m_pNext = instance->m_pNext;
+		} else {
+			m_shaderInstanceList = instance->m_pNext;
+		}
+		instance->m_pDefinition->releaseInstance(instance->m_pInstanceShader);
+		destroyShaderDefinition(instance->m_shaderDefinition);
+		if (instance->m_pStartState) {
+			releaseCommand(instance->m_pStartState);
+		}
+		KLBDELETE(instance);
+		return;
+	}
 }
 
-u32 searchID(u8* stream, const char* name) {
-	while (stream[1]!=0) {								// Name Length
-		if (strcmp(name, (const char*)&stream[4])==0) {	// Name
-			return stream[2];							// Index ID
-		}
-		stream += stream[1] + 4;						// Go to next item (3+String)
-	}
-	return NULL_IDX;
+u32 CKLBRenderingManager::getShaderParamID(void* instanceShader, const char* name) {
+	S_SHADERINSTANCE* pInst = (S_SHADERINSTANCE*)instanceShader;
+	return searchID(pInst->m_pixelParamList, name);
 }
 
 void CKLBRenderingManager::setShaderParamI(void* instanceShader, const char* name, GLint* value) {
 	S_SHADERINSTANCE* pInst = (S_SHADERINSTANCE*)instanceShader;
-	u32 uniformID = searchID(pInst->m_paramList, name);
+	u32 uniformID = searchID(pInst->m_pixelParamList, name);
 	pInst->m_pInstanceShader->setUniformI(CShaderInstance::PIXEL_SHADER, uniformID, value);
 }
 
 void CKLBRenderingManager::setShaderParamF(void* instanceShader, const char* name, GLfloat* value) {
 	S_SHADERINSTANCE* pInst = (S_SHADERINSTANCE*)instanceShader;
-	u32 uniformID = searchID(pInst->m_paramList, name);
+	u32 uniformID = searchID(pInst->m_pixelParamList, name);
 	pInst->m_pInstanceShader->setUniformF(CShaderInstance::PIXEL_SHADER, uniformID, value);
+}
+
+void CKLBRenderingManager::setVertexShaderParamF(void* instanceShader, const char* name, GLfloat* value) {
+	S_SHADERINSTANCE* pInst = (S_SHADERINSTANCE*)instanceShader;
+	u32 uniformID = searchID(pInst->m_vertexParamList, name);
+	pInst->m_pInstanceShader->setUniformF(CShaderInstance::VERTEX_SHADER, uniformID, value);
 }
 
 void CKLBRenderingManager::setShaderParamTexture(void* instanceShader, const char* name, CTextureUsage* value) {
 	S_SHADERINSTANCE* pInst = (S_SHADERINSTANCE*)instanceShader;
-	u32 uniformID = searchID(pInst->m_paramList, name);
+	u32 uniformID = searchID(pInst->m_pixelParamList, name);
+	pInst->m_pInstanceShader->setUniformTexture(CShaderInstance::PIXEL_SHADER, uniformID, value);
+}
+
+void CKLBRenderingManager::setShaderParamTexture(void* instanceShader, u32 uniformID, CTextureUsage* value) {
+	S_SHADERINSTANCE* pInst = (S_SHADERINSTANCE*)instanceShader;
 	pInst->m_pInstanceShader->setUniformTexture(CShaderInstance::PIXEL_SHADER, uniformID, value);
 }
 
@@ -764,11 +986,11 @@ void CKLBRenderingManager::setShaderParamTexture(void* instanceShader, const cha
 
 
 
-void CKLBRenderingManager::addToRendering(CKLBRenderCommand* pRender, u32 index) {
-	klb_assert(m_pRenderWatchDog, "CKLBRenderingManager::setup not done first");
+void CKLBRenderingManager::addToRendering(CKLBRenderCommand* pRender, s32 index) {
+	klb_assertNull(m_pRenderWatchDog, "CKLBRenderingManager::setup not done first");
 	// Roll back when bug found.
 	// klb_assert(index != 0xFFFFFFFF, " 0xFFFFFFFF Priority should not be used");
-	klb_assert((pRender->m_pNext == NULL) && (pRender->m_pPrev == NULL), "Item already in list."); 
+	klb_assertNull((pRender->m_pNext == NULL) && (pRender->m_pPrev == NULL), "Item already in list.");
 
 	//
 	// Perform insertion.
@@ -818,15 +1040,15 @@ void CKLBRenderingManager::addToRendering(CKLBRenderCommand* pRender, u32 index)
 
 	m_pRenderLastModify = pRender;
 
-	if (index == 0xFFFFFFFF) {
+	if (index == 0x7FFFFFFF) {
 		// Scene graph
 		CKLBDrawResource& res = CKLBDrawResource::getInstance();
-		res.getRoot()->dump(0, 0xFFFFFFFF);
+		res.getRoot()->dump(0, 0x7FFFFFFF);
 		// Dump Rendering Queue
-		dump(0xFFFFFFFF);
+		dump(0x7FFFFFFF);
 
 		// Put back at beginning once we did it.
-		klb_assert(index != 0xFFFFFFFF, " 0xFFFFFFFF Priority should not be used");
+		klb_assertNull(index != 0x7FFFFFFF, " 0xFFFFFFFF Priority should not be used");
 	}
 }
 
@@ -841,101 +1063,28 @@ void CKLBRenderingManager::emitDrawCall(	u16*			pIndexCounter,
 											u16*			offsetIndex,
 											u16*			offsetVertex,
 											u16				offsetVertexHead,
-											CTextureUsage*	pTextureUsage,
-											CTextureUsage*	pTexture2
+											CTextureUsage**	textures,
+											s32*			uniformIDs,
+											CBuffer**		buffers
 											) {
 	u32 indexCount = *pIndexCounter;
-
-	// OPTIMIZE : NOT VBO, could remove calls.
-	m_pIdxBuffer->updateComplete(*offsetIndex + indexCount);
-	m_pVerBuffer->updateComplete(offsetVertexHead);	// In vertex count
-	m_pColBuffer->updateComplete(offsetVertexHead); // In vertex count
 
 	CKLBOGLWrapper&		pOGLMgr	= CKLBOGLWrapper::getInstance();
 	pOGLMgr.applyState(m_pCurrState);
 
-	if (pTexture2 != g_textureMask) {
-
-		dglActiveTexture(GL_TEXTURE1);
-		dglClientActiveTexture(GL_TEXTURE1);
-
-		if (pTexture2) {
-			dglEnable(GL_TEXTURE_2D);
-			dglBindTexture(GL_TEXTURE_2D, pTexture2->pTexture->pMaster->activeTexture);
-			
-			pOGLMgr.assignSampler(pTexture2, 1);
-
-			dglEnableClientState(GL_TEXTURE_COORD_ARRAY);
-			dglTexCoordPointer(2, GL_FLOAT, 0, m_maskUVPtr);
-		} else {
-			dglDisable(GL_TEXTURE_2D);
-			dglDisableClientState(GL_TEXTURE_COORD_ARRAY);
-		}
-
-		dglActiveTexture(GL_TEXTURE0);
-		dglClientActiveTexture(GL_TEXTURE0);
-		g_textureMask = pTexture2;
-	}
-
 	if (indexCount) {
-
 		m_pIdxBuffer->setDrawOffset(*offsetIndex);
 		m_pVerBuffer->setDrawOffset(*offsetVertex);
 		m_pColBuffer->setDrawOffset(*offsetVertex);
-
-		// For now texture is only one texture.
-		CTextureUsage* pArrTexture[2];
-		s32 idUniform[2];
-		pArrTexture			[0]		= pTextureUsage;
-		idUniform			[0]		= 1;
-		/*
-		pArrTexture			[1]		= pTexture2;
-		idUniform			[1]		= 2;
-		*/
-
-		//
-		// Trick to support
-		//
-		if (pTextureUsage && m_useTextures) {
-			if (g_useTextureLast == false) {
-				dglEnable(GL_TEXTURE_2D);
-				g_useTextureLast = true;
-			}
-		} else {
-			if (g_useTextureLast == true) {
-				dglDisable(GL_TEXTURE_2D);
-				g_useTextureLast = false;
-			}
-		}
-
-#ifndef OPENGL2
-		if (!m_useColor) {
-			if (g_useColorLast == true) {
-				dglDisableClientState(GL_COLOR_ARRAY);
-				g_useColorLast = false;
-			}
-		} else {
-			if (g_useColorLast == false) {
-				dglEnableClientState(GL_COLOR_ARRAY);
-				g_useColorLast = true;
-			}
-		}
-#endif
-
-		m_pTextureUsage = pTextureUsage;
-
-		CBuffer* arrBuff[2] = {
-			m_pVerBuffer,
-			m_pColBuffer,
-		};
+		m_pMaskUVBuffer->setDrawOffset(*offsetVertex);
 
 		pOGLMgr.draw(	m_callMode,
 						m_pCurrShader,
-						arrBuff,
-						2,
+						buffers,
+						3,
 						m_pIdxBuffer,
-						pArrTexture,
-						idUniform, 
+						textures,
+						uniformIDs,
 						indexCount);
 
 		*pIndexCounter = 0;
@@ -948,6 +1097,24 @@ void CKLBRenderingManager::emitDrawCall(	u16*			pIndexCounter,
 
 	*offsetVertex	 = offsetVertexHead;
 	*offsetIndex	+= indexCount;  
+}
+
+void
+CKLBRenderingManager::draw(CBuffer** buffers,
+						   CIndexBuffer* indexBuffer,
+						   CTextureUsage** textures,
+						   s32* uniformIDs,
+						   s32 indexCount)
+{
+	CKLBOGLWrapper& renderer = CKLBOGLWrapper::getInstance();
+	renderer.draw(m_callMode,
+				  m_pCurrShader,
+				  buffers,
+				  2,
+				  indexBuffer,
+				  textures,
+				  uniformIDs,
+				  indexCount);
 }
 
 void CKLBRenderingManager::dumpMetrics() {
@@ -985,12 +1152,12 @@ void CKLBRenderingManager::dump(u32 /*mask*/) {
 				fprintf(pFile," Shft");
 			}
 			if (pCommand->m_uiStatus & FLAG_XYUPDATE) {
-				printf(" Geom");
+				fprintf(pFile," Geom");
 			}
 			if (pCommand->m_uiStatus & FLAG_COLORUPDATE) {
 				fprintf(pFile," Col");
 			}
-			fprintf(pFile," Vertex:%i Index:%i] ", pSpr->m_uiVertexCount, pSpr->m_uiIndexCount);
+			fprintf(pFile," Vertex:%i Index:%i Texture:%p] ", pSpr->m_uiVertexCount, pSpr->m_uiIndexCount, pSpr->m_pImageAsset->getTexture());
 		}
 
 		if (command & RENDERCOMMAND_CHANGERENDERSTATE) {
@@ -1033,6 +1200,26 @@ u32 getColor(u32 code) {
 	col[3] = 0xFF;
 
 	return (*((u32*)col));
+}
+
+// Shader parameter records use a compact byte stream:
+// byte 0 stores the parameter type,
+// byte 1 stores the record's name length,
+// byte 2 stores the mapped uniform identifier,
+// byte 3 stores the requested precision,
+// and the zero-terminated parameter name begins at byte 4.
+static inline u32 searchID(u8* stream, const char* name) {
+	if (!stream) {
+		return NULL_IDX;
+	}
+	while (stream[1]!=0) {								// Name Length
+		if (strcmp(name, (const char*)&stream[4])==0) {	// Name
+			return stream[2];							// Index ID
+		}
+		stream += stream[1] + 4;						// Go to next item (3+String)
+	}
+	klb_assertAlways("Uniform '%s' not found.", name);
+	return NULL_IDX;
 }
 
 CKLBRenderCommand* CKLBRenderingManager::drawClick(u32 x, u32 y) {
@@ -1146,7 +1333,7 @@ CKLBRenderCommand* CKLBRenderingManager::drawClick(u32 x, u32 y) {
 	return found;
 }*/
 
-void CKLBRenderingManager::enableRange(u32 start, u32 end, bool active) {
+void CKLBRenderingManager::enableRange(s32 start, s32 end, bool active) {
 	if (end == 0xFFFFFFFF) {
 		end--;
 	}
@@ -1162,14 +1349,15 @@ void CKLBRenderingManager::enableRange(u32 start, u32 end, bool active) {
 void CKLBRenderingManager::drawOverdraw() {
 	CKLBRenderCommand*	renderStack[10];
 
+	u8					bufferShift		= true;
 	CKLBRenderCommand*	pCommand		= this->m_pListStart;
 	CTextureUsage*		pLastTexture	= NULL;
 	u16*				pDstIndexBuffer = (u16*)m_pIdxBuffer->updateStart(0);
 
-	u8					bufferShift		= true;
 	u16					strideVertex;
 	float*				pDstVertexBuffer		= m_pVerBuffer->updateStart(1, 0, &strideVertex);
 	u32*				pDstColBuffer			= (u32*)m_pColBuffer->updateStart(3, 0, null);
+	float*				pDstMaskUVBuffer;
 	u16		indexCount			= 0;
 	u16		indexVCount			= 0;
 	u16		offsetVertex		= 0;
@@ -1178,23 +1366,25 @@ void CKLBRenderingManager::drawOverdraw() {
 	s32		stackDepth			= 0;
 	CTextureUsage*		pLastTextureMask = NULL;
 
-	renderStack[0]	= m_pRenderWatchDog;
-	renderStack[1]	= pCommand;
-
 	CKLBOGLWrapper& pOGLMgr	= CKLBOGLWrapper::getInstance();
-	pOGLMgr.resetSampler(0);
+	pOGLMgr.resetSamplers();
+	CTextureUsage* textures[2];
+	s32 uniformIDs[2];
+	textures[0] = NULL;
+	uniformIDs[0] = 1;
+	textures[1] = NULL;
+	uniformIDs[1] = 2;
+	CBuffer* buffers[3] = { m_pVerBuffer, m_pColBuffer, m_pMaskUVBuffer };
 	/*
 	dump(0);
 	dumpMetrics();
 	*/
 
-	m_pTextureUsage = pLastTexture;
-
 	// Default
-	m_pCurrState	= &state;
+	m_pCurrState	= &noAlphaState;
 	// Default
 	m_pCurrShader	= m_pShaderInstance;
-	m_stackShaderIdx= 0;
+	pDstMaskUVBuffer = m_pMaskUVBuffer->updateStart(4, 0, null);
 
 
 #ifdef DEBUG_PERFORMANCE
@@ -1208,8 +1398,9 @@ void CKLBRenderingManager::drawOverdraw() {
 	m_memCopySize		= 0;	// Internal Move
 	m_drawCall			= 0;	// DONE
 #endif
-	float* ptrUVMask	= m_maskUVPtr;
+	float* ptrUVMask	= pDstMaskUVBuffer;
 
+#ifndef OPENGL2
 	dglActiveTexture(GL_TEXTURE1);
 	dglClientActiveTexture(GL_TEXTURE1);
 	dglDisable(GL_TEXTURE_2D);
@@ -1218,10 +1409,22 @@ void CKLBRenderingManager::drawOverdraw() {
 	dglActiveTexture(GL_TEXTURE0);
 	dglClientActiveTexture(GL_TEXTURE0);
 	g_textureMask = NULL;
+#endif
 
-	// force White fill.
-	dglClearColor(1.0f,1.0f,1.0f,1.0f);
-	dglClear(GL_COLOR_BUFFER_BIT);
+	float savedClearColor[4] = {
+		m_pDefaultStateCommand->m_colorClearRed,
+		m_pDefaultStateCommand->m_colorClearGreen,
+		m_pDefaultStateCommand->m_colorClearBlue,
+		m_pDefaultStateCommand->m_colorClearAlpha
+	};
+	m_pDefaultStateCommand->m_commandType |= RENDERCOMMAND_CLEARCOLOR;
+	m_pDefaultStateCommand->m_colorClearRed	 = 1.0f;
+	m_pDefaultStateCommand->m_colorClearGreen = 1.0f;
+	m_pDefaultStateCommand->m_colorClearBlue	 = 1.0f;
+	m_pDefaultStateCommand->m_colorClearAlpha = 1.0f;
+	bool bTex = (m_bRenderOverDraw == 2);
+	renderStack[0]	= m_pRenderWatchDog;
+	renderStack[1]	= pCommand;
 
 
 	#define COLOR_COUNT			(7)
@@ -1242,8 +1445,6 @@ void CKLBRenderingManager::drawOverdraw() {
 	//						avoid buffer shift in first draw call to impact further draw calls. (ie layers)
 	//						and have different buffer to avoid crush by previous call.
 
-	bool bTex = (m_bRenderOverDraw == 2);
-
 	do {
 		CKLBRenderCommand* pEnd = renderStack[stackDepth];
 		pCommand				= renderStack[stackDepth+1];
@@ -1252,10 +1453,11 @@ void CKLBRenderingManager::drawOverdraw() {
 				CKLBSprite* pSpr = (CKLBSprite*)pCommand;
 
 				if ((pSpr->m_uiVertexCount != 0) && (!(pCommand->m_commandType & RENDERCOMMAND_IGNORE))) {	// TODO OPTIMIZE : Empty sprite could be optimized to be skipped once.
-					if ((pSpr->m_pTexture != pLastTexture) /*|| (m_pCurrState != pSpr->m_pState)*/ || (pSpr->m_pMaskTexture != pLastTextureMask)) {
-						emitDrawCall		(&indexCount, &offsetIndex, &offsetVertex, offsetVertexHead, bTex ? pLastTexture : NULL ,pLastTextureMask);
+					if ((pSpr->m_pTexture != pLastTexture) || (m_pCurrState != (pSpr->m_pState ? pSpr->m_pState : &alphaState)) || (pSpr->m_pMaskTexture != pLastTextureMask)) {
+						textures[0] = bTex ? pLastTexture : m_pWhiteTextureUsage;
+						textures[1] = pLastTextureMask;
+						emitDrawCall		(&indexCount, &offsetIndex, &offsetVertex, offsetVertexHead, textures, uniformIDs, buffers);
 						colorIndex++;
-						ptrUVMask			= m_maskUVPtr;
 						indexVCount  = 0; // Reset index counter.
 						pLastTexture		= pSpr->m_pTexture;
 						pLastTextureMask	= pSpr->m_pMaskTexture;
@@ -1282,7 +1484,7 @@ void CKLBRenderingManager::drawOverdraw() {
 
 							if (pLastTextureMask) {
 								memcpy32(ptrUVMask, pSpr->m_pVertexMaskUV,	(skipSize *sizeof(float)) >> 1);
-								ptrUVMask += skipSize >> 1;
+								ptrUVMask += (skipSize & ~1) >> 1;
 							}
 
 							// Index buffer recompute
@@ -1322,7 +1524,7 @@ void CKLBRenderingManager::drawOverdraw() {
 								memcpy32(pDstVertexBuffer, pSpr->m_pVertex, skipSize * sizeof(float));
 								if (pLastTextureMask) {
 									memcpy32(ptrUVMask, pSpr->m_pVertexMaskUV,	(skipSize *sizeof(float)) >> 1);
-									ptrUVMask += skipSize >> 1;
+									ptrUVMask += (skipSize & ~1) >> 1;
 								}
 							}
 
@@ -1351,9 +1553,10 @@ void CKLBRenderingManager::drawOverdraw() {
 				// Go next command.
 				pCommand = pCommand->m_pNext;
 			} else {
-				emitDrawCall	(&indexCount, &offsetIndex, &offsetVertex, offsetVertexHead, bTex ? pLastTexture : NULL, pLastTextureMask);
+				textures[0] = bTex ? pLastTexture : m_pWhiteTextureUsage;
+				textures[1] = pLastTextureMask;
+				emitDrawCall	(&indexCount, &offsetIndex, &offsetVertex, offsetVertexHead, textures, uniformIDs, buffers);
 				colorIndex++;
-				ptrUVMask	= m_maskUVPtr;
 				indexVCount = 0;
 				
 				// Support render state change.
@@ -1365,7 +1568,6 @@ void CKLBRenderingManager::drawOverdraw() {
 				}
 
 				if (cmdType & RENDERCOMMAND_SETSHADER) {
-					m_stackShader[m_stackShaderIdx++] = m_pCurrShader;
 					m_pCurrShader	= pRCom->getShader();
 				}
 
@@ -1374,13 +1576,17 @@ void CKLBRenderingManager::drawOverdraw() {
 					// case RENDERCOMMAND_CLEARDEPTH:
 					// case RENDERCOMMAND_CLEARSTENCIL:
 					pRCom->executeCommand();
+					if (cmdType & RENDERCOMMAND_STATECALLBACK) {
+						m_pCurrState = NULL;
+						pLastTexture = NULL;
+					}
 				}
 
 				if (cmdType & RENDERCOMMAND_CHANGETARGET) {
 				}
 
 				if (cmdType & RENDERCOMMAND_UNSETSHADER) {
-					m_pCurrShader	= m_stackShader[--m_stackShaderIdx];
+					m_pCurrShader	= m_pShaderInstance;
 				}
 
 				bufferShift |= (pCommand->m_uiStatus & FLAG_BUFFERSHIFT);
@@ -1390,24 +1596,18 @@ void CKLBRenderingManager::drawOverdraw() {
 				// Go next command.
 				pCommand = pCommand->m_pNext;
 
-				if (pRCom->jump) {
-					renderStack[stackDepth  ] = pCommand;
-					renderStack[stackDepth+1] = pEnd;
-
-					stackDepth += 2;
-
-					//
-					// Switch to new rendering sub-queue
-					//
-					pCommand	= pRCom->jump;
-					pEnd		= pRCom->end;
-				}
 			}
 		}
-		emitDrawCall		(&indexCount, &offsetIndex, &offsetVertex, offsetVertexHead, bTex ? pLastTexture : NULL , pLastTextureMask);
+		textures[0] = bTex ? pLastTexture : m_pWhiteTextureUsage;
+		textures[1] = pLastTextureMask;
+		emitDrawCall		(&indexCount, &offsetIndex, &offsetVertex, offsetVertexHead, textures, uniformIDs, buffers);
 		colorIndex++;
-		ptrUVMask	= m_maskUVPtr;
 	} while ((stackDepth -= 2) >= 0);
+	m_pDefaultStateCommand->m_commandType |= RENDERCOMMAND_CLEARCOLOR;
+	m_pDefaultStateCommand->m_colorClearRed	 = savedClearColor[0];
+	m_pDefaultStateCommand->m_colorClearGreen = savedClearColor[1];
+	m_pDefaultStateCommand->m_colorClearBlue	 = savedClearColor[2];
+	m_pDefaultStateCommand->m_colorClearAlpha = savedClearColor[3];
 }
 
 // Rendering.
@@ -1417,18 +1617,19 @@ void CKLBRenderingManager::draw() {
 		return;
 	}
 
-	klb_assert(m_pRenderWatchDog, "CKLBRenderingManager::setup not done first");
+	klb_assertNull(m_pRenderWatchDog, "CKLBRenderingManager::setup not done first");
 
 	CKLBRenderCommand*	renderStack[10];
 
-	CKLBRenderCommand*	pCommand		= this->m_pListStart;
 	CTextureUsage*		pLastTexture	= NULL;
+	CKLBRenderCommand*	pCommand		= this->m_pListStart;
 	u16*				pDstIndexBuffer = (u16*)m_pIdxBuffer->updateStart(0);
 
 	u8					bufferShift		= true;
 	u16					strideVertex;
 	float*				pDstVertexBuffer		= m_pVerBuffer->updateStart(1, 0, &strideVertex);
 	u32*				pDstColBuffer			= (u32*)m_pColBuffer->updateStart(3, 0, null);
+	float*				pDstMaskUVBuffer;
 	u16		indexCount			= 0;
 	u16		indexVCount			= 0;
 	u16		offsetVertex		= 0;
@@ -1437,23 +1638,28 @@ void CKLBRenderingManager::draw() {
 	s32		stackDepth			= 0;
 	CTextureUsage*		pLastTextureMask = NULL;
 
-	renderStack[0]	= m_pRenderWatchDog;
-	renderStack[1]	= pCommand;
-
 	CKLBOGLWrapper& pOGLMgr	= CKLBOGLWrapper::getInstance();
-	pOGLMgr.resetSampler(0);
+	pOGLMgr.resetSamplers();
+	CTextureUsage* textures[2];
+	s32 uniformIDs[2];
+	textures[0] = NULL;
+	uniformIDs[0] = 1;
+	textures[1] = NULL;
+	uniformIDs[1] = 2;
+	CBuffer* buffers[3] = { m_pVerBuffer, m_pColBuffer, m_pMaskUVBuffer };
 	/*
 	dump(0);
 	dumpMetrics();
 	*/
 
-	m_pTextureUsage = pLastTexture;
-
 	// Default
-	m_pCurrState	= &state;
+	m_pCurrState	= &noAlphaState;
 	// Default
 	m_pCurrShader	= m_pShaderInstance;
-	m_stackShaderIdx= 0;
+	pDstMaskUVBuffer = m_pMaskUVBuffer->updateStart(4, 0, null);
+	g_textureMask = NULL;
+	renderStack[0]	= m_pRenderWatchDog;
+	renderStack[1]	= pCommand;
 
 
 #ifdef DEBUG_PERFORMANCE
@@ -1467,8 +1673,9 @@ void CKLBRenderingManager::draw() {
 	m_memCopySize		= 0;	// Internal Move
 	m_drawCall			= 0;	// DONE
 #endif
-	float* ptrUVMask	= m_maskUVPtr;
+	float* ptrUVMask	= pDstMaskUVBuffer;
 
+#ifndef OPENGL2
 	dglActiveTexture(GL_TEXTURE1);
 	dglClientActiveTexture(GL_TEXTURE1);
 	dglDisable(GL_TEXTURE_2D);
@@ -1477,6 +1684,7 @@ void CKLBRenderingManager::draw() {
 	dglActiveTexture(GL_TEXTURE0);
 	dglClientActiveTexture(GL_TEXTURE0);
 	g_textureMask = NULL;
+#endif
 
 	// OPTIMIZE RP : have mecanism to remember FOR EACH draw call (render state change)
 	//						avoid buffer shift in first draw call to impact further draw calls. (ie layers)
@@ -1499,20 +1707,18 @@ void CKLBRenderingManager::draw() {
 				#ifdef DEBUG_PERFORMANCE
 					m_spriteCount++;
 				#endif
-					if ((pSpr->m_pTexture != pLastTexture) /*|| (m_pCurrState != pSpr->m_pState)*/ || (pSpr->m_pMaskTexture != pLastTextureMask)) {
+					SRenderState* spriteState = pSpr->m_pState ? pSpr->m_pState : &alphaState;
+					if ((pSpr->m_pTexture != pLastTexture) || (m_pCurrState != spriteState) || (pSpr->m_pMaskTexture != pLastTextureMask)) {
 					#ifdef DEBUG_PERFORMANCE  
 						m_textureChange++;
 					#endif
-						/* m_pState from sprite is garbage for now. (unused, not set in constructor)
-						if (pSpr->m_pState) {
-							m_pCurrState = pSpr->m_pState; // BEFORE draw call.
-						}*/
-
-						emitDrawCall		(&indexCount, &offsetIndex, &offsetVertex, offsetVertexHead, pLastTexture,pLastTextureMask);
-						ptrUVMask			= m_maskUVPtr;
+						textures[0] = pLastTexture;
+						textures[1] = pLastTextureMask;
+						emitDrawCall		(&indexCount, &offsetIndex, &offsetVertex, offsetVertexHead, textures, uniformIDs, buffers);
 						indexVCount  = 0; // Reset index counter.
 						pLastTexture		= pSpr->m_pTexture;
 						pLastTextureMask	= pSpr->m_pMaskTexture;
+						m_pCurrState		= spriteState;
 					}
 
 					if (pCommand->m_commandType & RENDERCOMMAND_3D) {
@@ -1536,8 +1742,10 @@ void CKLBRenderingManager::draw() {
 
 							if (pLastTextureMask) {
 								memcpy32(ptrUVMask, pSpr->m_pVertexMaskUV,	(skipSize *sizeof(float)) >> 1);
-								ptrUVMask += skipSize >> 1;
+							} else {
+								memset(ptrUVMask, 0, (skipSize * sizeof(float)) >> 1);
 							}
+							ptrUVMask += (skipSize & ~1) >> 1;
 	#ifdef DEBUG_PERFORMANCE
 							m_memCopySize	+= (skipSize + pSpr->m_uiVertexCount);	// X,Y,U,V,Color
 	#endif
@@ -1582,7 +1790,7 @@ void CKLBRenderingManager::draw() {
 								memcpy32(pDstVertexBuffer, pSpr->m_pVertex, skipSize * sizeof(float));
 								if (pLastTextureMask) {
 									memcpy32(ptrUVMask, pSpr->m_pVertexMaskUV,	(skipSize *sizeof(float)) >> 1);
-									ptrUVMask += skipSize >> 1;
+									ptrUVMask += (skipSize & ~1) >> 1;
 								}
 
 	#ifdef DEBUG_PERFORMANCE
@@ -1629,8 +1837,9 @@ void CKLBRenderingManager::draw() {
 				#ifdef DEBUG_PERFORMANCE  
 					m_renderStateChange++;
 				#endif
-				emitDrawCall	(&indexCount, &offsetIndex, &offsetVertex, offsetVertexHead, pLastTexture, pLastTextureMask);
-				ptrUVMask	= m_maskUVPtr;
+				textures[0] = pLastTexture;
+				textures[1] = pLastTextureMask;
+				emitDrawCall	(&indexCount, &offsetIndex, &offsetVertex, offsetVertexHead, textures, uniformIDs, buffers);
 				indexVCount = 0;
 				
 				// Support render state change.
@@ -1642,7 +1851,6 @@ void CKLBRenderingManager::draw() {
 				}
 
 				if (cmdType & RENDERCOMMAND_SETSHADER) {
-					m_stackShader[m_stackShaderIdx++] = m_pCurrShader;
 					m_pCurrShader	= pRCom->getShader();
 				}
 
@@ -1651,13 +1859,17 @@ void CKLBRenderingManager::draw() {
 					// case RENDERCOMMAND_CLEARDEPTH:
 					// case RENDERCOMMAND_CLEARSTENCIL:
 					pRCom->executeCommand();
+					if (cmdType & RENDERCOMMAND_STATECALLBACK) {
+						m_pCurrState = pRCom->getState();
+						pLastTexture = NULL;
+					}
 				}
 
 				if (cmdType & RENDERCOMMAND_CHANGETARGET) {
 				}
 
 				if (cmdType & RENDERCOMMAND_UNSETSHADER) {
-					m_pCurrShader	= m_stackShader[--m_stackShaderIdx];
+					m_pCurrShader	= m_pShaderInstance;
 				}
 
 				bufferShift |= (pCommand->m_uiStatus & FLAG_BUFFERSHIFT);
@@ -1667,22 +1879,11 @@ void CKLBRenderingManager::draw() {
 				// Go next command.
 				pCommand = pCommand->m_pNext;
 
-				if (pRCom->jump) {
-					renderStack[stackDepth  ] = pCommand;
-					renderStack[stackDepth+1] = pEnd;
-
-					stackDepth += 2;
-
-					//
-					// Switch to new rendering sub-queue
-					//
-					pCommand	= pRCom->jump;
-					pEnd		= pRCom->end;
-				}
 			}
 		}
-		emitDrawCall		(&indexCount, &offsetIndex, &offsetVertex, offsetVertexHead, pLastTexture, pLastTextureMask);
-		ptrUVMask	= m_maskUVPtr;
+		textures[0] = pLastTexture;
+		textures[1] = pLastTextureMask;
+		emitDrawCall		(&indexCount, &offsetIndex, &offsetVertex, offsetVertexHead, textures, uniformIDs, buffers);
 	} while ((stackDepth -= 2) >= 0);
 #ifdef DEBUG_PERFORMANCE
 	m_drawTime			= CPFInterface::getInstance().platform().nanotime() - m_drawTime;
@@ -1739,6 +1940,9 @@ CKLBSprite::CKLBSprite():
 	m_pColors			(NULL),
 	m_uiVertexCount		(0),
 	m_uiIndexCount		(0),
+	m_preserveImageCenter(false),
+	m_uiMaxVertexCount	(0),
+	m_uiMaxIndexCount	(0),
 	m_pImageAsset		(NULL),
 	m_pState			(NULL),
 	m_uiColor			(0x03EF02F6),
@@ -1747,6 +1951,7 @@ CKLBSprite::CKLBSprite():
 {
 	m_uiStatus			= 0;
 	m_commandType		= RENDERCOMMAND_SPRITE;
+	m_pState			= CKLBRenderingManager::getInstance().getDefaultSpriteState();
 }
 
 CKLBSprite::~CKLBSprite() {
@@ -2173,8 +2378,8 @@ void CKLBPolyline::setPointCount	(u32 ptsCount) {
 	u32 vertCount = (ptsCount-1) * 4;
 	u32 idxCount  = (ptsCount-1) * 6;
 
-	klb_assert(vertCount <= m_uiMaxVertexCount, "setPointCount reached limit.");
-	klb_assert(idxCount  <= m_uiMaxIndexCount , "setPointCount reached limit.");
+	klb_assertNull(vertCount <= m_uiMaxVertexCount, "setPointCount reached limit.");
+	klb_assertNull(idxCount  <= m_uiMaxIndexCount , "setPointCount reached limit.");
 
 	m_uiVertexCount					= (u16)vertCount;
 	m_uiIndexCount					= (u16)idxCount;
@@ -2220,7 +2425,7 @@ void CKLBPolyline::recomputeSegment(u32 idxSegment) {
 }
 
 void CKLBPolyline::setPoint			(u32 idx, float x, float y) {
-	klb_assert(idx < m_maxPts, "setPointCount reached limit.");
+	klb_assertNull(idx < m_maxPts, "setPointCount reached limit.");
 
 	u32 id = idx * 2;
 	m_points[id  ] = x;
@@ -2263,14 +2468,22 @@ CKLBDynSprite::CKLBDynSprite()
 {
 	_internalImg.m_pTextureAsset	= NULL;
 	this->m_pTexture				= NULL;
+	m_useTranslation				= false;
 }
 
 CKLBDynSprite::~CKLBDynSprite() {
 }
 
-bool CKLBDynSprite::setTriangleCount(u16 vertexCount, u16 indexCount) {
+bool CKLBDynSprite::setTriangleCount(u16 vertexCount, u16 indexCount, bool resetTexture) {
 	_internalImg.m_bAllocatedOutsideTexture = true;
-	
+
+	if ((m_uiMaxIndexCount >= indexCount) && (m_uiMaxVertexCount >= vertexCount)) {
+		return true;
+	}
+
+	KLBDELETEA(_internalImg.m_pXYCoord);
+	KLBDELETEA(m_pVertex);
+
 	// Vertex & index count
 
 	_internalImg.m_uiIndexCount		= indexCount;
@@ -2300,9 +2513,12 @@ bool CKLBDynSprite::setTriangleCount(u16 vertexCount, u16 indexCount) {
 		}
 
 		for (u32 n=0; n < vertexCount; n++) {
-			_internalImg.m_pIndex[n]	= (u16)n;
 			arrCol[n]					= 0xFFFFFFFF;
 			m_pLocalColors[n]			= 0xFFFFFFFF;
+		}
+
+		for (u32 n=0; n < indexCount; n++) {
+			_internalImg.m_pIndex[n]	= (u16)n;
 		}
 
 		if (VERTEX_SIZE > 4) {
@@ -2318,7 +2534,9 @@ bool CKLBDynSprite::setTriangleCount(u16 vertexCount, u16 indexCount) {
 		m_uiMaxVertexCount	= vertexCount;
 		m_uiMaxIndexCount	= indexCount;
 
-		m_pTexture			= NULL;
+		if (resetTexture) {
+			m_pTexture = NULL;
+		}
 		m_uiStatus			= FLAG_XYUPDATE | FLAG_COLORUPDATE | FLAG_UVUPDATE;
 	} else {
 		if	(arr)				{ KLBDELETEA(arr);				}
@@ -2457,6 +2675,18 @@ void CKLBDynSprite::setColor(const float* vec4) {
 	}
 }
 
+CKLBSprite::GEOMETRY_TYPE CKLBSprite::getGeometryType() const {
+	return GEOMETRY_STATIC;
+}
+
+CKLBSprite::GEOMETRY_TYPE CKLBDynSprite::getGeometryType() const {
+	return GEOMETRY_DYNAMIC;
+}
+
+CKLBSprite::GEOMETRY_TYPE CKLBSpriteScale9::getGeometryType() const {
+	return GEOMETRY_SCALE9;
+}
+
 void CKLBDynSprite::setVertexColor(CKLBNode* owner, u32 index, u32 color) {
 	// !!! WARNING !!!
 	// color is 4x8 bit in memory with RGBA order.
@@ -2466,13 +2696,15 @@ void CKLBDynSprite::setVertexColor(CKLBNode* owner, u32 index, u32 color) {
 		alpha += (alpha & 0x80) >> 7;
 		m_pLocalColors[index] = color;
 		m_uiStatus |= FLAG_COLORUPDATE;
-		owner->markUpColor();
+		if (owner) {
+			owner->markUpColor();
+		}
 	}
 }
 
 bool CKLBDynSprite::importXYUV		(CKLBImageAsset* pImage) {
-	klb_assert(pImage,"Null ptr");
-	klb_assert(pImage->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT), "Not a standard rectangular image");
+	klb_assertNull(pImage,"Null ptr");
+	klb_assertNull(pImage->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT), "Not a standard rectangular image");
 	//
 	// Import only rectangular shape into 2 triangles.
 	// 013 123 Source
@@ -2516,9 +2748,11 @@ void CKLBDynSprite::setTexture	(CKLBImageAsset* pImage) {
 	if (pImage) {
 		_internalImg.m_pTextureAsset	= pImage->getTexture();
 		this->m_pTexture				= pImage->getTexture()->m_pTextureUsage;
+		_internalImg.m_fileSource	= pImage->m_fileSource;
 	} else {
 		_internalImg.m_pTextureAsset	= NULL;
-		this->m_pTexture				= NULL;
+		this->m_pTexture				= CKLBRenderingManager::getInstance().m_pWhiteTextureUsage;
+		_internalImg.m_fileSource	= NULL;
 	}
 	
 	// May have change in vertex count.
@@ -2526,8 +2760,9 @@ void CKLBDynSprite::setTexture	(CKLBImageAsset* pImage) {
 }
 
 void CKLBDynSprite::setTexture	(CTextureUsage* pUsage) {
-		_internalImg.m_pTextureAsset	= NULL;
-		this->m_pTexture				= pUsage;
+	_internalImg.m_pTextureAsset	= NULL;
+	this->m_pTexture = pUsage ? pUsage : CKLBRenderingManager::getInstance().m_pWhiteTextureUsage;
+	m_uiStatus |= FLAG_BUFFERSHIFT;
 }
 
 void CKLBDynSprite::setVICount	(u32 vertexCount, u32 indexCount) {
@@ -2547,6 +2782,7 @@ CKLBSpriteScale9::CKLBSpriteScale9()
 ,m_width			(0)
 ,m_height			(0)
 ,m_pOriginalImage	(NULL)
+,m_deferRecompute	(false)
 {
 }
 
@@ -2558,18 +2794,276 @@ CKLBSpriteScale9::~CKLBSpriteScale9() {
 
 void CKLBSpriteScale9::setWidth(s32 width) {
 	if (width != m_width) {
-		klb_assert((width >= 0) && (width < 32768), "Invalid Width (0..32767)"); 
+		klb_assertNull((width >= 0) && (width < 32768), "Invalid Width (0..32767)");
 		m_width		= (s16)width;
-		recomputeVertex(CHANGE_X);
+		if (!m_deferRecompute) {
+			recomputeVertex(CHANGE_X);
+		}
 	}
 }
 
 void CKLBSpriteScale9::setHeight(s32 height) {
 	if (height != m_height) {
-		klb_assert((height >= 0) && (height < 32768), "Invalid Height (0..32767)"); 
+		klb_assertNull((height >= 0) && (height < 32768), "Invalid Height (0..32767)");
 		m_height	= (s16)height;
-		recomputeVertex(CHANGE_Y);
+		if (!m_deferRecompute) {
+			recomputeVertex(CHANGE_Y);
+		}
 	}
+}
+
+void CKLBSpriteScale9::endSizeUpdate() {
+	if (m_deferRecompute) {
+		m_deferRecompute = false;
+		recomputeVertex(CHANGE_X | CHANGE_Y);
+	}
+}
+
+/*
+ * Reloading a texture is deliberately handled at the asset-manager boundary.
+ * The loader installs the replacement texture before this routine walks the
+ * render-command allocation list.  Render commands can therefore be repaired
+ * in place without rebuilding the scene graph or changing command priority.
+ *
+ * A reload has four distinct participants:
+ *
+ * - the texture asset, which owns the replacement image definitions;
+ * - allocated sprite commands, which may still refer to an old definition;
+ * - the root node, which propagates replacement through node-owned assets;
+ * - data handlers and tasks, which maintain non-rendering references.
+ *
+ * The function below keeps those responsibilities separate.  In particular,
+ * replacing a sprite image is not a substitute for broadcasting the asset
+ * update: scripts and composite resources may hold the same named image while
+ * having no render command in the manager's allocation list.
+ *
+ * Texture validation
+ * ------------------
+ *
+ * Loading can legitimately return no object or an object of another asset
+ * type.  Neither case is an error for the reload request, so both return true
+ * without entering the texture-specific repair path.
+ *
+ * The root node is obtained before validation because it is the common owner
+ * used by the successful replacement path.  The exact target order also keeps
+ * singleton acquisition consistent with the normal asset reload entry point.
+ *
+ * Image traversal
+ * ---------------
+ *
+ * Every image belonging to the replacement texture is processed separately.
+ * Its registered name is the stable identity used to find old sprite images
+ * and to notify task, node, and data-handler users.
+ *
+ * The allocated-sprite list is walked from its retained head for every image.
+ * This is intentional: one texture may contain several independently named
+ * atlas images, and a render command can reference any one of them.
+ *
+ * Commands that are not sprites remain untouched.  A sprite is considered a
+ * replacement candidate only when it owns an old image, that image exposes a
+ * file source, and that source equals the replacement image name.
+ *
+ * Static sprite replacement
+ * -------------------------
+ *
+ * A static sprite can preserve its image center.  When that mode is enabled,
+ * the new image is converted to the equivalent top-left representation before
+ * switchImage installs it.  This preserves the sprite's visible placement
+ * even when the replacement atlas reports a different center.
+ *
+ * switchImage is responsible for the static sprite's texture, geometry, and
+ * asset-reference transition.  The reload path must not duplicate that work.
+ *
+ * Dynamic sprite replacement
+ * --------------------------
+ *
+ * Only translated dynamic sprites can be reconstructed from an atlas image.
+ * Other dynamic geometry was authored independently and is deliberately left
+ * alone even when its old image name happens to match.
+ *
+ * The replacement image is converted to top-left coordinates and supplied to
+ * setTexture.  Source UV and index buffers are then copied using the counts
+ * owned by the replacement image.
+ *
+ * Dynamic positions require an additional translation pass.  Each source
+ * vertex contributes one X and one Y coordinate, and the sprite's retained
+ * translation is added while copying them into its source position buffer.
+ *
+ * The loop uses the replacement image's vertex count.  UV, index, and position
+ * data consequently remain a coherent geometry set after an atlas reload.
+ *
+ * Scale-nine replacement
+ * ----------------------
+ *
+ * Scale-nine sprites retain their logical width and height while adopting a
+ * replacement image's border attributes.  useImage owns that transition and
+ * recomputes geometry unless a size update has explicitly been deferred.
+ *
+ * The geometry-type switch is exhaustive for the currently allocated sprite
+ * implementations.  Unknown future geometry kinds are ignored so that a
+ * texture reload cannot corrupt storage whose layout it does not understand.
+ *
+ * Notification order
+ * ------------------
+ *
+ * Once render commands for one named image have been repaired, tasks receive
+ * the update first.  The root node then replaces matching scene assets, and
+ * data handlers finally broadcast the same typed image replacement.
+ *
+ * This ordering lets task-owned state observe a valid render image before node
+ * traversal marks scene data dirty.  It also keeps handler callbacks after the
+ * engine's direct owners have completed their transitions.
+ *
+ * Texture-level completion
+ * ------------------------
+ *
+ * After every contained image has been processed, data handlers replace their
+ * texture-level references.  The root node's matrix/color and render state are
+ * then marked dirty so the next traversal consumes all updated geometry.
+ *
+ * A freshly loaded texture can finish this path without an external reference.
+ * The balanced increment/decrement pair deliberately exercises normal final
+ * reference handling in that case; it is not an accidental no-op.
+ *
+ * Ownership and lifetime invariants
+ * ---------------------------------
+ *
+ * The replacement asset remains owned by the asset manager throughout the
+ * command-list walk.  Image pointers borrowed from it therefore stay valid
+ * until all sprite, node, task, and data-handler transitions are complete.
+ *
+ * The allocation list itself is stable during this synchronous operation.
+ * Replacement helpers may change image ownership and geometry, but they do
+ * not register, release, or reorder the command currently being visited.
+ *
+ * m_pAllocNext is read after processing each command.  This keeps traversal
+ * independent of render-order links, which can change when a scale-nine image
+ * adopts a replacement render offset.
+ *
+ * The function reports successful handling rather than whether a matching
+ * sprite was found.  Callers request a reload operation; an absent texture or
+ * an image with no live render users still constitutes a completed request.
+ *
+ * Maintenance notes
+ * -----------------
+ *
+ * Keep geometry-specific repair inside the geometry-type switch.  Moving the
+ * shared notifications into individual cases would skip non-rendering users
+ * whenever no allocated sprite currently references the replacement image.
+ *
+ * Do not infer dynamic buffer lengths from the old sprite.  Atlas revisions
+ * may change vertex or index counts, and the replacement image is the only
+ * authoritative description of the copied source geometry.
+ *
+ * Do not replace the allocation traversal with scene-node traversal.  Render
+ * commands can be retained by engine systems that are not presently attached
+ * beneath the draw-resource root, yet their image references still require
+ * repair before later reuse.
+ *
+ * Keep the final dirty marks after texture-level handler replacement.  They
+ * form the publication boundary at which the reconstructed render state is
+ * ready for the next frame.
+ */
+bool
+CKLBAssetManager::reloadAssetByFileName(const char* fileName)
+{
+	CKLBAbstractAsset* loadedAsset =
+		loadAssetByFileName(fileName, NULL, false, false);
+	CKLBNode* rootNode = CKLBDrawResource::getInstance().getRoot();
+	if (!loadedAsset || loadedAsset->getAssetType() != ASSET_TEXTURE) {
+		return true;
+	}
+
+	CKLBRenderingManager& rendering = CKLBRenderingManager::getInstance();
+	CKLBRenderCommand* renderList = rendering.m_pAllocatedSpriteList;
+	CKLBTextureAsset* texture =
+		static_cast<CKLBTextureAsset*>(loadedAsset);
+	for (s32 imageIndex = 0; imageIndex < texture->m_imageCount; ++imageIndex) {
+		CKLBImageAsset* image = texture->m_pImages[imageIndex];
+		const char* imageName = image->getName();
+
+		if (renderList) {
+			CKLBRenderCommand* command = renderList;
+			do {
+				if (command->m_commandType & RENDERCOMMAND_SPRITE) {
+					CKLBSprite* sprite = static_cast<CKLBSprite*>(command);
+					CKLBImageAsset* previousImage = sprite->m_pImageAsset;
+					if (previousImage && previousImage->getFileSource()
+					 && strcmp(previousImage->getFileSource(), imageName) == 0) {
+						switch (sprite->getGeometryType()) {
+						case CKLBSprite::GEOMETRY_STATIC:
+							if (sprite->m_preserveImageCenter) {
+								s32 centerX;
+								s32 centerY;
+								image->getCenter(centerX, centerY);
+								image->getAsTopLeftImage(centerX, centerY);
+							}
+							sprite->switchImage(image);
+							break;
+
+						case CKLBSprite::GEOMETRY_DYNAMIC: {
+							CKLBDynSprite* dynamicSprite =
+								static_cast<CKLBDynSprite*>(sprite);
+							if (!dynamicSprite->m_useTranslation) {
+								break;
+							}
+							s32 centerX;
+							s32 centerY;
+							image->getCenter(centerX, centerY);
+							dynamicSprite->setTexture(
+								image->getAsTopLeftImage(centerX, centerY));
+
+							memcpy(dynamicSprite->getSrcUVBuffer(),
+								image->getUVBuffer(),
+								image->getVertexCount() * 2 * sizeof(float));
+							memcpy(dynamicSprite->getSrcIndexBuffer(),
+								image->getIndexBuffer(),
+								image->getIndexCount() * sizeof(u16));
+
+							float* destinationXY =
+								dynamicSprite->getSrcXYBuffer();
+							float* sourceXY = image->getXYBuffer();
+							const float translationX =
+								dynamicSprite->m_translationX;
+							const float translationY =
+								dynamicSprite->m_translationY;
+							for (u32 vertex = 0;
+								 vertex < image->getVertexCount();
+								 ++vertex) {
+								*destinationXY++ =
+									*sourceXY++ + translationX;
+								*destinationXY++ =
+									*sourceXY++ + translationY;
+							}
+							break;
+						}
+
+						case CKLBSprite::GEOMETRY_SCALE9:
+							static_cast<CKLBSpriteScale9*>(sprite)->useImage(image);
+							break;
+
+						default:
+							break;
+						}
+					}
+				}
+				command = command->m_pAllocNext;
+			} while (command);
+		}
+
+		CKLBTaskMgr::getInstance().notifyAssetUpdate(imageName, image);
+		rootNode->replaceAsset(imageName, image);
+		CKLBDataHandler::broadcastToHandlers(imageName, image);
+	}
+
+	CKLBDataHandler::replaceTexture(loadedAsset);
+	rootNode->markUpMatrixAndColor();
+	rootNode->markUpRender();
+	if (!loadedAsset->getRefCount()) {
+		loadedAsset->incrementRefCount();
+		loadedAsset->decrementRefCount();
+	}
+	return true;
 }
 
 void CKLBSpriteScale9::useImage(CKLBImageAsset* pImage) {
@@ -2610,7 +3104,9 @@ void CKLBSpriteScale9::useImage(CKLBImageAsset* pImage) {
 		m_fBottom = (float)bottom;
 
 		// Adapt to new size.
-		recomputeVertex(CHANGE_X | CHANGE_Y);
+		if (!m_deferRecompute) {
+			recomputeVertex(CHANGE_X | CHANGE_Y);
+		}
 
 		changeOrder(CKLBRenderingManager::getInstance(), oldOrder);
 	} else {
@@ -2635,47 +3131,70 @@ void CKLBSpriteScale9::recomputeVertex(u32 mode) {
 	//  this->m_pOriginalImage : all info.
 	//  -> Recompute sizes.
 
-	// When width change :
-	float space;
-
 	if (mode & CHANGE_X) {
-		// Computation compatible with centerX, centerY coordinate system.
-		// Compute new width with low clipping
-		// Compute new X
-		// 26AE = 1 + NewMiddle
-		space = (float)(m_width - (m_left + m_right));
-		if (space < 0.0f) { space = 0.0f; }
-
-		float* pVertex = &_internalImg.m_pXYCoord[4];
-		for (int n=0; n<4; n++) {
-			pVertex[0] = pVertex[-2] + space;
-			pVertex += 8;	// Skip 4 vertex XY
+		float middle = (float)(m_width - (m_left + m_right));
+		float left = (float)m_left;
+		float right = m_fRight;
+		if (middle < 0.0f) {
+			float border = left + right;
+			if (border > 0.0f) {
+				float scale = (middle + border) / border;
+				left *= scale;
+				right *= scale;
+			} else {
+				left = 0.0f;
+				right = 0.0f;
+			}
+			middle = 0.0f;
 		}
 
-		// 37BF = 2 + Right
-		pVertex = &_internalImg.m_pXYCoord[6];
+		float* pVertex = _internalImg.m_pXYCoord;
 		for (int n=0; n<4; n++) {
-			pVertex[0] = pVertex[-2] + m_fRight;
+			pVertex[2] = pVertex[0] + left;
+			pVertex += 8;	// Skip 4 vertex XY
+		}
+		pVertex = &_internalImg.m_pXYCoord[2];
+		for (int n=0; n<4; n++) {
+			pVertex[2] = pVertex[0] + middle;
+			pVertex += 8;	// Skip 4 vertex XY
+		}
+		pVertex = &_internalImg.m_pXYCoord[4];
+		for (int n=0; n<4; n++) {
+			pVertex[2] = pVertex[0] + right;
 			pVertex += 8;	// Skip 4 vertex XY
 		}
 	}
 
-	// When height change :
 	if (mode & CHANGE_Y) {
-		// 89AB = 4 + New Middle
-		// CDEF = 8 + Bottom
-		space = (float)(m_height - (m_top + m_bottom));
-		if (space < 0.0f) { space = 0.0f; }
-
-		float* pVertex = &_internalImg.m_pXYCoord[(8*2)+1];	// Y Coord
-		for (int n=0; n<4; n++) {
-			pVertex[0] = pVertex[-8] + space;
-			pVertex += 2;	// Next vertex XY
+		float middle = (float)(m_height - (m_top + m_bottom));
+		float top = (float)m_top;
+		float bottom = m_fBottom;
+		if (middle < 0.0f) {
+			float border = top + bottom;
+			if (border > 0.0f) {
+				float scale = (middle + border) / border;
+				top *= scale;
+				bottom *= scale;
+			} else {
+				top = 0.0f;
+				bottom = 0.0f;
+			}
+			middle = 0.0f;
 		}
 
-		pVertex = &_internalImg.m_pXYCoord[(12*2)+1]; // Y Coord
+		float* pVertex = &_internalImg.m_pXYCoord[1];
 		for (int n=0; n<4; n++) {
-			pVertex[0] = pVertex[-8] + m_fBottom;
+			pVertex[8] = pVertex[0] + top;
+			pVertex += 2;	// Next vertex XY
+		}
+		pVertex = &_internalImg.m_pXYCoord[9];
+		for (int n=0; n<4; n++) {
+			pVertex[8] = pVertex[0] + middle;
+			pVertex += 2;	// Next vertex XY
+		}
+		pVertex = &_internalImg.m_pXYCoord[17];
+		for (int n=0; n<4; n++) {
+			pVertex[8] = pVertex[0] + bottom;
 			pVertex += 2;	// Next vertex XY
 		}
 	}
@@ -2686,9 +3205,10 @@ void CKLBSpriteScale9::recomputeVertex(u32 mode) {
 // ------------------------------------------
 
 CKLBRenderState::CKLBRenderState()
-:jump				(NULL)
-,end				(NULL)
+:m_pState			(&internalState)
 ,pShaderInstance	(NULL)
+,m_pRenderTarget	(NULL)
+,m_pStateCallback	(NULL)
 ,m_depthStart		(0.0f)
 ,m_depthEnd			(1.0f)
 {
@@ -2699,6 +3219,10 @@ CKLBRenderState::~CKLBRenderState()	{
 }
 
 void CKLBRenderState::executeCommand() {
+	if (m_commandType & RENDERCOMMAND_CHANGETARGET) {
+		CKLBOGLWrapper::getInstance().setRenderFrame(m_pRenderTarget);
+	}
+
 	GLbitfield mask = 0;
 
 	if (m_commandType & RENDERCOMMAND_CLEARCOLOR)	{	
@@ -2729,6 +3253,33 @@ void CKLBRenderState::executeCommand() {
 #else
 		dglDepthRangef(m_depthStart, m_depthEnd);
 #endif
+	}
+
+	if (m_commandType & RENDERCOMMAND_STATECALLBACK) {
+		SRenderState* pState = m_pStateCallback->callback(m_pStateCallback->context);
+		if (pState) {
+			m_pState = pState;
+		}
+	}
+}
+
+void CKLBRenderState::setRenderTarget(CFrame* pFrame) {
+	m_pRenderTarget = pFrame;
+	if (pFrame) {
+		m_commandType |= RENDERCOMMAND_CHANGETARGET;
+	} else {
+		m_commandType &= ~RENDERCOMMAND_CHANGETARGET;
+	}
+}
+
+void CKLBRenderState::setStateCallback(SRenderStateCallback* pCallback) {
+	m_pStateCallback = pCallback;
+	if (pCallback) {
+		m_commandType &= ~RENDERCOMMAND_CHANGERENDERSTATE;
+		m_commandType |= RENDERCOMMAND_EXECUTECOMMAND | RENDERCOMMAND_STATECALLBACK;
+	} else {
+		m_commandType &= ~RENDERCOMMAND_STATECALLBACK;
+		m_commandType |= RENDERCOMMAND_CHANGERENDERSTATE;
 	}
 }
 
@@ -2808,44 +3359,30 @@ void CKLBRenderState::applyNode(CKLBNode* pNode) {
 		// Logical Screen Space --> Physical
 		//
 		CKLBDrawResource& pDRsc = CKLBDrawResource::getInstance();
-		int x0, y0, x1, y1, xo0, yo0,xo1, yo1;
-		x0 = m_scissorPost[0];
-		y0 = m_scissorPost[1];
-		x1 = m_scissorPost[2];
-		y1 = m_scissorPost[3];
-		pDRsc.toPhisicalPosition(x0, y0, xo0, yo0);
-		pDRsc.toPhisicalPosition(x1, y1, xo1, yo1);
-
-		// phisical size. logical size keep.
-		float localScissor[4]; 
-		localScissor[0] = xo0;
-		localScissor[1] = yo0;
-		localScissor[2] = xo1;
-		localScissor[3] = yo1;
-	
+		float logicalX0 = m_scissorPost[0];
+		float logicalY0 = m_scissorPost[1];
+		s32 x0 = (s32)pDRsc.toPhisical(logicalX0) + pDRsc.screenBorderX();
+		s32 y0 = (s32)pDRsc.toPhisical(logicalY0) + pDRsc.screenBorderY();
+		float logicalY1 = m_scissorPost[3];
+		s32 x1 = (s32)ceilf(pDRsc.toPhisical(m_scissorPost[2])) + pDRsc.screenBorderX();
+		s32 y1 = (s32)ceilf(pDRsc.toPhisical(logicalY1)) + pDRsc.screenBorderY();
 
 		//
 		// convert x,y,x,y into x,y,w,h
 		//
-		m_scissorPost[2] -= m_scissorPost[0];
-		m_scissorPost[3] -= m_scissorPost[1];
-
-		localScissor[2] -= localScissor[0];	// roll back to width
-		localScissor[3] -= localScissor[1];	// roll back to height
-
-//		localScissor[0] -= pDRsc.ox();
-		localScissor[1] -= pDRsc.oy()*2;
+		m_scissorPost[2] -= logicalX0;
+		m_scissorPost[3] = logicalY1 - logicalY0;
 
 		//
 		// Float to int for GL (expensive float->int conv)
 		//
 		// Trick : GL Coordinate system is opposite on Bottom-Left, our system is Top-Left
-		s32 h = (s32)localScissor[3];
+		s32 h = y1 - y0;
 		if (h < 0) { h = 0; }
-		s32 w = (s32)localScissor[2];
+		s32 w = x1 - x0;
 		if (w < 0) { w = 0; }
-		internalState.enableScissor	(	(s32)localScissor[0],
-										(pDRsc.vp_height() - (s32)localScissor[1]-h ),
+		internalState.enableScissor	(	x0,
+										(pDRsc.phisicalHeight() - y0 - h),
 										w,
 										h);
 	} else {
@@ -2873,4 +3410,19 @@ void CKLBRenderState::setUse(bool useRenderState, bool useCommand, CShaderInstan
 		this->pShaderInstance = NULL;
 		m_commandType &= ~RENDERCOMMAND_SETSHADER;
 	}
+}
+
+void
+CKLBSpriteScale9::beginSizeUpdate()
+{
+	m_deferRecompute = true;
+}
+
+void
+CKLBRenderState::getClearColor(float* color)
+{
+	color[0] = m_colorClearRed;
+	color[1] = m_colorClearGreen;
+	color[2] = m_colorClearBlue;
+	color[3] = m_colorClearAlpha;
 }

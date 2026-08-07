@@ -52,6 +52,11 @@ private:
 	static int luaGetFrameID	(lua_State * L);
     static int luaGetElapsedTime(lua_State * L);
     static int luaForbidSleep   (lua_State * L);
+	static int luaGetLangCodeRAW         (lua_State * L);
+	static int luaGetCountryCodeRAW      (lua_State * L);
+	static int luaGetPreferredLangCodeRAW(lua_State * L);
+	static int luaQuitGame               (lua_State * L);
+	static int luaGetGyroPolar           (lua_State * L);
 	enum {
 		SCRIPT_TIMER_COUNT = 10,
 	};

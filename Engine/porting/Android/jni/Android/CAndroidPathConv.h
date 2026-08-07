@@ -18,19 +18,21 @@
 
 #include "AndroidFileLocation.h"
 
-class CAndroidPathConv
+class CKLBPathConv
 {
 private:
-    CAndroidPathConv();
-    virtual ~CAndroidPathConv();
+    CKLBPathConv();
+    virtual ~CKLBPathConv();
 
 public:
-    static CAndroidPathConv& getInstance();
+    static CKLBPathConv& getInstance();
 
     const char * fullpath(const char * url, const char * suffix = 0 , bool* isReadOnly=0);
 
     const char * install() { build(); return m_install; }
     const char * external() { build(); return m_external; }
+
+    void ensureExternalDirectory();
 
 private:
     const char * makePath(const char * path, const char * suffix, const char * base);
@@ -41,6 +43,8 @@ private:
     void create_install();
 
 private:
+    static CKLBPathConv m_instance;
+
     bool                m_build;
     const char      *   m_external;
     const char      *   m_install;

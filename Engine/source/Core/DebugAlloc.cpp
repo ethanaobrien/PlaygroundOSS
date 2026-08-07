@@ -34,7 +34,7 @@ operator new(size_t size)
     if( size <= 0 ) { return ret; }
 
 	ret = malloc(size);
-	klb_assert(ret, "memory allocation failed.");
+	klb_assertNull(ret, "memory allocation failed.");
 	return ret;
 }
 
@@ -49,7 +49,7 @@ operator new[](size_t size)
     if( size <= 0 ) { return ret; }
 
     ret = malloc(size);
-	klb_assert(ret, "memory allocation failed.");
+	klb_assertNull(ret, "memory allocation failed.");
 	return ret;
 }
 

@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -84,11 +84,13 @@ bool
 CKLBBinArray::loadAsset(const char * path)
 {
 	IPlatformRequest& pfif = CPFInterface::getInstance().platform();
-	IReadStream * pStream = pfif.openReadStream(path, pfif.useEncryption());
+	const u32 userEncryptionFormat = 1U << 24;
+	IReadStream * pStream = pfif.openReadStream(path, pfif.useEncryption(), userEncryptionFormat);
 	if(!pStream || pStream->getStatus() != IReadStream::NORMAL) {
 		delete pStream;
 		return false;
 	}
+	klb_assert(pStream->isUserEncrypted(), "Try to read an encrypted file which is NOT user encrypt");
 
 	size_t size = pStream->getSize();
 	u8 * pBuf = KLBNEWA(u8, size);

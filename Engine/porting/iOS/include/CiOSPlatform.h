@@ -72,10 +72,10 @@ public:
     s64 nanotime();
     
     // ファイルシステム
-    IReadStream * openReadStream(const char * filename, bool decrypt);
+    IReadStream * openReadStream(const char * filename, bool decrypt, u32 mode = 0);
     
     ITmpFile * openTmpFile(const char * tmpPath);
-    void removeTmpFile(const char * tmpPath);
+    int removeTmpFile(const char * tmpPath);
 	virtual bool removeFileOrFolder	 (const char * filePath);
 	virtual u32 getFreeSpaceExternalKB();
 	virtual u32 getPhysicalMemKB	 ();

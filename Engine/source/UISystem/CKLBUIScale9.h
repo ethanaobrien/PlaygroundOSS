@@ -84,9 +84,9 @@ public:
 
 private:
 	u32					m_handle;
-	CKLBTextureAsset*	m_texture;
 	const char*			m_asset;
 	CKLBSpriteScale9*	m_scale9;
+	CKLBTextureAsset*	m_texture;
 	
 	bool			    m_bInit;
 	u32				    m_order;

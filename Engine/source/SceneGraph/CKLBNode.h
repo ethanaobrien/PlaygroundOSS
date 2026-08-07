@@ -91,6 +91,7 @@
 
 class CKLBNode;
 class CKLBUITask;
+class CKLBAsset;
 
 /*!
 * \class CKLBSystem
@@ -143,6 +144,17 @@ struct SColorVector {
 	u8		m_type;	// color / identity
 	float	m_vector[4];
 	SColorVector();
+
+	// Builds a fully specified colour vector. Defined inline so that constant
+	// colour vectors declared at file scope are folded into read only data
+	// instead of needing a run time initializer.
+	SColorVector(u8 type, float r, float g, float b, float a) {
+		m_type		= type;
+		m_vector[0]	= r;
+		m_vector[1]	= g;
+		m_vector[2]	= b;
+		m_vector[3]	= a;
+	}
 };
 
 class CKLBController;
@@ -183,6 +195,7 @@ public:
 	bool		setName				(const char * name);
 	CKLBNode*	search				(const char* name);
 	CKLBNode*	searchFirstByTypeID	(u32 typeID);
+	void		getWorldPosition	(float x, float y, float* worldX, float* worldY);
 
 	inline const char * getName() const { return m_name; }
 
@@ -237,6 +250,15 @@ public:
 	virtual
 	u32			getPriority			();
 
+	virtual
+	void		replaceAsset		(const char* sourceName, CKLBAsset* replacement) {
+		CKLBNode* child = m_pChild;
+		while (child) {
+			child->replaceAsset(sourceName, replacement);
+			child = child->m_pBrother;
+		}
+	}
+
 	void		markUpTree			();
 
 	inline		
@@ -271,7 +293,24 @@ public:
 	inline
 	u16			getLayer			()	{ return m_layer;	}
 
+	inline
+	u16			getMaskLayer		()	{ return m_maskLayer; }
+
+	inline
+	void		setMaskLayer		(u16 layer) { m_maskLayer = layer; }
+
 	void		setRender			(CKLBRenderCommand* pRender, u32 index = 0);
+
+	void		setRenderMode		(u8 mode) {
+		u8 localMode = m_renderMode & 0x0F;
+		if (localMode != mode) {
+			u8 inheritedMode = m_renderMode & 0xF0;
+			u8 effectiveMode = inheritedMode ? (inheritedMode >> 4) : mode;
+			m_renderMode = inheritedMode | mode;
+			propagateRenderMode(effectiveMode << 4);
+			applyRenderMode(effectiveMode);
+		}
+	}
 
 	void		setRenderOnDestroy	(bool delete_) { this->m_deleteRender = delete_; }
 
@@ -279,9 +318,15 @@ public:
 
 	inline
 	CKLBRenderCommand*	getRender	(u32 index = 0)	{
-		klb_assert(index < m_renderCount, "invalid render index");
+		klb_assertNull(index < m_renderCount, "invalid render index");
 		return m_pRender[index];
 	}
+
+	inline
+	u16 getRenderCount() const { return m_renderCount; }
+
+	inline
+	CKLBRenderCommand ** getRenderList() { return m_pRender; }
 
 	void		setTranslate		(float x, float y)	{
 		if ((x != m_matrix.m_matrix[MAT_TX]) || (y != m_matrix.m_matrix[MAT_TY])) {
@@ -476,6 +521,10 @@ public:	// Public for now...
 
 protected:
 	void				releaseSlots();
+	void				propagateRenderMode(u8 inheritedMode);
+	void				applyRenderMode(u8 mode);
+	void				setInheritedRenderMode(u8 inheritedMode);
+	void				searchMaskRange(CKLBNode* pNode, CKLBNode** pMaskStart, CKLBNode** pMaskEnd);
 
 // Refactored for more compact class.
 public:		SMatrix2D 			m_matrix;
@@ -499,18 +548,22 @@ protected:	CKLBRenderCommand*	m_renderSlot;
 public:		float				m_rot;
 public:		float				m_scaleX;
 public:		float				m_scaleY;
-protected:	u32					m_renderCount;
+protected:	u16					m_renderCount;
 
 protected:	u16					m_groupID;
 public:		u16					m_status;
 protected:	u16					m_layer;
+protected:	u16					m_maskLayer;
 	// Was necessary in flash and necessary for flash leaf too.
 	// Can reuse in other systems. 
 public:		u16					m_movieID;
 public:		u16					m_updateFrame;
 private:	u16					m_nameLength;
 
-protected:	bool				m_isAnimated;
+protected:	u8					m_isAnimated;
+// SWF rendering packs the requested and inherited display modes into nibbles.
+// Low nibble is this node's requested mode; high nibble is its inherited mode.
+protected:	u8					m_renderMode;
 protected:	bool				m_deleteRender;
 protected:	bool				m_bInternalNode;
 public:		bool				m_useParentColor;

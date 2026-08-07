@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -76,25 +76,13 @@ void CKLBActivityIndicatorNode::recomputeCustom() {
 	}
 }
 
-void CKLBActivityIndicatorNode::setWidth	(u32 width) {
-	if (nativeInputItem && (width != m_width)) {
-		CKLBDrawResource& draw = CKLBDrawResource::getInstance();
-		int pw, ph;
-        
+void CKLBActivityIndicatorNode::setSize(u32 width, u32 height) {
+	if (nativeInputItem && ((width != m_width) || (height != m_height))) {
 		m_width = width;
-        
-		draw.toPhisicalSize(m_width, m_height, pw, ph);
-		nativeInputItem->resize(pw, ph);
-	}
-}
+		m_height = height;
 
-void CKLBActivityIndicatorNode::setHeight	(u32 height) {
-	if (nativeInputItem && (height != m_height)) {
 		CKLBDrawResource& draw = CKLBDrawResource::getInstance();
 		int pw, ph;
-        
-		m_height = height;
-        
 		draw.toPhisicalSize(m_width, m_height, pw, ph);
 		nativeInputItem->resize(pw, ph);
 	}

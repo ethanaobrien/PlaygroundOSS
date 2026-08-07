@@ -97,6 +97,7 @@ CKLBScrollBarIF::CKLBScrollBarIF(CKLBLuaTask * pOwner)
 , m_bReady      (false)
 , m_pNode       (NULL)
 , m_pBaseNode   (NULL)
+, m_pDynSprite  (NULL)
 , m_overScroll  (false)
 , m_pOwner      (pOwner)
 , m_margin_top  (0)
@@ -107,18 +108,15 @@ CKLBScrollBarIF::CKLBScrollBarIF(CKLBLuaTask * pOwner)
 , m_hide        (false)
 , m_timeHide    (0)
 , m_bShortHide  (true)
+, m_showUpdate  (false)
+, m_active      (false)
 , m_callback    (NULL)
 {
 }
 
 CKLBScrollBarIF::~CKLBScrollBarIF()
 {
-    if(m_texHandle) { CKLBDataHandler::releaseHandle(m_texHandle); }
-	if(m_callback) {
-		KLBDELETEA(m_callback);	// 2012.11.29  解放漏れ修正
-		m_callback = NULL;
-	}
-    if(m_pScrMgr) { KLBDELETE(m_pScrMgr); }
+	die();
 }
 
 bool
@@ -130,6 +128,25 @@ CKLBScrollBarIF::init(
 		const char * callback,
 		u32 colorNormal, u32 colorSelect, bool vert, bool active, bool hide_mode)
 {
+	/*
+	 * A scrollbar interface can be initialized again after construction.
+	 * Release any image, callback, and sprite state owned by the previous
+	 * setup while retaining the scroll manager that belongs to this object.
+	 * This keeps repeated initialization from leaking the prior resources.
+	 * The base node is handled separately because it may still be attached
+	 * to the caller's scene graph after the other resources are released.
+	 * Detach it from that graph before deletion so the parent cannot retain
+	 * a stale child link.  A successful setup below will create and attach
+	 * a replacement node for the new scrollbar resources.
+	 *
+	 */
+	die(false);
+	if(m_pBaseNode && m_pBaseNode->getParent()) {
+		m_pBaseNode->getParent()->removeNode(m_pBaseNode);
+		KLBDELETE(m_pBaseNode);
+		m_pBaseNode = NULL;
+	}
+
 	// 初期化前にCKLBScrollMgr が登録されている必要がある。
 	// 登録されていない場合は初期化失敗。
 	if(!m_pScrMgr) {
@@ -245,7 +262,7 @@ CKLBScrollBarIF::init(
 }
 
 void
-CKLBScrollBarIF::die()
+CKLBScrollBarIF::die(bool deleteScrollMgr)
 {
 	CKLBDataHandler::releaseHandle(m_texHandle);
 	m_texHandle = 0;
@@ -254,8 +271,10 @@ CKLBScrollBarIF::die()
 		KLBDELETEA( m_callback );	// 2012.11.29  解放漏れ修正
 		m_callback = NULL;
 	}
-    if(m_pScrMgr) { KLBDELETE(m_pScrMgr); }
-	m_pScrMgr = NULL;
+	if(deleteScrollMgr) {
+		if(m_pScrMgr) { KLBDELETE(m_pScrMgr); }
+		m_pScrMgr = NULL;
+	}
 }
 
 void
@@ -350,6 +369,19 @@ void
 CKLBScrollBarIF::setTouchActive(bool active) 
 {
 	m_active = active;
+	if (!active) {
+		reset();
+	}
+}
+
+void
+CKLBScrollBarIF::reset()
+{
+	if (m_state == S_DRAG && m_mode) {
+		setMode(0);
+	}
+	m_state = S_WAIT;
+	m_tid = -1;
 }
 
 void
@@ -493,11 +525,11 @@ CKLBScrollBarIF::execute(u32 deltaT)
 			m_pBaseNode->setColorMatrix(vec);
 		}
 	}
-	// 無効にされていたら何もしない。
-    if(!m_enable) { return; }
+	// 無効かつ表示更新も停止されていたら何もしない。
+    if(!m_enable && !m_showUpdate) { return; }
 		
 	// 表示されていて操作が許可されている場合は操作を受け付ける
-    if(m_bReady && m_visible && m_active) { procUserCtrl(); }
+    if(m_bReady && m_visible && m_active && m_enable) { procUserCtrl(); }
 
 	// 操作結果をスクロールマネージャに通し、最終的なバーの表示位置を取得する
 	if(m_pScrMgr) {
@@ -579,7 +611,9 @@ CKLBScrollBarIF::procUserCtrl()
 					    m_state = S_DRAG_IGNORE;
 				    }
 				    m_tid = item->id;	// 操作に使われたポイントIDを記録する
-				    tpq.useItem(item, this);
+				    if(m_mode) {
+					    tpq.useItem(item, this);
+				    }
 			    }
 		    }
 		    break;
@@ -619,11 +653,12 @@ CKLBScrollBarIF::procUserCtrl()
 			    }
 
 			    // ドラッグ座標をコールバックに通知する。
-			    tpq.useItem(item, this);
+			    if(m_mode) {
+				    tpq.useItem(item, this);
+			    }
 		    }
 		    break;
 	    case PAD_ITEM::RELEASE:
-	    case PAD_ITEM::CANCEL:
 		    {					
 			    // このタスクのステートがドラッグ中でない限り
 			    // そのドラッグは他の用途のためのドラッグ操作。
@@ -631,16 +666,20 @@ CKLBScrollBarIF::procUserCtrl()
                 if(m_state == S_WAIT || m_tid != item->id) { break; }
 					
 			    if (m_state == S_DRAG) {
-				    setMode(0); // Selected Mode
-
 				    CKLBScriptEnv::getInstance().call_eventScrollBar(m_callback, m_pOwner, SCROLLBAR_RELEASE, getPosition());
+				    if (m_state == S_DRAG) {
+					    setMode(0); // Selected Mode
+				    }
 			    }
+
+			    m_state = S_WAIT;
+			    m_tid = -1;	// そのIDはリリースされたので、操作が行われていない状態に戻す
 
 			    // リリースされた座標をコールバックに通知する。
 			    tpq.useItem(item, this);
-			    m_state = S_WAIT;
-			    m_tid = -1;	// そのIDはリリースされたので、操作が行われていない状態に戻す
 		    }
+		    break;
+	    case PAD_ITEM::CANCEL:
 		    break;
 	    }
     }

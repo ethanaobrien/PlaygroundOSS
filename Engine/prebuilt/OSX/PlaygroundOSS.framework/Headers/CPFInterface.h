@@ -148,10 +148,12 @@ public:
 
 	//! ゲーム終了処理
 	/*!
+	  \param complete   true for final process shutdown; false when preparing an in-process reboot.
+
 	  ゲーム起動中に確保されたリソースをすべて破棄する。
 	  アプリケーション終了のタイミングでプラットフォーム側から呼び出される。
 	  */
-	virtual void finishGame() = 0;
+	virtual void finishGame(bool complete) = 0;
 
 	//! 画面情報通知
 	/*!

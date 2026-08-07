@@ -19,6 +19,9 @@
 
 #include "CPFInterface.h"
 #include "OSWidget.h"
+#if defined(__ANDROID__)
+#include "KLBOpenSLNewEngine.h"
+#endif
 ;
 
 IWidget::~IWidget() {}
@@ -26,8 +29,40 @@ IWidget::~IWidget() {}
 IClientRequest::IClientRequest() {}
 IClientRequest::~IClientRequest() {}
 
-IPlatformRequest::IPlatformRequest() {}
+IPlatformRequest::IPlatformRequest()
+: m_audio(NULL)
+, m_bNoDefaultFont(false)
+, m_audioFrameEnabled(true)
+{}
 IPlatformRequest::~IPlatformRequest() {}
+
+bool IPlatformRequest::init() {
+#if defined(__ANDROID__)
+	m_audio = KLBOpenSLNewEngine::getInstance();
+#else
+	m_audio = getNewAudioImplementation();
+#endif
+	m_audio->init();
+	return true;
+}
+
+void IPlatformRequest::shutdownAudioSystem() {
+	m_audio->shutdown();
+}
+
+bool IPlatformRequest::isSafeAreaScreen() {
+	return false;
+}
+
+void IPlatformRequest::getSafeAreaInset(float* insets) {
+	insets[0] = 0.0f;
+	insets[1] = 0.0f;
+	insets[2] = 0.0f;
+	insets[3] = 0.0f;
+}
+
+void IPlatformRequest::registerScriptSource(const char* /*source*/, int /*sourceSize*/, const char* /*sourceName*/) {
+}
 
 CPFInterface * CPFInterface::instance = NULL;
 

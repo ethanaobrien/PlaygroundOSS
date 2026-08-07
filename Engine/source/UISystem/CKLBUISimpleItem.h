@@ -18,6 +18,8 @@
 
 #include "CKLBUITask.h"
 
+class CKLBImageAsset;
+
 /*!
 * \class CKLBUISimpleItem
 * \brief Simple Item task Class
@@ -36,8 +38,10 @@ public:
 	virtual u32 getClassID();
 	static CKLBUISimpleItem* create(CKLBUITask* pParent, CKLBNode* pNode, u32 order, float x, float y, const char* asset);
 	bool initUI (CLuaState& lua);
+	int  commandUI(CLuaState& lua, int argc, int cmd);
 	void execute(u32 deltaT);
 	void dieUI  ();
+	bool setMaskAsset(const char* asset);
 
 	inline virtual void setOrder(u32 order) {
 		if (order != m_order) {
@@ -53,6 +57,8 @@ private:
 	u32				m_order;
 	const char*		m_asset;
 	u32				m_handle;
+	u32				m_maskHandle;
+	CKLBImageAsset*	m_pMaskTex;
 	CKLBNode	*	m_pNode;
 
 	static	PROP_V2		ms_propItems[];

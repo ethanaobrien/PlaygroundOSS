@@ -14,6 +14,7 @@
    limitations under the License.
 */
 #include "CKLBLuaLibLANG.h"
+#include "CKLBGameApplication.h"
 #include "CKLBUtility.h"
 
 static ILuaFuncLib::DEFCONST defcmd[] = {
@@ -32,6 +33,71 @@ void CKLBLuaLibLANG::addLibrary()
 	addFunction("LANG_removeString",	CKLBLuaLibLANG::luaRemoveString);
 	addFunction("LANG_useDB",			CKLBLuaLibLANG::luaUseDB);
 	addFunction("LANG_loadGroup",		CKLBLuaLibLANG::luaLoadGroup);
+	addFunction("LANG_setFolder",		CKLBLuaLibLANG::luaSetFolder);
+	addFunction("LANG_setStringGetCB",	CKLBLuaLibLANG::luaSetStringGetCB);
+	addFunction("LANG_testStringCB",	CKLBLuaLibLANG::luaTestStringCB);
+}
+
+int
+CKLBLuaLibLANG::luaSetFolder(lua_State * L)
+{
+	CLuaState lua(L);
+	if (lua.numArgs() != 1) {
+		lua.retBool(false);
+		return 1;
+	}
+
+	const char* folder = NULL;
+	if (!lua.isNil(1)) {
+		folder = lua.getString(1);
+	}
+	CKLBGameApplication& application = static_cast<CKLBGameApplication&>(CPFInterface::getInstance().client());
+	lua.retBool(application.setLanguageFolder(folder));
+	return 1;
+}
+
+int
+CKLBLuaLibLANG::luaSetStringGetCB(lua_State * L)
+{
+	CLuaState lua(L);
+	if (lua.numArgs() != 1) {
+		lua.retBool(false);
+		return 1;
+	}
+
+	const char* callback = lua.getString(1);
+	CKLBGameApplication& application = static_cast<CKLBGameApplication&>(CPFInterface::getInstance().client());
+	lua.retBool(application.setStringCallback(callback));
+	return 1;
+}
+
+int
+CKLBLuaLibLANG::luaTestStringCB(lua_State * L)
+{
+	CLuaState lua(L);
+	if (lua.numArgs() <= 1) {
+		lua.retNil();
+		return 1;
+	}
+
+	const char* fallback = NULL;
+	const char* key = NULL;
+	if (!lua.isNil(1)) {
+		key = lua.getString(1);
+	}
+	if (!lua.isNil(2)) {
+		fallback = lua.getString(2);
+	}
+	if (key && fallback) {
+		char buffer[1000];
+		u32 charCount = 0;
+		if (CPFInterface::getInstance().client().getString(buffer, 1000, key, &charCount, fallback)) {
+			lua.retString(buffer);
+		}
+	} else {
+		lua.retNil();
+	}
+	return 1;
 }
 
 int

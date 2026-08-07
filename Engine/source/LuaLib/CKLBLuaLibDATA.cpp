@@ -55,7 +55,11 @@ CKLBLuaLibDATA::createData(lua_State * L)
 	CKLBDataSet * pDataSet = CKLBDataHandler::createSet(dataSetID);
 
 	// 戻り値は CKLBDataSet のポインタ
-	lua.retPointer(pDataSet);
+	if (pDataSet) {
+		lua.retPointer(pDataSet);
+	} else {
+		lua.retNil();
+	}
 	return 1;
 }
 
@@ -71,7 +75,10 @@ CKLBLuaLibDATA::registTable(lua_State *L)
         return 1;
     }
     
-    CKLBDataSet * pDataSet = (CKLBDataSet *)lua.getPointer(1);
+    CKLBDataSet * pDataSet = NULL;
+    if(!lua.isNil(1)) {
+        pDataSet = (CKLBDataSet *)lua.getPointer(1);
+    }
     if(!pDataSet) {
         lua.retBoolean(false);
         return 1;        
@@ -101,9 +108,11 @@ CKLBLuaLibDATA::registTable(lua_State *L)
 
 		handle = 0;
 		pAsset = CKLBUtility::loadAsset(asset, 0, 0, true);
-		handle = pDataSet->allocateHandle(pAsset, (char *)name);
-		if(handle) {
-			count++;
+		if(pAsset) {
+			handle = pDataSet->allocateHandle(pAsset, (char *)name);
+			if(handle) {
+				count++;
+			}
 		}
         lua.pop(2);
     }
@@ -126,7 +135,10 @@ CKLBLuaLibDATA::registData(lua_State * L)
         lua.retBoolean(false);
         return 1;
     }
-	CKLBDataSet * pDataSet = (CKLBDataSet *)lua.getPointer(1);
+	CKLBDataSet * pDataSet = NULL;
+	if(!lua.isNil(1)) {
+		pDataSet = (CKLBDataSet *)lua.getPointer(1);
+	}
 	const char * name_asset = lua.getString(2);
 	const char * name_data  = lua.getString(3);
     
@@ -152,10 +164,12 @@ CKLBLuaLibDATA::deleteData(lua_State * L)
 {
 	CLuaState lua(L);
 
-	CKLBDataSet * pDataSet = (CKLBDataSet *)lua.getPointer(1);
-    if(pDataSet) {
-		CKLBDataHandler::destroySet(pDataSet);
-    }
+	if(!lua.isNil(1)) {
+		CKLBDataSet * pDataSet = (CKLBDataSet *)lua.getPointer(1);
+		if(pDataSet) {
+			CKLBDataHandler::destroySet(pDataSet);
+		}
+	}
 	return 0;
 }
 

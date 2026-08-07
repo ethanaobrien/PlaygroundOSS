@@ -47,6 +47,8 @@ public:
 	void execute(u32 deltaT);
 	void dieUI  ();
 
+	virtual void notifyAssetUpdate(const char* assetName, CKLBAsset* asset);
+
 	inline virtual u32 getOrder() {	return m_order; }
 
 	inline virtual void setOrder(u32 order) {
@@ -64,7 +66,7 @@ public:
 	}
 
 	void setVertColors	(u32* colors);
-	void setVertUV		(float* uv);
+	void setVertUV		(float* uv, bool assign = true);
 	void setVertXY		(float* coord);
 
 private:
@@ -117,8 +119,8 @@ private:
 			(((int)m_arrVert[7]) == h)
 		   )
 		{
-			float oxf = CKLBDrawResource::getInstance().ox();
-			float oyf = CKLBDrawResource::getInstance().oy();
+			float oxf = CKLBDrawResource::getInstance().borderX();
+			float oyf = CKLBDrawResource::getInstance().borderY();
 			m_arrVert[0] -= oxf;
 			m_arrVert[1] -= oyf;
 			m_arrVert[2] += oxf;
@@ -154,6 +156,8 @@ private:
 	float				m_arrVert[8];
 	float				m_arrUV[8];
 	float				m_arrOriginalUV[8];
+	// Normalized UVs retained so an asset replacement can rebuild atlas UVs.
+	float				m_arrLocalUV[8];
 	u32					m_arrColor[4];
 
 	static PROP_V2		ms_propItems[];

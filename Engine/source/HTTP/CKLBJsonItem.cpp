@@ -93,8 +93,6 @@ CKLBJsonItem::searchChild(const char * key)
 CKLBJsonItem *
 CKLBJsonItem::ReadJsonData(const char * json_string, u32 json_size)
 {
-	s64 start = CPFInterface::getInstance().platform().nanotime();
-
 	static yajl_callbacks callbacks = { 
 		CKLBJsonItem::read_null,  
 		CKLBJsonItem::read_boolean,  
@@ -120,6 +118,7 @@ CKLBJsonItem::ReadJsonData(const char * json_string, u32 json_size)
 	pState->pCurrent = NULL;
 	pState->pFirst   = NULL;
 	pState->pParent  = NULL;
+	CKLBJsonItem * result = NULL;
 
 	/* ok.  open file.  let's read and parse */  
 	hand = yajl_alloc(&callbacks, NULL, pState);
@@ -128,8 +127,8 @@ CKLBJsonItem::ReadJsonData(const char * json_string, u32 json_size)
 		/* and let's allow comments by default */  
 		yajl_config(hand, yajl_allow_comments, 1);
 
-		u32 size = (!json_size) ? strlen(json_string) : json_size;
-		stat = yajl_parse(hand, (const unsigned char *)json_string, size);
+		if(!json_size) { json_size = strlen(json_string); }
+		stat = yajl_parse(hand, (const unsigned char *)json_string, json_size);
 
 		CKLBJsonItem * pRoot = pState->pFirst;
 		KLBDELETE(pState);
@@ -138,15 +137,16 @@ CKLBJsonItem::ReadJsonData(const char * json_string, u32 json_size)
 			stat = yajl_complete_parse(hand);
 			if (stat == yajl_status_ok) {
 				yajl_free(hand);
-				s64 time = CPFInterface::getInstance().platform().nanotime() - start;
-				DEBUG_PRINT("JSon -> Tree : %f ms",(float)(time / 1000000.0));
 				return pRoot;
 			}
 		}
-        if(pRoot) { KLBDELETE(pRoot); }     // 2012.12.12  NULLチェック追加
+		yajl_free(hand);
+		if(pRoot) {
+			KLBDELETE(pRoot);     // 2012.12.12  NULLチェック追加
+		}
 	}
 
-	return NULL;
+	return result;
 }
 
 
@@ -159,6 +159,7 @@ CKLBJsonItem::read_null(void * ctx)
 	if(pState->pCurrent) {
 		pItem = pState->pCurrent;
 	} else {
+		if(!pState->pParent) { return 1; }
 		pItem = KLBNEWC(CKLBJsonItem, (pState->pParent));
 	}
 	pItem->m_type    = J_NULL;

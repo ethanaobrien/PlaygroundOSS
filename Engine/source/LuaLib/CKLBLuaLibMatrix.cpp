@@ -90,7 +90,12 @@ CKLBLuaLibMatrix::addLibrary()
 	addFunction("GEO_VecConv", CKLBLuaLibMatrix::luaMulMatVector);
 	addFunction("GEO_VecArrayConv", CKLBLuaLibMatrix::luaMulMatVecArray);
 
-
+	// scalar math helpers
+	addFunction("sqrt", CKLBLuaLibMatrix::luaSqrt);
+	addFunction("isqrt", CKLBLuaLibMatrix::luaISqrt);
+	addFunction("sin", CKLBLuaLibMatrix::luaSin);
+	addFunction("cos", CKLBLuaLibMatrix::luaCos);
+	addFunction("Polar3D2Cartesian", CKLBLuaLibMatrix::luaPolar3D2Cartesian);
 
 }
 
@@ -606,4 +611,72 @@ CKLBLuaLibMatrix::luaTransposedMatrix(lua_State * L)
 
 	lua.retBoolean(true);
 	return 1;
+}
+
+int
+CKLBLuaLibMatrix::luaSqrt(lua_State * L)
+{
+	CLuaState lua(L);
+	float value = lua.getFloat(1);
+	lua.retFloat(sqrtf(value));
+	return 1;
+}
+
+int
+CKLBLuaLibMatrix::luaISqrt(lua_State * L)
+{
+	CLuaState lua(L);
+	float value = lua.getFloat(1);
+	lua.retFloat((float)(1.0 / sqrt((double)value)));
+	return 1;
+}
+
+int
+CKLBLuaLibMatrix::luaSin(lua_State * L)
+{
+	CLuaState lua(L);
+	float value = lua.getFloat(1);
+	lua.retFloat((float)sin((double)value));
+	return 1;
+}
+
+int
+CKLBLuaLibMatrix::luaCos(lua_State * L)
+{
+	CLuaState lua(L);
+	float value = lua.getFloat(1);
+	lua.retFloat((float)cos((double)value));
+	return 1;
+}
+
+int
+CKLBLuaLibMatrix::luaPolar3D2Cartesian(lua_State * L)
+{
+	CLuaState lua(L);
+	int argc = lua.numArgs();
+	if(argc >= 2) {
+		float azimuth = lua.getFloat(1);
+		float elevation = lua.getFloat(2);
+		float sinElevation = (float)sin((double)elevation);
+		float cosElevation = (float)cos((double)elevation);
+		float xCosAzimuth = (float)cos((double)azimuth);
+		float xSinAzimuth = (float)sin((double)azimuth);
+		float zSinAzimuth = (float)sin((double)azimuth);
+		float zCosAzimuth = (float)cos((double)azimuth);
+
+		const float sourceX = 0.0f;
+		const float sourceY = 0.0f;
+		const float sourceZ = 1.0f;
+		float x = xCosAzimuth * sourceX + sinElevation * sourceY + xSinAzimuth * cosElevation * sourceZ;
+		float y = sinElevation * sourceZ + sourceY + cosElevation * sourceX;
+		float z = (sinElevation * sourceY - zSinAzimuth * sourceX) + cosElevation * zCosAzimuth * sourceZ;
+		lua.retFloat(x);
+		lua.retFloat(y);
+		lua.retFloat(z);
+	} else {
+		lua.retFloat(0.0f);
+		lua.retFloat(0.0f);
+		lua.retFloat(1.0f);
+	}
+	return 3;
 }

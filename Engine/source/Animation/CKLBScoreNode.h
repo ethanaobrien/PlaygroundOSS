@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,7 +30,7 @@
 /*!
 * \class CKLBScoreNode
 * \brief Score Specialized Node Class
-* 
+*
 * CKLBScoreNode is in charge of animating a Score.
 * First, it animates the previous digit.
 * The is animates the next digt.
@@ -50,7 +50,8 @@ public:
 											bool					fillWithZero,
 											bool					animAll);
 
-	void setDot							(	CKLBImageAsset*			dotAsset, s32 width, s32 height );
+	void setDot							(	CKLBImageAsset*			dotAsset, s32 width, s32 height, s32 offsetX = 0, s32 offsetY = 0 );
+	void setComma						(	CKLBImageAsset*			commaAsset, s32 width, s32 height, s32 offsetX = 0, s32 offsetY = 0 );
 
 	void setAnimationInternal			(	bool	isNew,
 											s32		milliSecondsPlayTime,
@@ -62,19 +63,20 @@ public:
 
 	void setEnterAnimation				(s32 milliSecondsPlayTime, s32 timeShift, bool onlyChange, u32 type, u32 affected, const float* arrayParam);
 	void setExitAnimation				(s32 milliSecondsPlayTime, s32 timeShift, bool onlyChange, u32 type, u32 affected, const float* arrayParam);
-	void setScore						(u32 value, bool animFirstTime);
-	void setScoreFloat					(float value, u32 dotPosition, bool animFirstTime);
-	void update							();
-	inline u32		getScore			()	{ return m_uiScore; }
+	void setScore						(u64 value, bool animFirstTime);
+	void setScoreFloat					(double value, u32 dotPosition, bool animFirstTime);
+	void update							(u32 order);
+	inline u64		getScore			()	{ return m_uiScore; }
 	virtual u32		getClassID			()	{ return CLS_KLBSCORENODE; }
 
 	virtual	void	setPriority			(u32 order);
 private:
 	void setDotActive					(u32 position);
-	void setScoreInternal				(u32 value, bool animFirstTime);
+	void setScoreInternal				(u64 value, bool animFirstTime);
 	void reAssignAnim					(u32 idx);
 
-	#define __SCORE_LEN_MAX__	(10)
+	#define __SCORE_LEN_MAX__	(18)
+	#define __SCORE_COMMA_MAX__	(6)
 	CKLBImageAsset*			m_font			[11];
 	CKLBSplineNode*			m_scoreOldNode	[__SCORE_LEN_MAX__];
 	CKLBSplineNode*			m_scoreNewNode	[__SCORE_LEN_MAX__];
@@ -83,21 +85,30 @@ private:
 	CKLBNode*				m_dotNode;
 	float					m_widthDot;
 	float					m_heightDot;
+	CKLBSprite*				m_commaSprite	[__SCORE_COMMA_MAX__];
+	CKLBNode*				m_commaNode		[__SCORE_COMMA_MAX__];
+	float					m_widthComma;
+	float					m_heightComma;
+	s32						m_commaCount;
 
 	struct AnimInfo {
 		s32 m_milliSecondsPlayTime;
 		s32 m_timeShift;
 		u32 m_type;
-		float m_Anim[16];		
+		float m_Anim[16];
 		u32 m_affected;
 		bool m_hasAnim;
 	};
 
 	AnimInfo				m_animInfo[2];
 
+	float					m_dotOffsetX;
+	float					m_dotOffsetY;
+	float					m_commaOffsetX;
+	float					m_commaOffsetY;
 	s32						m_stepX;
 	s32						m_stepY;
-	u32						m_uiScore;
+	u64						m_uiScore;
 	s32						m_oldNumberPriorityOffset;
 	u8						m_oldScore		[__SCORE_LEN_MAX__];
 	u8						m_default;

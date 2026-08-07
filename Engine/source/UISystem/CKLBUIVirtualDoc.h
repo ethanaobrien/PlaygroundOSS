@@ -46,9 +46,15 @@ public:
 	int  commandUI  (CLuaState& lua, int argc, int cmd);
 
 	void execute(u32 deltaT);
+	void onResume();
 	void dieUI  ();
 
-	void checkDocumentSize();
+	inline void checkDocumentSize() {
+		if (CHANGE_A) {
+			m_pDocNode->createDocument(m_commandMax, m_format);
+			RESET_A;
+		}
+	}
 
 	inline void clear(u32 color) 
 	{ m_pDocNode->clear(color); }
@@ -70,7 +76,18 @@ public:
 	{	m_pDocNode->fillRect(x0, y0, width, height, color,fill); }
 
 	inline void drawText(s32 x0, s32 y0, const char* str, u32 color, u32 fontidx)
-	{	m_pDocNode->drawText(x0, y0, str, color, fontidx, (u8)m_align, (s16)m_align_width); REFRESH_B; }
+	{	m_pDocNode->drawText(x0, y0, str, color, fontidx, 0, (u8)m_align, (s16)m_align_width); }
+
+	inline void drawTextSpacing(s32 x0, s32 y0, const char* str, u32 color, u32 fontidx, s32 spacing)
+	{	m_pDocNode->drawText(x0, y0, str, color, fontidx, spacing, (u8)m_align, (s16)m_align_width); }
+
+	inline void drawTextFx(s32 x0, s32 y0, const char* str, u32 color, u32 alpha, u32 fontidx,
+						  s32 effectParam, s32 effectMode, s32 effectExtra, float effectWidth)
+	{	s32 borderSize = (s32)(effectWidth * 64.0f);
+		s32 effectPassCount = (effectWidth > 2.5f) ? 2 : 1;
+		color |= alpha << 24;
+		m_pDocNode->drawText(x0, y0, str, color, fontidx, 0, (u8)m_align, (s16)m_align_width,
+							 effectParam, effectMode, effectExtra, borderSize, effectPassCount); }
 
 	inline void startDocument()			{ m_pDocNode->emptyDocument(); m_pDocNode->lockDocument();	}
 	inline void endDocument  ()			{ m_pDocNode->unlockDocument();	}
@@ -132,9 +149,10 @@ public:
 	}
 
 	inline const char*  getCallBack()				        { return m_callBack;			}
-	inline void         setCallBack(const char* callBack)	{ REFRESH_E; setStrC(m_callBack, callBack);}
+	inline void         setCallBack(const char* callBack)	{ REFRESH_D; setStrC(m_callBack, callBack);}
 
 	inline void         setAlign(u8 align, int alignWidth)  { m_align = align; m_align_width = alignWidth; }
+	void setFitMode(u8 fitMode);
 
 private:
 	void forceRefresh();
@@ -161,14 +179,14 @@ private:
 	u32		    m_width;
 	u32		    m_viewWidth;
 	u32		    m_viewHeight;
-	u32		    m_counter;
 	const char*	m_callBack;
 	s32         m_viewPosX;
 	s32         m_viewPosY;
 	u8			m_format;
 
 	bool	    m_vertical;
-	bool	    m_forceRefreshMode;
+	bool	    m_useNativeFont;
+	s32			m_nativeFontSize;
 
 	struct VDIMG {
 

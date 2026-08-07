@@ -69,7 +69,7 @@ static void     JNICALL (*PROC_FUNC(resetViewport))(JNIEnv *, jobject);
 static void     JNICALL (*PROC_FUNC(onActivityPause))( void );
 static void     JNICALL (*PROC_FUNC(onActivityResume))( void );
 static void		JNICALL (*PROC_FUNC(clientControlEvent))(JNIEnv *, jobject, jint, jint, jstring, jstring);
-static void     JNICALL (*PROC_FUNC(WebViewControlEvent))( JNIEnv *, jobject, jobject, jint );
+static void     JNICALL (*PROC_FUNC(WebViewControlEvent))( JNIEnv *, jobject, jobject, jint, jstring );
 static void		JNICALL (*PROC_FUNC(clientResumeGame))( void );
 static void		JNICALL (*PROC_FUNC(jniOnLoad))( JavaVM*, void* );
 
@@ -223,9 +223,9 @@ JNIEXPORT void JNICALL JAVA_FUNC(clientControlEvent)
 }
 
 // WebViewのコントロールイベント
-JNIEXPORT void JNICALL JAVA_FUNC(WebViewControlEvent) ( JNIEnv * env, jobject obj, jobject _pWeb, jint _int )
+JNIEXPORT void JNICALL JAVA_FUNC(WebViewControlEvent) ( JNIEnv * env, jobject obj, jobject _pWeb, jint _int, jstring _data )
 {
-	if(LoadApplication) PROC_FUNC(WebViewControlEvent)( env, obj, _pWeb, _int );
+	if(LoadApplication) PROC_FUNC(WebViewControlEvent)( env, obj, _pWeb, _int, _data );
 }
 
 JNIEXPORT void  JNICALL JAVA_FUNC(clientResumeGame) (void)

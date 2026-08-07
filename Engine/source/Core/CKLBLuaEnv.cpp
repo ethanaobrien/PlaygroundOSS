@@ -17,6 +17,7 @@
 //  CKLBLuaEnv.cpp
 //
 #include <typeinfo>
+#include <sstream>
 #include "CKLBLuaEnv.h"
 #include "CKLBLuaTask.h"
 #include "ILuaFuncLib.h"
@@ -24,6 +25,10 @@
 #include "CKLBDrawTask.h"
 #include "CKLBUtility.h"
 #include "KLBPlatformMetrics.h"
+
+extern void KLBUnregisterObjectName(void* object, const char* className);
+extern void KLBRegisterObjectName(void* object, const char* className, int flags);
+#include "KLBBase64.h"
 #ifdef _WIN32
 #include <Windows.h>
 
@@ -48,10 +53,12 @@ CKLBLuaEnv::CKLBLuaEnv()
 , m_highGC          (1000)
 , m_collect         (0)
 {
+	KLBRegisterObjectName(this, "CKLBLuaEnv", 0);
 }
 
 CKLBLuaEnv::~CKLBLuaEnv()
 {
+	KLBUnregisterObjectName(this, "CKLBLuaEnv");
     finishLuaEnv();
 }
 
@@ -62,11 +69,29 @@ CKLBLuaEnv::getInstance()
     return instance;
 }
 
+const char*
+CKLBLuaEnv::getGlobalString(const char* name)
+{
+	lua_getglobal(m_L, name);
+	if (!lua_isnil(m_L, -1) && lua_isstring(m_L, -1)) {
+		return lua_tostring(m_L, -1);
+	}
+	return NULL;
+}
+
+s32
+CKLBLuaEnv::getGlobalInt(const char* name)
+{
+	lua_getglobal(m_L, name);
+	return lua_isnumber(m_L, -1) ? (s32)lua_tonumber(m_L, -1) : 0;
+}
+
 void
 CKLBLuaEnv::finishLuaEnv()
 {
     KLBDELETE(m_state);             m_state = NULL;
     KLBDELETEA(m_nextLoadScript);   m_nextLoadScript = NULL;
+    m_bLoadScript = false;
     KLBDELETEA(m_nowFile);          m_nowFile = NULL;
 
 	// Lua環境を破棄する前に、ILuaFuncLib によって生成されたリソースの破棄を行う。
@@ -138,6 +163,7 @@ CKLBLuaEnv::setupLuaEnv()
 	m_L = luaL_newstate();
 	if(!m_L) return false;
 
+	// Reserve enough stack space for callbacks registered by the engine.
 	if(lua_checkstack(m_L, 200) == 0) {
 		klb_assertAlways("can not setup lua stack.");
 		return false;
@@ -169,6 +195,13 @@ CKLBLuaEnv::setupLuaEnv()
 	// システム関数の定義
     lua_register(m_L, "sysLoad"			,CKLBLuaEnv::load		);
 	lua_register(m_L, "isSysLoading"	,CKLBLuaEnv::isLoading	);
+	lua_register(m_L, "addExtMsg"		,CKLBLuaEnv::addExtMsg	);
+	lua_register(m_L, "sendException"	,CKLBLuaEnv::sendException);
+	lua_register(m_L, "copyToClipBoard"	,CKLBLuaEnv::copyToClipBoard);
+	lua_register(m_L, "getFreeMemorySize",CKLBLuaEnv::getFreeMemorySize);
+	lua_register(m_L, "getUsedMemorySize",CKLBLuaEnv::getUsedMemorySize);
+	lua_register(m_L, "requestExtensionEvent",CKLBLuaEnv::requestExtensionEvent);
+	lua_register(m_L, "getSMode"		,CKLBLuaEnv::getSMode	);
     lua_register(m_L, "sysCommand"		,CKLBLuaEnv::command	);
     lua_register(m_L, "syslog"			,CKLBLuaEnv::logging	);
     lua_register(m_L, "sysExit"			,CKLBLuaEnv::exitGame	);
@@ -193,13 +226,16 @@ CKLBLuaEnv::setupLuaEnv()
 	// CKLBLuaLibDB		SQLite用DBアクセスライブラリ
 	// CKLBLuaLibCONV	Json<->Luaを中心としたデータ変換ライブラリ
 	// CKLBLuaLibBIN	バイナリファイルライブラリ
-	//
 #ifdef DEBUG_LUAEDIT
 	StartLuaEditRemoteDebugger(22001, m_L);
 #endif
 
     return true;
 }
+
+// Script names pulled in through include(). The loader keeps the list; no
+// current code path reads it back.
+static std::list<std::string> s_includedScripts;
 
 int
 CKLBLuaEnv::setGCRatio(lua_State * L)
@@ -247,7 +283,7 @@ CKLBLuaEnv::load(lua_State *L)
         return 0;
     }
 
-	klb_assert(!env.m_nextLoadScript, "sysLoad() It is already called." ); 
+	klb_assertNull(!env.m_nextLoadScript, "sysLoad() It is already called." );
 
     const char * scriptUrl = lua.getString(1);
 	bool bResult = false;
@@ -277,7 +313,7 @@ CKLBLuaEnv::command(lua_State *L)
         env.errMsg("Target TASK not given to sysCommand() function.");
         return 0;
     }
-    CKLBLuaTask * pTask = (CKLBLuaTask *)lua.getPointer(1);
+    CKLBLuaTask * pTask = (CKLBLuaTask *)lua.getScriptPtr(1);
     if(!pTask) return 0;
 	CHECKTASK(pTask);
 
@@ -299,7 +335,7 @@ CKLBLuaEnv::logging(lua_State * L)
     CLuaState lua(L);
     CKLBLuaEnv& env = CKLBLuaEnv::getInstance();
     int argc = lua.numArgs();
-    
+
     if(1 > argc) {
         env.errMsg("string not given to echo() function.");
         return 0;
@@ -311,7 +347,7 @@ CKLBLuaEnv::logging(lua_State * L)
     const char * msg = lua.getString(1);
 
 	cmdLogging(msg);
-	
+
 	return 0;
 }
 
@@ -320,6 +356,7 @@ CKLBLuaEnv::exitGame(lua_State * /* L */)
 {
     // 終了フラグセット
     CKLBTaskMgr::getInstance().setExit();
+	CPFInterface::getInstance().platform().exitGame();
     return 0;
 }
 
@@ -403,10 +440,9 @@ CKLBLuaEnv::openScript(const char * scriptUrl)
 #endif
 
 	// 元の名前でのオープンを試みる(.lua)
-	pRds = pForm.openReadStream(scriptUrl, pForm.useEncryption());
+	pRds = pForm.openReadStream(scriptUrl, pForm.useEncryption(), 8);
 	if (pRds == NULL || pRds->getStatus() != IReadStream::NORMAL) {
 		delete pRds;
-		DEBUG_PRINT("SCRIPT ERROR: script not found. : %s", scriptUrl);
 		klb_assertAlways("SCRIPT ERROR: script not found. : %s", scriptUrl);
 		return NULL;	// オープンに失敗したら必ずNULLが返る
 	}
@@ -516,6 +552,16 @@ CKLBLuaEnv::loadScript(const char *scriptUrl)
     delete pRds;
 	buf[ ssize ] = 0;
     if(ret == 0) { return false; }
+
+	const char * installPrefix = "file://install/";
+	const size_t installPrefixLength = 15;
+	int prefixComparison = strncmp(scriptUrl, installPrefix, installPrefixLength);
+	CPFInterface& interface = CPFInterface::getInstance();
+	const bool isInstalledScript = (prefixComparison == 0);
+	interface.platform().leaveBreadcrumb(
+		scriptUrl + (isInstalledScript ? installPrefixLength : 0));
+	CPFInterface::getInstance().platform().registerScriptSource(
+		(const char *)buf, ssize, scriptUrl);
     
     
 	#ifdef INTERNAL_BENCH
@@ -647,20 +693,16 @@ CKLBLuaEnv::execScript(int deltaT)
 		}
     }
 
-    // 現在のスクリプトの execute 関数を呼び出す
+	// 現在のスクリプトの execute 関数を呼び出す
 	if (!skip) {
-		MEASURE_THREAD_CPU_BEGIN(TASKTYPE_LUA_EXEC);
 		m_state->callback("execute", "I", deltaT);
-		MEASURE_THREAD_CPU_END(TASKTYPE_LUA_EXEC);
 	}
 
     // ガベージコレクタを走らせる
 	m_collect += m_lowGC;
 	if (m_collect >= m_highGC) {
 		m_collect -= m_highGC;
-		MEASURE_THREAD_CPU_BEGIN(TASKTYPE_LUA_GC);
 		lua_gc(m_L, LUA_GCCOLLECT, 0);
-		MEASURE_THREAD_CPU_END(TASKTYPE_LUA_GC);
 	}
 }
 
@@ -686,9 +728,7 @@ CKLBLuaEnv::sysLoad(const char * scriptUrl)
     // この場でleaveを呼ぶ
 	if(!m_leave) {
 		m_leave = true;
-		MEASURE_THREAD_CPU_BEGIN(TASKTYPE_LUA_EXEC);
 	    m_state->callback("leave", "");
-		MEASURE_THREAD_CPU_END(TASKTYPE_LUA_EXEC);
 	}
     return true;
 }
@@ -719,12 +759,12 @@ CKLBLuaEnv::exitMaintenance()
 void
 CKLBLuaEnv::errMsg(const char *str)
 {
+	(void)str;
     lua_Debug dbg;
     if(lua_getstack(m_L, 1, &dbg)) {
         lua_getinfo(m_L, "Sl", &dbg);
     }
     // int lnum = dbg.currentline;
-    DEBUG_PRINT("SCRIPT ERROR/ %s", str);
 }
 
 int
@@ -733,10 +773,14 @@ CKLBLuaEnv::includefile(lua_State * L)
 	CLuaState lua(L);
 	const char * modname = lua.getString(1);
 #ifndef DEBUG_LUAEDIT
-	IReadStream * pStream = openScript(modname);
-	if(!pStream) {
-		lua.retBoolean(false);
-		return 1;
+	IReadStream * pStream;
+	{
+		IPlatformRequest& platform = CPFInterface::getInstance().platform();
+		pStream = platform.openReadStream(modname, platform.useEncryption(), 8);
+	}
+	if(!pStream || pStream->getStatus() != IReadStream::NORMAL) {
+		delete pStream;
+		klb_assertAlways("SCRIPT ERROR: script not found. : %s", modname);
 	}
 	/*
 	IReadStream * pStream;
@@ -757,6 +801,7 @@ CKLBLuaEnv::includefile(lua_State * L)
 
 	// バッファ pool の内容をチャンク modname として読み込む
 	int result = luaL_loadbuffer(L, (const char *)pool, fsize, modname);
+	CPFInterface::getInstance().platform().registerScriptSource((const char *)pool, fsize, modname);
 	KLBDELETEA(pool);
 #else
 	const char * path = CPFInterface::getInstance().platform().getFullPath(modname);
@@ -794,9 +839,7 @@ CKLBLuaEnv::includefile(lua_State * L)
     }
     
     //　グローバル域を実行
-	MEASURE_THREAD_CPU_BEGIN(TASKTYPE_LUA_EXEC);
 	result = lua_pcall(L, 0, 0, 0);
-	MEASURE_THREAD_CPU_END(TASKTYPE_LUA_EXEC);
 	bool bRet = true;
 	if(result) {
     	const char * msg = NULL;
@@ -821,30 +864,149 @@ CKLBLuaEnv::includefile(lua_State * L)
 	return 1;
 }
 
+int
+CKLBLuaEnv::addExtMsg(lua_State * L)
+{
+	CLuaState lua(L);
+	CKLBLuaEnv& env = CKLBLuaEnv::getInstance();
+	if(lua.numArgs() != 3) {
+		env.errMsg("invalid arguments to addExtMsg");
+		return 0;
+	}
+	const char * key = lua.getString(1);
+	const char * value = lua.getString(2);
+	bool sendImmediately = lua.getBool(3);
+	CPFInterface::getInstance().platform().addExtMsg(key, value, sendImmediately);
+	return 0;
+}
+
+int
+CKLBLuaEnv::sendException(lua_State * L)
+{
+	CLuaState lua(L);
+	CKLBLuaEnv& env = CKLBLuaEnv::getInstance();
+	if(lua.numArgs() != 1) {
+		env.errMsg("invalid arguments to sendException");
+		return 0;
+	}
+	const char * message = lua.getString(1);
+	CPFInterface::getInstance().platform().sendException(message);
+	return 0;
+}
+
+int
+CKLBLuaEnv::copyToClipBoard(lua_State * L)
+{
+	CLuaState lua(L);
+	klb_assertNull(lua.numArgs() == 1, "need str to copy");
+	const char * text = lua.getString(1);
+	CPFInterface::getInstance().platform().copyToClipboard(text);
+	return 0;
+}
+
+int
+CKLBLuaEnv::getFreeMemorySize(lua_State * L)
+{
+	CLuaState lua(L);
+	lua.retDouble(CPFInterface::getInstance().platform().getUsedMemorySize());
+	return 1;
+}
+
+int
+CKLBLuaEnv::getUsedMemorySize(lua_State * L)
+{
+	CLuaState lua(L);
+	lua.retDouble(CPFInterface::getInstance().platform().getFreeMemorySize());
+	return 1;
+}
+
+int
+CKLBLuaEnv::requestExtensionEvent(lua_State * L)
+{
+	CLuaState lua(L);
+	int argc = lua.numArgs();
+	klb_assertNull(argc > 0, "invalid arguments");
+
+	const char * eventName = lua.getString(1);
+	IPlatformRequest::ExtensionEventArgs arguments;
+	for(int i = 2; i <= argc; ++i) {
+		klb_assertNull(lua.isString(i), "wrong argument !");
+		arguments.push_back(lua.getString(i));
+	}
+	CPFInterface::getInstance().platform().requestExtensionEvent(
+		eventName, arguments.empty() ? NULL : &arguments
+	);
+	return 0;
+}
+
+int
+CKLBLuaEnv::getSMode(lua_State * L)
+{
+	CLuaState lua(L);
+	lua.retBool(CPFInterface::getInstance().platform().getSMode());
+	return 1;
+}
+
+bool
+CKLBLuaEnv::intoUpdate()
+{
+	if(!m_sysLoadEnable) { return true; }
+
+	sysLoad("asset://Update.lua");
+	m_sysLoadEnable = false;
+	return true;
+}
+
+float
+CKLBLuaEnv::getGlobalFloat(const char* name)
+{
+	lua_getglobal(m_L, name);
+	return lua_isnumber(m_L, -1) ? (float)lua_tonumber(m_L, -1) : 0.0f;
+}
+
+void
+CKLBLuaEnv::dumpLuaStack(char * buffer, u32 bufferSize, bool encode)
+{
+	if(!m_L) {
+		buffer[0] = '\n';
+		return;
+	}
+
+	lua_Debug debug;
+	std::stringstream stream("");
+	int level = 1;
+	while(lua_getstack(m_L, level, &debug)) {
+		lua_getinfo(m_L, "Sln", &debug);
+		stream << debug.short_src << "(" << debug.currentline << ")" << " : "
+			   << (debug.name ? debug.name : "?") << "\n";
+		level++;
+	}
+	stream << "\n";
+
+	if(encode) {
+		KLBNetAPI_encodeBase64(stream.str().c_str(),
+			stream.str().size() < bufferSize / 2 ? stream.str().size() : bufferSize / 2,
+			buffer, &bufferSize);
+	} else {
+		strcpy(buffer, stream.str().substr(0, bufferSize - 1).c_str());
+	}
+}
+
 void 
 CKLBLuaEnv::cmdLogging(const char* msg)
 {
-	// script から256byte以上の文字列が渡されることがあるので、
-	// porting layer の最低要件制約にひっかからないよう255byte単位に区切って出力する。
-	// ただし、platformのlogging実装によっては、
-	//
-	// - 出力がつながらないことがある
-	// - 多バイト文字の途中で分断されてしまった挙句つながらないと、文字化けの恐れがある
-	//
-	// ので、「きれいに出力される」ことは保証できない。
+	// The shipped implementation walks long script strings in 255-byte chunks.
+	// It does not forward either the chunks or the final remainder to the
+	// platform logger.
 	char buf[256];
 	const char * ptr;
-	int len = strlen(msg);
+	size_t len = strlen(msg);
 	ptr = msg;
 	while(len > 255) {
 		strncpy(buf, ptr, 255);
 		buf[255] = 0;
-		DEBUG_PRINT("%s", (const char *)buf);
 		ptr += 255;
 		len -= 255;
-	}
-	if(strlen(ptr) > 0) {
-		DEBUG_PRINT("%s", ptr);
 	}
 }
 

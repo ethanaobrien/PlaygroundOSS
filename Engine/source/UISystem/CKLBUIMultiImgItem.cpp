@@ -53,7 +53,7 @@ enum {
 };
 
 CKLBUIMultiImgItem::CKLBUIMultiImgItem()
-: CKLBUITask    ()
+: CKLBUITask    (P_UIAFTER)
 , m_items       (NULL)
 {
 	setNotAlwaysActive();
@@ -141,7 +141,7 @@ CKLBUIMultiImgItem::initCore(u32 order,float x,float y, u32 index, IMGITEM* pInd
 	REFRESH_A;
 	REFRESH_B;
 
-	klb_assert((((s32)order) >= 0), "Order Problem");
+	klb_assertNull((((s32)order) >= 0), "Order Problem");
 
 	m_order     = order;
 	setIndex(index);

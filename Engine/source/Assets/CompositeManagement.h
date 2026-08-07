@@ -22,8 +22,10 @@
 
 class CKLBInnerDef;
 class CKLBAnimInfo;
+struct SCompositeLayoutRecord;
 
-#define	TMP_COMPOSITE_ASSET_STR_BUFFSIZE	(10000)
+#define	TMP_COMPOSITE_ASSET_STR_MAXLEN		(9999)
+#define	TMP_COMPOSITE_ASSET_STR_BUFFSIZE	(TMP_COMPOSITE_ASSET_STR_MAXLEN + 1)
 
 /*!
 * \class CKLBCompositeAsset
@@ -46,11 +48,22 @@ public:
 	void				setGroupID(u16 groupID)	
 											{	m_groupID = groupID;	}
 	virtual u32			getClassID()		{ return CLS_ASSETCOMPOSITE; }
+	virtual void		replaceAsset(const char* name, CKLBAbstractAsset* asset);
 	virtual CKLBNode*	createSubTree(u32 priorityBase = 0);
 	CKLBNode*			createSubTree(CKLBUITask* pParentTask, u32 priorityBase = 0); 
 	virtual	ASSET_TYPE	getAssetType()		{ return ASSET_COMPOSITE; }
 
-	void setRecord(IDataSource* source, IDataRecord record);
+	void setRecord(BaseRealDataProducer* source);
+	inline void setRecordID(s64 recordID) {
+		m_recordID = recordID;
+	}
+	void setFormSize(u32 width, u32 height);
+	inline void setDirectComposite(bool directComposite) {
+		m_bDirectComposite = directComposite;
+	}
+	u32 getDesignRectCount() const;
+	void getDesignRect(u32 index, const char*& name, CKLBNode*& node,
+		float& x, float& y, float& width, float& height) const;
 
 	void* parserCtx;
 
@@ -64,7 +77,7 @@ public:
 		SY_FIELD,
 		SW_FIELD,
 		SH_FIELD,
-		LAYOUT_INFO_FIELD,
+		LAYOUT_DIR_FIELD,
 		LW_FIELD,
 		LH_FIELD,
 		CLASS_FIELD,
@@ -79,6 +92,7 @@ public:
 		ASSET_7,
 		ASSET_8,
 		ASSET_9,
+		ASSET_DOT,
 		SUB_FIELD,
 		PRIORITY_FIELD,
 		RADIO_FIELD,
@@ -181,6 +195,20 @@ public:
 		CHARTYPE,
 		VOL_AUDIO_UP,
 		VOL_AUDIO_DOWN,
+		DOCK_FIELD,
+		ANCHOR_FIELD,
+		MARGIN_DOWN_FIELD,
+		MARGIN_UP_FIELD,
+		MARGIN_LEFT_FIELD,
+		MARGIN_RIGHT_FIELD,
+		SHADOW_DX_FIELD,
+		SHADOW_DY_FIELD,
+		SHADOW_COLOR_FIELD,
+		SHADOW_BLUR_FIELD,
+		ANCHOR_X_FIELD,
+		ANCHOR_Y_FIELD,
+		FIT_FIELD,
+		COMMENT_FIELD = 0xFFFE,
 	};
 private:
 	bool init();
@@ -188,10 +216,14 @@ private:
 
 	void setupNode(CKLBInnerDef* templateDef, CKLBNode* node);
 	void setupTask(CKLBInnerDef* templateDef, CKLBUITask* tsk);
+	bool createTaskNode(CKLBInnerDef* templateDef, CKLBNode* parent,
+		CKLBUITask* task, CKLBNode*& node);
 
 	struct STRINGENTRY {
 		STRINGENTRY();
 		~STRINGENTRY();
+		void incrementRefCount();
+		void decrementRefCount();
 
 		STRINGENTRY*		next;
 		CKLBAsset*			assetCache;
@@ -205,30 +237,41 @@ private:
 	// Parser Stuff.
 	//
 	u16			m_parserField;
-	char*		allocateString(const unsigned char* string, u32 strLen, bool* err);
-	
+
 	STRINGENTRY* registerString(const char* string, u32 strLen, bool* err);
+	s32 readLayoutInt(s32 value, u32 layoutShift);
+	void appendInnerDef(CKLBInnerDef* definition);
 
 private:
 	// UI and composite with 32 levels are good enough.
 	#define MAX_STACK_DEPTH				(32)
 	float*			m_currArraySpline;
-	IDataSource*	m_pSource;
-	IDataRecord		m_record;
+	BaseRealDataProducer* m_pSource;
 	CKLBInnerDef*	m_pCurrInnerDef;
 	CKLBAnimInfo*	m_pCurrAnim;
 	CKLBInnerDef*	m_pParent;
 	CKLBInnerDef*	m_root;
 	CKLBNode*		m_rootParent;
 	CKLBInnerDef*	m_parentStack	[MAX_STACK_DEPTH];
+	SCompositeLayoutRecord*	m_rectXYWH;
+	const char**	m_rectName;
+	CKLBNode**		m_rectNode;
+	u64				m_recordID;
+	u32				m_designRectCount;
 	u32				m_basePriority;
+	float			m_layoutScale;
+	u32				m_slotBase;
+	u32				m_slotCurrent;
 	s16				m_width;
 	s16				m_height;
+	s16				m_formWidth;
+	s16				m_formHeight;
 	u16				m_parent;
 	u8				m_recCount;
 	u8				mode;
 	bool			m_bTreeMode;
 	bool			m_bLowRes;
+	bool			m_bDirectComposite;
 
 	//
 	// Parser Call back.
@@ -263,6 +306,7 @@ private:
 	void			resetTmpBuff	();
 	const char*		addAssetPrefix	(const char* prefixLessAsset);
 	const char*		formatI			(s32 i);
+	const char*		formatLL		(s64 i);
 	const char*		formatB			(bool i);
 	const char*		formatF			(float f);
 	const char*		addString		(const char* source, u32 len);
@@ -283,7 +327,7 @@ public:
 	virtual	u8					charHeader()				{ return 'P';		}
 	virtual const char*			fileExtension()				{ return ".json"; 	}
 
-	virtual CKLBAbstractAsset*	loadAsset(u8* stream, u32 streamSize);
+	virtual CKLBAbstractAsset*	loadAsset(u8* stream, size_t streamSize);
 };
 
 //
@@ -291,7 +335,7 @@ public:
 //
 
 #define MAX_HANDLER			(2)
-#define MAX_ASSETS			(10)
+#define MAX_ASSETS			(11)
 
 class CKLBAnimInfo;
 class CKLBPropertyBag;
@@ -304,6 +348,17 @@ public:
 
 class CKLBInnerDef {
 public:
+	enum LAYOUT_VALUE {
+		LAYOUT_X,
+		LAYOUT_Y,
+		LAYOUT_WIDTH,
+		LAYOUT_HEIGHT,
+		LAYOUT_CLIP_X,
+		LAYOUT_CLIP_Y,
+		LAYOUT_CLIP_WIDTH,
+		LAYOUT_CLIP_HEIGHT
+	};
+
 	CKLBInnerDef();
 	~CKLBInnerDef();
 	
@@ -311,25 +366,37 @@ public:
 	static void  operator delete	(void *p);
 
 	CKLBAnimInfo*	findAnimation(const char* animName);
+	float			getLayoutValue(LAYOUT_VALUE value, float parentSize) const;
+	float			getLayoutValue(LAYOUT_VALUE value) const;
+
+	struct Position2D {
+		float coordinate[2];
+
+		float& operator[](s32 axis) { return coordinate[axis]; }
+		const float& operator[](s32 axis) const { return coordinate[axis]; }
+	};
 
 	CKLBInnerDef*	next;
 	CKLBInnerDef*	sub;
 	CKLBAnimInfo*	anim;
 	CKLBPropertyBag*	propertyBag;
 
-	float x;
-	float y;
+	Position2D position;
+	float width;
+	float height;
 	float xscale;
 	float yscale;
 	float rotation;
-	
-	u32	layoutInfo;
+	float shadowBlur;
+
+	s32 layoutDir;
 	u32 priority;
 	s32 value;
 	s32	radioID;
 	
 	CKLBCompositeAsset::STRINGENTRY*	fontName;
 	u32	color;
+	u32	shadowColor;
 
 	CKLBCompositeAsset::STRINGENTRY*	handler	[MAX_HANDLER];
 	CKLBCompositeAsset::STRINGENTRY*	assets	[MAX_ASSETS];
@@ -343,6 +410,7 @@ public:
 
 	float*	spline;
 	CKLBCompositeAsset::STRINGENTRY*	dbField[4];
+	u32	layoutInfo;
 	u32	variable[10];
 
 	s16	lw;
@@ -357,14 +425,15 @@ public:
 	s16 clipy;
 	s16 clipw;
 	s16 cliph;
-	s16	width;
-	s16 height;
 	u16	splineMask;
 	u16	splineCount;
 	u16	splineLength;
 	u8	splineVectorSize;
 	u8	volAudioUp;
 	u8	volAudioDown;
+	u8	shadowDX;
+	u8	shadowDY;
+	u8	anchor;
 
 	u8	flag[4];
 	bool	visible;

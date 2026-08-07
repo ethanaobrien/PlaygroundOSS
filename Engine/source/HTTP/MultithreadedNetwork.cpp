@@ -17,17 +17,8 @@
 
 NetworkManager NetworkManager::s_manager;
 
-ConnectionEntry::ConnectionEntry() 
-{
-	m_pNext = NULL;
-	m_kill	= false;	
-}
-
-ConnectionEntry::~ConnectionEntry() 
-{
-}
-
 NetworkManager::NetworkManager()
+	: m_bStarted(false)
 {
 }
 
@@ -43,60 +34,93 @@ NetworkManager::~NetworkManager()
 bool 
 NetworkManager::startNetworkManager() 
 {
-	// 1. Start Thread
-	s_manager.m_lock 				= ALLOC_LOCK();
-	s_manager.m_eventLock			= ALLOCEVENT_LOCK();
-	s_manager.m_bShutDownComplete	= false;
-	s_manager.m_bShutDown			= false;
-	s_manager.m_entries				= NULL;
-	s_manager.m_thread				= NULL;
-	s_manager.m_killCount			= 0;
+	s_manager.m_bPaused = false;
+	if(s_manager.m_bStarted) {
+		if(s_manager.m_eventLock) {
+			WAKE_THREAD(s_manager.m_eventLock);
+		}
+	} else {
+		// 1. Start Thread
+		s_manager.m_lock 				= ALLOC_LOCK();
+		s_manager.m_eventLock			= ALLOCEVENT_LOCK();
+		s_manager.m_bShutDownComplete	= false;
+		s_manager.m_thread				= NULL;
+		s_manager.m_bShutDown			= false;
 
-	s_manager.m_thread = CREATE_THREAD(threadFunc,&s_manager);
+		s_manager.m_thread = CREATE_THREAD(threadFunc,&s_manager);
+		s_manager.m_bStarted = true;
+	}
 	return s_manager.m_thread != 0;
 }
 
 /*static*/
 void 
-NetworkManager::stopNetworkManager() 
+NetworkManager::stopNetworkManager(bool complete) 
 {
+	if (!complete) {
+		s_manager.m_bPaused = true;
+		releaseAllConnections();
+		return;
+	}
+
 	s_manager.m_bShutDown = true;
+	releaseAllConnections();
 	
 	// May be asleep
-	WAKE_THREAD(s_manager.m_eventLock);
-	
-	while (s_manager.m_bShutDownComplete == false) {
-		// Wait other thread complete loop.
+	if(s_manager.m_eventLock) {
+		WAKE_THREAD(s_manager.m_eventLock);
+		while (s_manager.m_bShutDownComplete == false) {
+			// Wait other thread complete loop.
+		}
 	}
 
 	// TODO clear all entries.
-	klb_assert(s_manager.m_entries == NULL, "Remaining connection !?");
+	klb_assertNull(s_manager.m_entries.empty(), "Remaining connection !?");
 
-	FREE_THREAD		(s_manager.m_thread);
-	FREE_LOCK		(s_manager.m_lock);
-	FREEEVENT_LOCK	(s_manager.m_eventLock);
+	if(s_manager.m_thread) {
+		FREE_THREAD(s_manager.m_thread);
+		s_manager.m_thread = NULL;
+	}
+	if(s_manager.m_lock) {
+		FREE_LOCK(s_manager.m_lock);
+		s_manager.m_lock = NULL;
+	}
+	if(s_manager.m_eventLock) {
+		FREEEVENT_LOCK(s_manager.m_eventLock);
+		s_manager.m_eventLock = NULL;
+	}
 }
 
-int gTotal = 0;
+void
+NetworkManager::releaseAllConnections()
+{
+	LOCK(s_manager.m_lock);
+	for(std::list<CKLBHTTPInterface*>::iterator it = s_manager.m_entries.begin(); it != s_manager.m_entries.end(); ++it) {
+		(*it)->stop();
+		s_manager.m_killEntries.push_back(*it);
+	}
+	s_manager.m_entries.clear();
+	UNLOCK(s_manager.m_lock);
+}
 
 /*static*/
 CKLBHTTPInterface* 
 NetworkManager::createConnection() 
 {
-	ConnectionEntry*	pEntry = KLBNEW(ConnectionEntry);
-	if (pEntry) {
-		pEntry->m_kill 	= false;
-		
+	CKLBHTTPInterface* connection = KLBNEW(CKLBHTTPInterface);
+	if (connection) {
 		LOCK(s_manager.m_lock);
-		pEntry->m_pNext	= s_manager.m_entries;
-		s_manager.m_entries = pEntry;
-		gTotal++;
-		DEBUG_PRINT("ALLOC CONNEXION : %8X(%i)\n", &pEntry->m_oConnection, gTotal);
+		s_manager.m_entries.push_back(connection);
 		UNLOCK(s_manager.m_lock);
-		return &pEntry->m_oConnection;
-	} else {
-		return NULL;
 	}
+	return connection;
+}
+
+/*static*/
+void
+NetworkManager::wakeUp()
+{
+	WAKE_THREAD(s_manager.m_eventLock);
 }
 
 /*static*/
@@ -106,33 +130,12 @@ NetworkManager::releaseConnection(CKLBHTTPInterface* connection)
 	if (!connection) { return; }
 
 	LOCK(s_manager.m_lock);
-	gTotal--;
-	DEBUG_PRINT("FREE CONNEXION : %8X(%i)\n", connection, gTotal);
-	// 1. Find in link list the entry.
-	ConnectionEntry* pEntry = s_manager.m_entries;
-	ConnectionEntry* pPrev	= NULL;
-	while (pEntry) {
-		if ((&pEntry->m_oConnection) == connection) {
-			// Between lock.
-			if (pPrev) {
-				pPrev->m_pNext		= pEntry->m_pNext;				
-			} else {
-				s_manager.m_entries = pEntry->m_pNext;
-			}
-
-			s_manager.m_killEntries[s_manager.m_killCount++] = pEntry;
-			if (s_manager.m_killCount > 10) {
-				DEBUG_PRINT("ASSERT : more than 10 FREE CONNEXION WAIT FOR KILL !!! \n");
-			}
-			break;
-		}
-		pPrev  = pEntry;
-		pEntry = pEntry->m_pNext;
-	}
-	
-	if (!pEntry) {
-		klb_assertAlways("Error");
-	}
+	s32 expectedCount = s_manager.m_entries.size();
+	expectedCount--;
+	connection->stop();
+	s_manager.m_entries.remove(connection);
+	s_manager.m_killEntries.push_back(connection);
+	klb_assert(s_manager.m_entries.size() == expectedCount, "Error");
 	UNLOCK(s_manager.m_lock);
 	
 	// May be asleep
@@ -152,23 +155,140 @@ NetworkManager::workThread()
 	SLEEP_THREAD(m_eventLock); // First time wait.
 	
 	while (!m_bShutDown) {
-		while (m_killCount != 0) {
-			ConnectionEntry* pList = NULL;
+		if(!m_bPaused) {
 			LOCK(m_lock);
-			if (m_killCount) {
-				pList = m_killEntries[--m_killCount];
+			std::list<CKLBHTTPInterface*>::iterator it = m_killEntries.begin();
+			while(it != m_killEntries.end()) {
+				if((*it)->httpRECV()) {
+					KLBDELETE(*it);
+					it = m_killEntries.erase(it);
+				} else {
+					++it;
+				}
 			}
 			UNLOCK(m_lock);
-
-			if (pList) {
-				DEBUG_PRINT("REAL KILL CONNEXION : %8X\n", &pList->m_oConnection);
-				// Consume code
-				KLBDELETE(pList);
-			}
 		}
 		SLEEP_THREAD(m_eventLock);
 	}
 	
 	m_bShutDownComplete = true;
 	return 1;
+}
+
+CurlObjectInternal*
+CurlObjectInternal::create()
+{
+	CURL* curl = curl_easy_init();
+	return curl ? new CurlObjectInternal(curl) : NULL;
+}
+
+void
+CurlObjectInternal::destroy(CurlObjectInternal* operation)
+{
+	delete operation;
+}
+
+bool
+CurlObjectInternal::initializeLibrary()
+{
+	return curl_global_init(CURL_GLOBAL_ALL) == CURLE_OK;
+}
+
+void
+CurlObjectInternal::shutdownLibrary()
+{
+	curl_global_cleanup();
+}
+
+void
+CurlObjectInternal::reset()
+{
+	freeFormHeaders();
+	m_formEnd = NULL;
+	m_postConfigured = false;
+}
+
+void
+CurlObjectInternal::cleanup()
+{
+	curl_easy_cleanup(m_curl);
+}
+
+int
+CurlObjectInternal::perform()
+{
+	return curl_easy_perform(m_curl);
+}
+
+void
+CurlObjectInternal::freeFormHeaders()
+{
+	if (m_form) {
+		curl_formfree(m_form);
+		m_form = NULL;
+	}
+	if (m_headers) {
+		curl_slist_free_all(m_headers);
+		m_headers = NULL;
+	}
+}
+
+void
+CurlObjectInternal::appendHeader(const char* header)
+{
+	m_headers = curl_slist_append(m_headers, header);
+}
+
+void
+CurlObjectInternal::setPostFields()
+{
+	curl_easy_setopt(m_curl, CURLOPT_HTTPPOST, m_form);
+	m_postConfigured = true;
+}
+
+void
+CurlObjectInternal::setPostData(long contentLength, const void* data)
+{
+	curl_easy_setopt(m_curl, CURLOPT_POSTFIELDSIZE, contentLength);
+	curl_easy_setopt(m_curl, CURLOPT_COPYPOSTFIELDS, data);
+	m_postConfigured = true;
+}
+
+void
+CurlObjectInternal::addFormData(const char* name, long contentLength, const void* data)
+{
+	curl_formadd(&m_form, &m_formEnd,
+	             CURLFORM_COPYNAME, name,
+	             CURLFORM_CONTENTSLENGTH, contentLength,
+	             CURLFORM_COPYCONTENTS, data,
+	             CURLFORM_END);
+}
+
+void
+CurlObjectInternal::setupConnection(const char* url, const char* proxy, void* callbackContext,
+	                           void* progressCallback, void* headerCallback, void* writeCallback)
+{
+	curl_easy_setopt(m_curl, CURLOPT_HTTPHEADER, m_headers);
+	if (!m_postConfigured) {
+		curl_easy_setopt(m_curl, CURLOPT_HTTPGET, 1L);
+	}
+	curl_easy_setopt(m_curl, CURLOPT_URL, url);
+	curl_easy_setopt(m_curl, CURLOPT_PROXY, proxy);
+	curl_easy_setopt(m_curl, CURLOPT_NOPROGRESS, 0L);
+	curl_easy_setopt(m_curl, CURLOPT_NOSIGNAL, 1L);
+	curl_easy_setopt(m_curl, CURLOPT_PROGRESSDATA, callbackContext);
+	curl_easy_setopt(m_curl, CURLOPT_PROGRESSFUNCTION, progressCallback);
+	curl_easy_setopt(m_curl, CURLOPT_HEADERDATA, callbackContext);
+	curl_easy_setopt(m_curl, CURLOPT_HEADERFUNCTION, headerCallback);
+	curl_easy_setopt(m_curl, CURLOPT_WRITEDATA, callbackContext);
+	curl_easy_setopt(m_curl, CURLOPT_WRITEFUNCTION, writeCallback);
+	curl_easy_setopt(m_curl, CURLOPT_ACCEPT_ENCODING, "gzip,deflate");
+}
+
+long
+CurlObjectInternal::getHttpCode()
+{
+	long httpCode;
+	curl_easy_getinfo(m_curl, CURLINFO_RESPONSE_CODE, &httpCode);
+	return httpCode;
 }

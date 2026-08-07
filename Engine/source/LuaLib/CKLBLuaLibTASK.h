@@ -35,10 +35,13 @@ private:
 	static int killTask			(lua_State * L);
 	static int isKill			(lua_State * L);
 	static int registerKill		(lua_State * L);
+	static int isKillComplete	(lua_State * L);
 	static int setStageTask		(lua_State * L);
 	static int clearStageTask	(lua_State * L);
 	static int setPause			(lua_State * L);
 	static int setManagerPause	(lua_State * L);
+	static int setUIMatrix		(lua_State * L);
+	static int setUIRenderState	(lua_State * L);
 };
 
 #endif // CKLBLuaLIbTASK_h

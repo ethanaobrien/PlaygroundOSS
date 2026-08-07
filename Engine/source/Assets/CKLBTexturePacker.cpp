@@ -27,6 +27,23 @@ const bool g_useSWBuffer = true;
 
 /*static*/ u8 TexturePacker::s_currentTextureMode = STARTUP_FORMAT;
 
+TexturePacker g_texturePackerInstances[2];
+bool g_useSecondaryTexturePacker = false;
+static u32 g_allocationSerial = 0;
+
+extern void KLBRegisterObjectName(void* object, const char* className, int flags);
+extern void KLBUnregisterObjectName(void* object, const char* className);
+
+TexturePacker::TexturePacker() {
+	memset(m_pendingSurfaces, 0xff, sizeof(m_pendingSurfaces));
+	KLBRegisterObjectName(this, "TexturePacker", 0);
+}
+
+TexturePacker::~TexturePacker() {
+	KLBUnregisterObjectName(this, "TexturePacker");
+	release();
+}
+
 // =====================================
 //	Private Data Structure.
 // =====================================
@@ -34,8 +51,9 @@ struct PackNode {
 	PackNode(ArrayAllocator<PackNode>* pAlloc);
 	~PackNode();
 	
-	static void* operator new		(size_t size, ArrayAllocator<PackNode>* pAlloc); 
+	static void* operator new		(size_t size, ArrayAllocator<PackNode>* pAlloc);
 	static void  operator delete	(void *p);
+	static void  operator delete	(void *p, ArrayAllocator<PackNode>* pAlloc);
  
 	PackNode*	clone();
 
@@ -60,6 +78,11 @@ typedef	ArrayAllocator<PackNode>	AllocNode;
 /*static*/ void  PackNode::operator delete	(void *p)
 {
 	((PackNode*)p)->allocCtx->freeEntry((PackNode*)p);
+}
+
+/*static*/ void PackNode::operator delete(void* p, AllocNode* pAlloc)
+{
+	pAlloc->freeEntry((PackNode*)p);
 }
 
 class Packer {
@@ -87,9 +110,9 @@ struct SPixel {
 };
 
 struct SSurface {
-	compact		cbCompactFunc;
-	void*		ownerCtx;
-	CKLBSprite*	m_sprite;
+	SurfaceCompactionCallback	compaction;
+	SurfaceOwnerReleaseCallback	releaseOwner;
+	void*		owner;
 	u8*			swBuffer;
 	u16			w;
 	u16			h;
@@ -110,29 +133,40 @@ struct SSurface {
 class TexturePackerOnce {
 	friend class TexturePacker;
 public:
+	TexturePackerOnce(TexturePacker* owner)
+	: m_owner(owner)
+	, m_surfaceCount(0)
+	{}
+
 	bool init				(u16 width,			u16 height, u16 mode);
 	void reset				();
 	void release			();
+	void releaseOwners		();
 	void dump				(bool detail);
 #ifdef DEBUG_TEXTURE_PACKER
 	void scan				(void* ctx);
 #endif
 
 	void unloadSurfaces		();
-	void reloadSurfaces		();
-	u16  allocateSurface	(CKLBSprite* spr,	u16 w,		u16 h	,void* ptrOwner,compact cbCompaction, TexturePackerOnce** ppRealAlloc);
-	u16	 reallocateSurface	(u16 surface,		u16 w,		u16 h	,TexturePackerOnce** ppRealAlloc);
-	void releaseSurface		(u16 surface);
-	void getSurfaceInfo		(u16 surface,		u32*& pixel, float& u0, float& v0, float& u1, float& v1, float& stepU, float& stepV);
+	bool reloadSurfaces		();
+	u16  allocateSurface	(u16 w,		u16 h,		void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner, TexturePackerOnce** ppRealAlloc);
+	TexturePacker::SurfaceHandle
+		 reallocateSurface	(u16 surface,		u16 w,		u16 h,	void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner, TexturePackerOnce** ppRealAlloc);
+	void releaseSurface		(TexturePacker::SurfaceHandle surface);
+	void setSurfaceOwner	(TexturePacker::SurfaceHandle surface, void* owner);
+	void getSurfaceInfo		(TexturePacker::SurfaceHandle surface,		u32*& pixel, float& u0, float& v0, float& u1, float& v1, float& stepU, float& stepV);
 	CTextureUsage*
 		 getTextureUsage	()	{ return m_textureUsage;	}
 	u16	 getSurfaceStride	()	{ return m_width;			}
-	CKLBSprite* getSprite	(u16 surface)	{ return m_surface[surface].m_sprite;		}
-	void*		getOwnerCtx	(u16 surface)	{ return m_surface[surface].ownerCtx;		}
-	compact		getOwnerCB	(u16 surface)	{ return m_surface[surface].cbCompactFunc;	}
+	void*		getOwner		(u16 surface)	{ return m_surface[surface].owner;			}
+	SurfaceCompactionCallback
+			getCompaction	(u16 surface)	{ return m_surface[surface].compaction;		}
+	SurfaceOwnerReleaseCallback
+			getOwnerRelease(u16 surface)	{ return m_surface[surface].releaseOwner;		}
 	void updateTexture		(u16 surface);
 	u16				marker;
 private:
+	TexturePacker*	m_owner;
 	Packer			m_packer;
 	u16				m_width;
 	u16				m_height;
@@ -143,6 +177,7 @@ private:
 	u32				m_format;
 	u32				m_totalSurface;
 	u32				m_freeSurface;
+	u32				m_allocationSerial;
 	u16				m_startYChange;
 	u16				m_endYChange;
 
@@ -151,9 +186,9 @@ private:
 	u16			m_surfaceCount;
 	u16			m_currFormat;
 
-	bool simpleAllocInternal(CKLBSprite* spr, u16 x, u16 y, u16 w, u16 h, s16& found);
-	void moveImage			(u16 id);
-	void refreshTexture		();
+	bool simpleAllocInternal(u16 x, u16 y, u16 w, u16 h, u16& found, bool& needsPlacement);
+	void moveImage			(u32 id);
+	bool refreshTexture		();
 };
 
 
@@ -280,8 +315,8 @@ bool Packer::findCoordRec(PackNode* node, u16 w, u16 h, u16& x, u16& y) {
 // =====================================
 
 bool TexturePackerOnce::init(u16 width, u16 height, u16 mode) {
-	klb_assert((CKLBUtility::nearest2Pow(width ) == width ), "invalid power of two size");
-	klb_assert((CKLBUtility::nearest2Pow(height) == height), "invalid power of two size");
+	klb_assertNull((CKLBUtility::nearest2Pow(width ) == width ), "invalid power of two size");
+	klb_assertNull((CKLBUtility::nearest2Pow(height) == height), "invalid power of two size");
 
 	CKLBOGLWrapper::TEX_CHANNEL format;
 	u32 unit;
@@ -305,6 +340,8 @@ bool TexturePackerOnce::init(u16 width, u16 height, u16 mode) {
 	}
 
 	m_currFormat = mode;
+	m_allocationSerial = 0;
+	m_surfaceCount = 0;
 
 	if (g_useSWBuffer) {
 		m_swBuffer	= KLBNEWA(u8, width * height * m_currFormat);
@@ -342,8 +379,9 @@ void TexturePackerOnce::reset() {
 }
 
 void TexturePackerOnce::release() {
-	for (int n = 0 ; n < m_surfaceCount; n++) {
+	for (u32 n = 0 ; n < m_surfaceCount; n++) {
 		KLBDELETEA(m_surface[n].swBuffer);
+		m_surface[n].swBuffer = NULL;
 	}
 
 	if (m_swBuffer && g_useSWBuffer) {
@@ -362,17 +400,27 @@ void TexturePackerOnce::release() {
 	}
 }
 
+void TexturePackerOnce::releaseOwners() {
+	for (u32 n = 0; n < m_surfaceCount; n++) {
+		SSurface* surface = &m_surface[n];
+		if (!surface->free) {
+			surface->releaseOwner(surface->owner);
+			surface->free = true;
+		}
+	}
+}
+
 void TexturePackerOnce::dump(bool detail) {
 	FILE* pFile = CPFInterface::getInstance().client().getShellOutput();
-	fprintf(pFile, "==== Surface Alloc %8lX Size W:%i, H:%i Byte/Pix: %i ====\n", reinterpret_cast<uintptr_t>(this), m_width, m_height, m_currFormat);
+	fprintf(pFile, "==== Surface Alloc %p Size W:%i, H:%i Byte/Pix: %i ====\n", reinterpret_cast<uintptr_t>(this), m_width, m_height, m_currFormat);
 	u32 totalSurface	= m_width * m_height;
 	u32 usedSurface		= 0;
 	u32 allocSurface	= 0;
-	for (int n = 0; n < m_surfaceCount; n++) {
+	for (u32 n = 0; n < m_surfaceCount; n++) {
 		if (m_surface[n].free) {
-			if (detail) { printf("! "); }
+			if (detail) { fprintf(pFile, "! "); }
 		} else {
-			if (detail) { printf("  "); }
+			if (detail) { fprintf(pFile, "  "); }
 			allocSurface += m_surface[n].alloc_w * m_surface[n].alloc_h; 
 			usedSurface  += m_surface[n].w * m_surface[n].h; 
 			if (detail) {
@@ -408,19 +456,29 @@ void TexturePackerOnce::dump(bool detail) {
 #define INTERNAL_DUMP_TEXPACKER			/*dump(bool detail)*/;
 
 void TexturePacker::unloadSurface() {
-	for (int n=0; n<MAX_TEXTURES ; n++) {
-		TexturePackerOnce* pCurr	= m_allocatedPacker[n];
-		if (pCurr) {
-			pCurr->unloadSurfaces();
+	g_texturePackerInstances[0].unloadInstance();
+	g_texturePackerInstances[1].unloadInstance();
+}
+
+void TexturePacker::reloadSurfaces() {
+	g_texturePackerInstances[0].reloadInstance();
+	g_texturePackerInstances[1].reloadInstance();
+}
+
+void TexturePacker::unloadInstance() {
+	for (int n = 0; n < MAX_TEXTURES; n++) {
+		TexturePackerOnce* packer = m_allocatedPacker[n];
+		if (packer) {
+			packer->unloadSurfaces();
 		}
 	}
 }
 
-void TexturePacker::reloadSurfaces() {
-	for (int n=0; n<MAX_TEXTURES ; n++) {
-		TexturePackerOnce* pCurr	= m_allocatedPacker[n];
-		if (pCurr) {
-			pCurr->reloadSurfaces();
+void TexturePacker::reloadInstance() {
+	for (int n = 0; n < MAX_TEXTURES; n++) {
+		TexturePackerOnce* packer = m_allocatedPacker[n];
+		if (packer) {
+			packer->reloadSurfaces();
 		}
 	}
 }
@@ -429,32 +487,57 @@ void TexturePackerOnce::unloadSurfaces() {
 	this->m_texture->makeEmptyShell();
 }
 
-void TexturePackerOnce::reloadSurfaces() {
-	//
-	// Allocate new texture
-	//
-	this->m_texture	= CKLBOGLWrapper::getInstance().createTexture(m_width, m_height, m_unit, (CKLBOGLWrapper::TEX_CHANNEL)m_format, NULL, 0, CKLBOGLWrapper::TEX_NONE,0,m_texture);
+bool TexturePackerOnce::reloadSurfaces() {
+	if (m_textureUsage) {
+		if (m_texture) {
+			m_texture->releaseUsage(m_textureUsage);
+		}
+		m_textureUsage = NULL;
+	}
+	if (m_texture) {
+		CKLBOGLWrapper::getInstance().releaseTexture(m_texture);
+		m_texture = NULL;
+	}
 
-	//
-	// Force SW -> texture
-	//
-	for (u16 n=0; n < this->m_surfaceCount; n++) {
-		if (m_surface[n].free == false) {
+	m_startYChange = 0x4000;
+	m_endYChange = 0;
+	for (u32 n = 0; n < m_surfaceCount; n++) {
+		if (!m_surface[n].free) {
 			moveImage(n);
 		}
 	}
+
+	m_texture = CKLBOGLWrapper::getInstance().createTexture(
+		m_width, m_height, m_unit, (CKLBOGLWrapper::TEX_CHANNEL)m_format,
+		m_swBuffer, m_width * m_height * m_format,
+		CKLBOGLWrapper::TEX_NONE, 0, NULL);
+	if (!m_texture) return false;
+
+	m_textureUsage = m_texture->createUsage();
+	if (!m_textureUsage) return false;
+
+	for (u32 n = 0; n < m_surfaceCount; n++) {
+		SSurface* pSurf = &m_surface[n];
+		u32 handle = marker | n;
+		if (!pSurf->free) {
+			pSurf->compaction(pSurf->owner, handle, handle);
+		}
+	}
+	return true;
 }
 
-u16 TexturePackerOnce::allocateSurface(CKLBSprite* spr, u16 w, u16 h, void* ptrOwner,compact cbCompaction, TexturePackerOnce** ppRealAlloc) {
+u16 TexturePackerOnce::allocateSurface(u16 w, u16 h, void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner, TexturePackerOnce** ppRealAlloc) {
 	u16 x = 0;
 	u16 y = 0;
+	klb_assertNull(ppRealAlloc, "null pointer");
 	*ppRealAlloc = this;
-	s16 foundIdx;
-	if (simpleAllocInternal(spr,x,y,w,h, foundIdx)) {
+	u16 foundIdx;
+	bool needsPlacement;
+	if (simpleAllocInternal(x,y,w,h, foundIdx, needsPlacement)) {
 
 		// Item allocate succeed.
 		bool res;
-		if (foundIdx < 0) {
+		if (needsPlacement) {
 			res = m_packer.findCoord(w+2,h+2,x,y);
 		} else {
 			x = m_surface[foundIdx].x-1; // Because we add + 1
@@ -463,7 +546,7 @@ u16 TexturePackerOnce::allocateSurface(CKLBSprite* spr, u16 w, u16 h, void* ptrO
 		}
 
 		if (res) {	// Add 1 pixel border around the buffer.
-			u16 update = (foundIdx < 0) ? m_surfaceCount-1 : foundIdx;
+			u16 update = foundIdx;
 			
 			//	[.] Partial update of texture to GPU only for new item.
 			/*  Caller to main allocator does it.
@@ -471,18 +554,20 @@ u16 TexturePackerOnce::allocateSurface(CKLBSprite* spr, u16 w, u16 h, void* ptrO
 			 */
 			m_surface[update].x = x+1;	// X and Y point to the correct binding in texture including border (allow correct UV get)
 			m_surface[update].y = y+1;
-			m_surface[update].cbCompactFunc = cbCompaction;
-			m_surface[update].ownerCtx = ptrOwner;
+			m_surface[update].compaction = compaction;
+			m_surface[update].releaseOwner = releaseOwner;
+			m_surface[update].owner = owner;
+			m_allocationSerial = g_allocationSerial++;
 			m_freeSurface	-= (w+2) * (h+2);
 			INTERNAL_DUMP_TEXPACKER;
 			return update;
 		} else {
 			// Item allocate FAILED.
-			u16 originalCount = m_surfaceCount - 1;
+			u16 originalCount = foundIdx;
 			
 			// Get just allocated buffer.
-			u8* buffer = m_surface[m_surfaceCount-1].swBuffer;
-			m_surface[m_surfaceCount-1].free		= true; // Not necessary but cleaner.
+			u8* buffer = m_surface[foundIdx].swBuffer;
+			m_surface[foundIdx].free		= true; // Not necessary but cleaner.
 
 			//	[.] Clear packer tree.
 			m_packer.setSize(m_width,m_height);
@@ -490,12 +575,11 @@ u16 TexturePackerOnce::allocateSurface(CKLBSprite* spr, u16 w, u16 h, void* ptrO
 			//	[.] For each already existing entry, register again
 			u16 write = 0;
 
-			TexturePacker& packer = TexturePacker::getInstance();
+			TexturePacker& packer = *m_owner;
 			packer.addIgnoreList(this);
 
 			m_freeSurface	= m_totalSurface;
-			bool hadFailure = false;
-			for (u16 n = 0; n < originalCount; n++) {
+			for (u32 n = 0; n < originalCount; n++) {
 				SSurface* pSurf = &m_surface[n];
 				
 				if (!pSurf->free) {
@@ -506,7 +590,8 @@ u16 TexturePackerOnce::allocateSurface(CKLBSprite* spr, u16 w, u16 h, void* ptrO
 					u16 newSurface;
 					if (!success) {
 						// CAN NOT RECOMPACT OLD ITEM --> Need to move to another texture.
-						newSurface = packer.useOtherAlloc(pSurf->m_sprite, pSurf->w, pSurf->h, pSurf->ownerCtx,pSurf->cbCompactFunc);
+						newSurface = packer.useOtherAlloc(pSurf->w, pSurf->h, pSurf->owner,
+														 pSurf->compaction, pSurf->releaseOwner);
 
 						if (newSurface == NULL_IDX) {
 							// Not enough memory : can not escape from total failure.
@@ -514,8 +599,8 @@ u16 TexturePackerOnce::allocateSurface(CKLBSprite* spr, u16 w, u16 h, void* ptrO
 							KLBDELETEA(buffer);
 							return NULL_IDX;
 						} else {
-							u16 localSurface = newSurface & 0xFFF;
-							TexturePackerOnce* pOtherTextureAllocator = packer.m_allocatedPacker[(newSurface & 0xF000) >> 12];
+							u16 localSurface = newSurface & SURFACE_INDEX_MASK;
+							TexturePackerOnce* pOtherTextureAllocator = packer.m_allocatedPacker[(newSurface & TEXTURE_INDEX_MASK) >> SURFACE_INDEX_BITS];
 							*ppRealAlloc = pOtherTextureAllocator;
 
 							// Get New Surface Definition.
@@ -528,12 +613,11 @@ u16 TexturePackerOnce::allocateSurface(CKLBSprite* spr, u16 w, u16 h, void* ptrO
 
 							// Update target Texture with old software buffer.
 							pOtherTextureAllocator->moveImage(localSurface);
-							pNewSurf->cbCompactFunc(pNewSurf->ownerCtx, n | this->marker, newSurface);
+							pNewSurf->compaction(pNewSurf->owner, n | this->marker, newSurface);
 
 							// Free old surface entry.
 							pSurf->free		= true;
 							pSurf->swBuffer	= NULL;
-							hadFailure = true;
 						}
 					} else {
 						// Shift +1,+1 because our width and height is not W+2 and H+2
@@ -544,7 +628,7 @@ u16 TexturePackerOnce::allocateSurface(CKLBSprite* spr, u16 w, u16 h, void* ptrO
 						m_surface[write] = m_surface[n];
 
 						newSurface = write | this->marker;
-						m_surface[write].cbCompactFunc(m_surface[write].ownerCtx, n | this->marker, newSurface);
+						m_surface[write].compaction(m_surface[write].owner, n | this->marker, newSurface);
 						// If a displacement in texture occurs, texture must be updated.
 						// if ((m_surface[write].x != oldX) || (m_surface[write].y != oldY)) {
 							moveImage(write);
@@ -578,12 +662,13 @@ u16 TexturePackerOnce::allocateSurface(CKLBSprite* spr, u16 w, u16 h, void* ptrO
 				pSurf->h		= h;
 				pSurf->alloc_w	= w;
 				pSurf->alloc_h	= h;
-				pSurf->m_sprite	= spr;
 				pSurf->free		= false;
 				pSurf->swBuffer = buffer;
-				pSurf->ownerCtx = ptrOwner;
-				pSurf->cbCompactFunc = cbCompaction;
+				pSurf->owner = owner;
+				pSurf->compaction = compaction;
+				pSurf->releaseOwner = releaseOwner;
 				m_freeSurface	-= (w+2) * (h+2);
+				m_allocationSerial = g_allocationSerial++;
 
 				return m_surfaceCount - 1;
 			} else {
@@ -592,24 +677,18 @@ u16 TexturePackerOnce::allocateSurface(CKLBSprite* spr, u16 w, u16 h, void* ptrO
 
 				KLBDELETEA(buffer);
 				//	[.] FAILED : this texture is full.
-				dump(false);
 
 				// klb_assert((_CrtCheckMemory() != 0), "Heap Error !");
 				*ppRealAlloc = NULL;
 			}
-		}
-	} else {
-		if (foundIdx < 0) {
-			m_surfaceCount--;
-		} else {
-			m_surface[foundIdx].free = true;
 		}
 	}
 
 	return NULL_IDX;
 }
 
-u16 TexturePackerOnce::reallocateSurface(u16 surface, u16 w, u16 h, TexturePackerOnce** ppRealAlloc) {
+TexturePacker::SurfaceHandle TexturePackerOnce::reallocateSurface(u16 surface, u16 w, u16 h, void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner, TexturePackerOnce** ppRealAlloc) {
+	klb_assertNull(ppRealAlloc, "null pointer");
 	SSurface* pSurf = &m_surface[surface];
 	if ((h <= pSurf->alloc_h) && (w <= pSurf->alloc_w)) {
 		// Surface just got smaller or the same : no reallocation at all.
@@ -623,13 +702,8 @@ u16 TexturePackerOnce::reallocateSurface(u16 surface, u16 w, u16 h, TexturePacke
 		return surface;
 	} else {
 		// Surface is bigger --> Need a new slot.
-		u16 newSurface = allocateSurface(pSurf->m_sprite, w, h, pSurf->ownerCtx, pSurf->cbCompactFunc, ppRealAlloc);
-		if (newSurface != NULL_IDX) {
-			klb_assert(newSurface != surface,"Conflict : reallocation use same surface.");
-			// And free the old slot.
-			releaseSurface(surface);
-		}
-		return newSurface;
+		releaseSurface(surface);
+		return allocateSurface(w, h, owner, compaction, releaseOwner, ppRealAlloc);
 	}
 }
 
@@ -641,136 +715,125 @@ void TexturePacker::setCurrentDelete(void* ptr) {
 }
 #endif
 
-void TexturePackerOnce::releaseSurface(u16 surface) {
-	if (surface != NULL_IDX) {
-		klb_assert((surface < SURFACE_MAX), "Texture Packer no more surface available");
-		SSurface* pSurf			= &m_surface[surface];
+void TexturePackerOnce::releaseSurface(TexturePacker::SurfaceHandle surface) {
+	u32 surfaceIndex = surface;
+	if (surfaceIndex != NULL_IDX) {
+		surface |= marker;
+		m_owner->addPendingSurface(surface);
+
+		klb_assertNull((surfaceIndex < SURFACE_MAX), "Invalid surface ID");
+		SSurface* pSurf			= &m_surface[surfaceIndex];
 		pSurf->free				= true;
 		m_freeSurface			+= (pSurf->alloc_w+2) * (pSurf->alloc_h+2);
 		KLBDELETEA(pSurf->swBuffer);
 		pSurf->swBuffer			= NULL;
-		pSurf->cbCompactFunc	= NULL;
+		pSurf->compaction		= NULL;
 #ifdef DEBUG_TEXTURE_PACKER
-		klb_assert(pSurf->ownerCtx == gGlobalDeleteCtx, "Different !");
+		klb_assert(pSurf->owner == gGlobalDeleteCtx, "Different !");
 #endif
-		pSurf->ownerCtx			= NULL;
-		pSurf->m_sprite			= NULL;
+		pSurf->owner				= NULL;
 	}
 }
 
-bool TexturePackerOnce::simpleAllocInternal(CKLBSprite* spr, u16 x, u16 y, u16 w, u16 h, s16& found) {
-	//	[.] Store Item
-	klb_assert((m_surfaceCount < SURFACE_MAX), "Texture Packer no more surface available");
+void TexturePackerOnce::setSurfaceOwner(TexturePacker::SurfaceHandle surface, void* owner) {
+	m_surface[surface].owner = owner;
+}
 
-	found = -1;
+bool TexturePackerOnce::simpleAllocInternal(u16 x, u16 y, u16 w, u16 h, u16& found, bool& needsPlacement) {
+	//	[.] Store Item
+	klb_assertNull((m_surfaceCount <= (SURFACE_MAX - 1)), "Texture Packer no more surface available");
+
+	s32 idx = m_surfaceCount;
+	bool initializePosition = true;
+	bool allocatedNew = true;
 
 	for (u32 n = 0; n < m_surfaceCount; n++) {
 		SSurface* pSurf = &m_surface[n];
 		// Could later modify to (surfaceW >= w) && (surfaceH >= h) && (w*h >= 80% of surface w*h)
 		// 80%-100% reuse should be ok.
-		if ((pSurf->free) && (pSurf->w == w) && (pSurf->h == h)) { 
-			found = n;
-			break;
+		if ((pSurf->free) && (pSurf->w == w)) {
+			initializePosition = false;
+			if (pSurf->h == h) {
+				idx = n;
+				allocatedNew = false;
+				break;
+			}
 		}
 	}
 
-	u16 idx;
-	if (found < 0) {
-		idx = m_surfaceCount++;
-	} else {
-		idx = found;
+	if (allocatedNew) {
+		initializePosition = true;
+		m_surfaceCount++;
+		klb_assert((m_surfaceCount <= SURFACE_MAX), "More than %i surfaces per texture", SURFACE_MAX);
 	}
 
 	SSurface* pSurf = &m_surface[idx];
-	if (found < 0) {
-		pSurf->x		= x;
-		pSurf->y		= y;
-	}
 	// pSurf->flip		= false;
 	pSurf->w		= w;
 	pSurf->h		= h;
 	pSurf->alloc_w	= w;
 	pSurf->alloc_h	= h;
-	pSurf->m_sprite	= spr;
-	pSurf->free		= false;
 	pSurf->swBuffer = KLBNEWA(u8, w * h * m_currFormat);
+	pSurf->free		= false;
+	if (initializePosition) {
+		pSurf->x		= x;
+		pSurf->y		= y;
+	}
+	needsPlacement = allocatedNew;
+	found = (u16)idx;
 
-	return (pSurf->swBuffer != NULL);
+	return (pSurf->free == false);
 }
 
 #include "CKLBTextTempBuffer.h"
 
-void TexturePackerOnce::moveImage(u16 id) {
-	// For now does not support any rotation.
-	// - Update the sprite.
-	SSurface* pSurf = &m_surface[id];
+void TexturePackerOnce::moveImage(u32 id) {
+	klb_assert(this, "Texture Packer Once NULL PTR");
+	u16 surfaceID = (u16)id;
+	SSurface* pSurf = &m_surface[surfaceID];
+	u8* pSrc = pSurf->swBuffer;
+	klb_assert(pSrc, "Texture Packer Once pSrc NULL PTR");
 
-	int yt   = pSurf->y - 1;
-	int wt   = pSurf->w + 1;
-	int wtp1 = wt + 1;
+	int yTop = pSurf->y - 1;
+	int borderedWidth = pSurf->w + 2;
+	size_t textureStride = m_width * m_currFormat;
+	u8* pDst = &m_swBuffer[(pSurf->x + pSurf->y * m_width) * m_currFormat];
+	u8* firstRow = pDst;
 
-	if (g_useSWBuffer) {
-		//
-		// Update software buffer
-		//
-		u8* pSrc = pSurf->swBuffer;
-		u8* pDst = &m_swBuffer[(pSurf->x + ((pSurf->y)*m_texture->getWidth())) * m_currFormat];
-		// Fill upper line
-		memset(pDst - ((m_texture->getWidth()+1) * m_currFormat), 0, wtp1 * m_currFormat);
-		for (int y = 0; y < pSurf->h; y++) {
-			memcpy(pDst,pSrc,pSurf->w * m_currFormat);
-			// Left Side
-			if (m_currFormat == 4) {
-				pDst[-4] = 0;
-				pDst[-3] = 0;
-			}
-			pDst[-2] = 0;
-			pDst[-1] = 0;
-	
-			// Right Side
-			u8* tmp = &pDst[pSurf->w * m_currFormat];
-			if (m_currFormat == 4) {
-				*tmp++ = 0;
-				*tmp++ = 0;
-			}
-			*tmp++ = 0;
-			*tmp++ = 0;
-	
-			pSrc += pSurf->w * m_currFormat;
-			pDst += m_texture->getWidth() * m_currFormat;
+	for (int row = 0; row < pSurf->h; row++) {
+		memcpy(pDst, pSrc, pSurf->w * m_currFormat);
+
+		switch (m_currFormat) {
+		case 4:
+			pDst[-3] = pSrc[0];
+			pDst[-4] = pSrc[1];
+			pDst[-2] = pSrc[2];
+			pDst[-1] = pSrc[3];
+			break;
+		case 2:
+			pDst[-2] = pSrc[0];
+			pDst[-1] = pSrc[1];
+			break;
 		}
-		// Fill lower line
-		memset(pDst - m_currFormat, 0, wtp1 * m_currFormat);
-	
-		if (yt < m_startYChange)	{	m_startYChange = yt;	}
-		yt += pSurf->h + 2;
-		if (yt > m_endYChange)		{	m_endYChange   = yt;	}
-	} else {
-		int xt = pSurf->x - 1;
-		int ht = pSurf->h + 1;
-		int htp1 = ht + 1;
 
-		// Top left rect at x,y
-		u32 sz = pSurf->w > pSurf->h ? wtp1 : htp1;
-		u8* ptrNull = CKLBTextTempBuffer::reallocateBuffer(sz,1,4);
-		memset(ptrNull, 0, sz * 4);
+		pSrc += pSurf->w * m_currFormat;
+		u8* right = &pDst[pSurf->w * m_currFormat];
+		if (m_currFormat == 4) {
+			*right++ = pSrc[-4];
+			*right++ = pSrc[-3];
+		}
+		*right++ = pSrc[-2];
+		*right++ = pSrc[-1];
 
-		// fill edges OUTSIDE the user texture.
-		m_texture->updateTexture(xt, yt       , wtp1, 1, ptrNull, m_currFormat * htp1);
-		m_texture->updateTexture(xt, yt + ht  , wtp1, 1, ptrNull, m_currFormat * htp1);
-		m_texture->updateTexture(xt       , yt, 1, htp1, ptrNull, m_currFormat * wtp1);
-		m_texture->updateTexture(xt + wt  , yt, 1, htp1, ptrNull, m_currFormat * wtp1);
-
-		m_texture->updateTexture(
-			pSurf->x,
-			pSurf->y,
-			pSurf->w,
-			pSurf->h,
-			pSurf->swBuffer,
-			m_currFormat * pSurf->w * pSurf->h
-		);
+		pDst += textureStride;
 	}
 
+	memcpy(firstRow - textureStride, firstRow, m_currFormat * borderedWidth);
+	memcpy(pDst, pDst - textureStride, m_currFormat * borderedWidth);
+
+	if (yTop < m_startYChange) { m_startYChange = yTop; }
+	int yBottom = yTop + pSurf->h + 2;
+	if (yBottom > m_endYChange) { m_endYChange = yBottom; }
 }
 /*
 #include "CKLBTextTempBuffer.h"
@@ -909,42 +972,57 @@ void TexturePackerOnce::updateTexture(u16 surface) {
 	moveImage(surface);
 }
 
-void TexturePackerOnce::getSurfaceInfo(u16 surface, u32*& pixel, float& u0, float& v0, float& u1, float& v1, float &stepU, float &stepV) {
-	klb_assert((surface < m_surfaceCount), "Texture Packer no more surface available");
-	klb_assert((m_surface[surface].free == false), "Error : Try to access freed object");
+void TexturePackerOnce::getSurfaceInfo(TexturePacker::SurfaceHandle surface, u32*& pixel, float& u0, float& v0, float& u1, float& v1, float &stepU, float &stepV) {
+	u32 surfaceIndex = surface;
+	klb_assertNull((surfaceIndex < m_surfaceCount), "Texture Packer no more surface available");
+	klb_assertNull((m_surface[surfaceIndex].free == false), "Error : Try to access freed object");
 	float w = ((float)this->m_width );
 	float h = ((float)this->m_height);
 
-	pixel	= (u32*)m_surface[surface].swBuffer;
-	u0		= m_surface[surface].x / w;
-	v0		= m_surface[surface].y / h;
-	u1		= (m_surface[surface].x + m_surface[surface].w) / w;
-	v1		= (m_surface[surface].y + m_surface[surface].h) / h;
 	stepU	= 1.0f / w;
 	stepV	= 1.0f / h;
+	pixel	= (u32*)m_surface[surfaceIndex].swBuffer;
+	u0		= m_surface[surfaceIndex].x * stepU;
+	v0		= m_surface[surfaceIndex].y * stepV;
+	u1		= (m_surface[surfaceIndex].x + m_surface[surfaceIndex].w) * stepU;
+	v1		= (m_surface[surfaceIndex].y + m_surface[surfaceIndex].h) * stepV;
 }
 
-void TexturePackerOnce::refreshTexture() {
+bool TexturePackerOnce::refreshTexture() {
 	int height = m_endYChange - m_startYChange;
-	m_texture->updateTexture(
-		0,
-		m_startYChange,
-		m_texture->getWidth(),
-		height,
-		&m_swBuffer[m_startYChange * m_texture->getWidth() * m_currFormat],
-		m_texture->getWidth() * height * m_currFormat);
+	bool result = true;
+	if (height > 0) {
+		result = m_texture->updateTexture(
+			0,
+			m_startYChange,
+			m_texture->getWidth(),
+			height,
+			&m_swBuffer[m_startYChange * m_texture->getWidth() * m_currFormat],
+			m_texture->getWidth() * height * m_currFormat);
+	}
 
 	m_startYChange	= 0x4000;
 	m_endYChange	= 0;
+	return result;
 }
 
-void TexturePacker::refreshTextures() {
+void TexturePacker::refreshInstanceTextures() {
 	if (g_useSWBuffer == false) { return; }
 
 	for (int n = 0; n < MAX_TEXTURES ; n++) {
 		TexturePackerOnce* pCurr	= m_allocatedPacker[n];
 		if (pCurr && (pCurr->m_startYChange < pCurr->m_endYChange)) {
-			pCurr->refreshTexture();
+			if (!pCurr->refreshTexture() && !pCurr->reloadSurfaces()) {
+				if (m_lastUsedPacker[pCurr->m_currFormat] == pCurr) {
+					m_lastUsedPacker[pCurr->m_currFormat] = NULL;
+				}
+
+				pCurr->releaseOwners();
+
+				pCurr->release();
+				KLBDELETE(pCurr);
+				m_allocatedPacker[n] = NULL;
+			}
 		}
 	}
 }
@@ -953,9 +1031,9 @@ void TexturePacker::refreshTextures() {
 //	TexturePacker
 // =====================================
 
-bool TexturePacker::init(u16 width, u16 height, u16 defaultFormat) {
-	klb_assert(CKLBUtility::nearest2Pow(width)  == width , "Not a power of 2.");
-	klb_assert(CKLBUtility::nearest2Pow(height) == height, "Not a power of 2.");
+bool TexturePacker::init(u16 width, u16 height, u16 defaultFormat, bool allocateDefault) {
+	klb_assertNull(CKLBUtility::nearest2Pow(width)  == width , "Not a power of 2.");
+	klb_assertNull(CKLBUtility::nearest2Pow(height) == height, "Not a power of 2.");
 
 	for (int n = 0; n < MAX_TEXTURES; n++) {
 		m_allocatedPacker[n] = NULL;
@@ -969,17 +1047,18 @@ bool TexturePacker::init(u16 width, u16 height, u16 defaultFormat) {
 
 	m_width		= width;
 	m_height	= height;
-	m_update	= NULL_IDX;
 	ignoreCount	= 0;
 
-	m_allocatedPacker[0] = KLBNEW(TexturePackerOnce);
-	if (m_allocatedPacker[0] && m_allocatedPacker[0]->init(width,height, m_currFormat)) {
-		m_lastUsedPacker[m_currFormat]	= m_allocatedPacker[0];
-		m_allocatedPacker[0]->marker = 0;
-		return true;
-	} else {
-		return false;
+	bool result = true;
+	if (allocateDefault) {
+		TexturePackerOnce* packer = allocateAllocator(width, height);
+		if (packer) {
+			m_lastUsedPacker[m_currFormat] = packer;
+		} else {
+			result = false;
+		}
 	}
+	return result;
 }
 
 void TexturePacker::release() {
@@ -996,11 +1075,48 @@ void TexturePacker::release() {
 	m_lastUsedPacker[FORMAT_8	] = NULL;
 }
 
-void TexturePacker::dump(bool detail) {
-	for (int n = 0; n < MAX_TEXTURES; n++) {
-		if (m_allocatedPacker[n]) {
-			m_allocatedPacker[n]->dump(detail);
+void TexturePacker::releaseAll() {
+	for (int instance = 0; instance < 2; instance++) {
+		for (int n = 0; n < MAX_TEXTURES; n++) {
+			TexturePackerOnce*& packer = g_texturePackerInstances[instance].m_allocatedPacker[n];
+			if (packer) {
+				packer->release();
+				KLBDELETE(packer);
+				packer = NULL;
+			}
 		}
+
+		g_texturePackerInstances[instance].m_lastUsedPacker[FORMAT_8888] = NULL;
+		g_texturePackerInstances[instance].m_lastUsedPacker[FORMAT_4444] = NULL;
+		g_texturePackerInstances[instance].m_lastUsedPacker[FORMAT_8]    = NULL;
+	}
+}
+
+bool TexturePacker::initAll(u16 width, u16 height, u16 format, bool allocateSecondary) {
+	bool primaryReady = g_texturePackerInstances[0].init(width, height, format, true);
+	bool secondaryReady = g_texturePackerInstances[1].init(width, height, format, allocateSecondary);
+	g_useSecondaryTexturePacker = allocateSecondary;
+	return primaryReady & secondaryReady;
+}
+
+void TexturePacker::dump(bool detail) {
+	g_texturePackerInstances[0].dumpInstance(detail);
+	g_texturePackerInstances[1].dumpInstance(detail);
+}
+
+void TexturePacker::dumpInstance(bool detail) {
+	for (int n = 0; n < MAX_TEXTURES; n++) {
+		TexturePackerOnce* packer = m_allocatedPacker[n];
+		if (packer) {
+			packer->dump(detail);
+		}
+	}
+}
+
+void TexturePacker::refreshTextures() {
+	g_texturePackerInstances[0].refreshInstanceTextures();
+	if (g_useSecondaryTexturePacker) {
+		g_texturePackerInstances[1].refreshInstanceTextures();
 	}
 }
 
@@ -1009,9 +1125,9 @@ TexturePackerOnce* TexturePacker::allocateAllocator(u16 w, u16 h) {
 		TexturePackerOnce* pCurr	= m_allocatedPacker[n];
 		if (!pCurr) {
 			// Create new surface.
-			TexturePackerOnce* pNew = KLBNEW(TexturePackerOnce);
+			TexturePackerOnce* pNew = KLBNEWC(TexturePackerOnce, (this));
 			if (pNew) {
-				pNew->marker = (u16)(n << 12);
+				pNew->marker = (u16)(n << SURFACE_INDEX_BITS);
 
 				u32 sw = m_width;
 				u32 sh = m_height;
@@ -1038,11 +1154,12 @@ TexturePackerOnce* TexturePacker::allocateAllocator(u16 w, u16 h) {
 
 u32 globalCount = 0;
 
-u16  TexturePacker::allocateSurface(CKLBSprite* spr, u16 w, u16 h, void* ptrOwner,compact cbCompaction) {
-	klb_assert(w <= m_width , "Can never allocate surface wider than texture" );
-	klb_assert(h <= m_height, "Can never allocate surface higher than texture");
+TexturePacker::SurfaceHandle TexturePacker::allocateSurface(u16 w, u16 h, void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner) {
+	klb_assertNull(w <= m_width - 2, "Can never allocate surface wider than texture" );
+	klb_assertNull(h <= m_height - 2, "Can never allocate surface higher than texture");
+	resetPendingSurfaces();
 
-	s64 startTime = CPFInterface::getInstance().platform().nanotime();
+	CPFInterface::getInstance().platform().nanotime();
 
 	if (m_lastUsedPacker[m_currFormat] == NULL) {
 		m_lastUsedPacker[m_currFormat] = allocateAllocator(w,h);	// Allocate (no default mean none available)
@@ -1052,25 +1169,21 @@ u16  TexturePacker::allocateSurface(CKLBSprite* spr, u16 w, u16 h, void* ptrOwne
 	}
 
 	TexturePackerOnce* pOnce = NULL;
-	u16 surface = m_lastUsedPacker[m_currFormat]->allocateSurface(spr, w, h, ptrOwner, cbCompaction, &pOnce);
+	u16 update;
+	u16 surface = m_lastUsedPacker[m_currFormat]->allocateSurface(w, h, owner, compaction, releaseOwner, &pOnce);
 	if (surface != NULL_IDX) {
-		klb_assert(pOnce, "null pointer");
-		m_update = surface | pOnce->marker;
-		klb_assert((m_update & 0xFFF) < pOnce->m_surfaceCount, "Error.");
+		klb_assertNull(pOnce, "null pointer");
+		klb_assertNull(surface < pOnce->m_surfaceCount, "Error.");
+		update = surface | pOnce->marker;
 	} else {
 		addIgnoreList(m_lastUsedPacker[m_currFormat]);
-		m_update = useOtherAlloc(spr, w, h, ptrOwner, cbCompaction);
+		update = useOtherAlloc(w, h, owner, compaction, releaseOwner);
 		removeIgnoreList(m_lastUsedPacker[m_currFormat]);
-		klb_assert(m_update != NULL_IDX, "Allocation did not work. Can not allocate");
+		klb_assert(update != NULL_IDX, "Allocation did not work. Can not allocate");
 	}
 
-	s64 endTime = CPFInterface::getInstance().platform().nanotime();
-	float time  = ((endTime - startTime) / 1000000.0f);
-	if (time > 1.0f) {	// More than 1 ms.
-		DEBUG_PRINT("2D Texture Packer : %5.2f ms",time);
-	}
-
-	return m_update;
+	CPFInterface::getInstance().platform().nanotime();
+	return update;
 }
 
 bool TexturePacker::notInIgnoreList(TexturePackerOnce* pack) {
@@ -1108,16 +1221,16 @@ void TexturePacker::removeIgnoreList(TexturePackerOnce* pack) {
 	ignoreCount--;
 }
 
-u16 TexturePacker::useOtherAlloc(CKLBSprite* spr, u16 w, u16 h, void* ptrOwner,compact cbCompaction) {
+TexturePacker::SurfaceHandle TexturePacker::useOtherAlloc(u16 w, u16 h, void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner) {
 	// 1. Try to find allocator supporting new allocated size.
 	TexturePackerOnce* pRealAlloc = NULL;
 	u16 surface;
 	u32 max							= w*h;	// Search only bigger than this.
-	for (int n = 0; n<MAX_TEXTURES ; n++) {
+	for (u32 n = 0; n<MAX_TEXTURES ; n++) {
 		TexturePackerOnce* pCurr	= m_allocatedPacker[n];
 		if (pCurr && (notInIgnoreList(pCurr)) && (pCurr->m_currFormat == m_currFormat)) {
 			if (pCurr->m_freeSurface > max) {
-				surface = pCurr->allocateSurface(spr, w, h, ptrOwner, cbCompaction, &pRealAlloc);
+				surface = pCurr->allocateSurface(w, h, owner, compaction, releaseOwner, &pRealAlloc);
 				if (surface != NULL_IDX) {
 					m_lastUsedPacker[m_currFormat] = pRealAlloc;
 					return surface | pRealAlloc->marker;
@@ -1129,7 +1242,7 @@ u16 TexturePacker::useOtherAlloc(CKLBSprite* spr, u16 w, u16 h, void* ptrOwner,c
 	// 2. If fail, allocate new surface
 	TexturePackerOnce* pOnce = allocateAllocator(w, h);
 	if (pOnce) {
-		surface = pOnce->allocateSurface(spr, w, h, ptrOwner, cbCompaction, &pRealAlloc);
+		surface = pOnce->allocateSurface(w, h, owner, compaction, releaseOwner, &pRealAlloc);
 		// If valid allocation switch to new allocator as default.
 		if (surface != NULL_IDX) {
 			m_lastUsedPacker[m_currFormat] = pRealAlloc;
@@ -1141,43 +1254,47 @@ u16 TexturePacker::useOtherAlloc(CKLBSprite* spr, u16 w, u16 h, void* ptrOwner,c
 	}
 }
 
-u16	 TexturePacker::reallocateSurface(u16 surface, u16 w, u16 h) {
-	klb_assert(w <= m_width , "Can never allocate surface wider than texture" );
-	klb_assert(h <= m_height, "Can never allocate surface higher than texture");
+TexturePacker::SurfaceHandle TexturePacker::reallocateSurface(SurfaceHandle surface, u16 w, u16 h, void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner) {
+	klb_assertNull(w <= m_width - 2, "Can never allocate surface wider than texture" );
+	klb_assertNull(h <= m_height - 2, "Can never allocate surface higher than texture");
+	resetPendingSurfaces();
 
 	TexturePackerOnce* pRealAlloc;
-	u16 nsurface = m_allocatedPacker[surface>>12]->reallocateSurface(surface & 0xFFF, w,h,&pRealAlloc);
+	u16 update;
+	size_t textureIndex = surface >> SURFACE_INDEX_BITS;
+	TexturePackerOnce* sourcePacker = m_allocatedPacker[textureIndex];
+	u16 surfID = surface & SURFACE_INDEX_MASK;
+	u16 nsurface = sourcePacker->reallocateSurface(surfID, w, h, owner, compaction, releaseOwner, &pRealAlloc);
 	if (nsurface != NULL_IDX) {
-		klb_assert(pRealAlloc, "null pointer");
-		m_update = nsurface | pRealAlloc->marker;
-		klb_assert((m_update & 0xFFF) < pRealAlloc->m_surfaceCount, "Error.");
+		klb_assertNull(pRealAlloc, "null pointer");
+		klb_assertNull(nsurface < pRealAlloc->m_surfaceCount, "Error.");
+		update = nsurface | pRealAlloc->marker;
 	} else {
-		u16 surfID = surface & 0xFFF;
-		CKLBSprite* pSpr	= m_allocatedPacker[surface>>12]->getSprite  (surfID);
-		void*		pRef	= m_allocatedPacker[surface>>12]->getOwnerCtx(surfID);
-		compact		cbCompaction = m_allocatedPacker[surface>>12]->getOwnerCB(surfID);
-		nsurface = useOtherAlloc(pSpr, w, h, pRef, cbCompaction);
-		if (nsurface != NULL_IDX) {
-			klb_assert((nsurface & 0xFFF) < m_lastUsedPacker[nsurface>>12]->m_surfaceCount, "Error.");
-			// Free old surface if successfull.
-			m_allocatedPacker[surface>>12]->releaseSurface(surface);
+		update = useOtherAlloc(w, h, owner, compaction, releaseOwner);
+		if (update != NULL_IDX) {
+			u16 texture = update & TEXTURE_INDEX_MASK;
+			klb_assertNull((update & SURFACE_INDEX_MASK) < m_allocatedPacker[texture >> SURFACE_INDEX_BITS]->m_surfaceCount, "Error.");
+			if (notInPendingSurfaces(surface)) {
+				m_allocatedPacker[textureIndex]->releaseSurface(surfID);
+			}
 		} else {
 			klb_assertAlways("Allocation did not work. Can not allocate");
 		}
-		m_update = nsurface;
 	}
 	
-	return m_update;
+	return update;
 }
 
-void TexturePacker::releaseSurface(u16 surface) {
-	TexturePackerOnce* pPack = m_allocatedPacker[surface>>12];
-	pPack->releaseSurface(surface & 0xFFF);
+void TexturePacker::releaseSurface(SurfaceHandle surface) {
+	resetPendingSurfaces();
+	u16 texture = surface & TEXTURE_INDEX_MASK;
+	TexturePackerOnce* pPack = m_allocatedPacker[texture >> SURFACE_INDEX_BITS];
+	pPack->releaseSurface(surface & SURFACE_INDEX_MASK);
 
 	// Free full surface when empty.
 	if (pPack->m_freeSurface == pPack->m_totalSurface) {
-		if ((surface>>12) != 0) {
-			if (m_lastUsedPacker[pPack->m_currFormat] == m_allocatedPacker[surface>>12]) {
+		if ((texture >> SURFACE_INDEX_BITS) != 0) {
+			if (m_lastUsedPacker[pPack->m_currFormat] == m_allocatedPacker[texture >> SURFACE_INDEX_BITS]) {
 				u32 freeSurface = 0;
 				TexturePackerOnce* result = NULL;
 				// Search any texture allocator of same format around with maximal free surface
@@ -1198,7 +1315,7 @@ void TexturePacker::releaseSurface(u16 surface) {
 			pPack->release();
 			KLBDELETE(pPack);
 
-			m_allocatedPacker[surface>>12] = NULL;
+			m_allocatedPacker[texture >> SURFACE_INDEX_BITS] = NULL;
 		} else {
 			// Do not free texture 0, just clean list.
 			pPack->reset();
@@ -1206,18 +1323,24 @@ void TexturePacker::releaseSurface(u16 surface) {
 	}
 }
 
-void TexturePacker::getSurfaceInfo(u16 surface, u32*& pixel, float& u0, float& v0, float& u1, float& v1, float& stepU, float& stepV) {
-	klb_assert(surface != NULL_IDX, "Error");
-	m_allocatedPacker[surface>>12]->getSurfaceInfo(surface & 0xFFF, pixel, u0, v0, u1, v1, stepU, stepV);
+void TexturePacker::setSurfaceOwner(SurfaceHandle surface, void* owner) {
+	u16 texture = surface & TEXTURE_INDEX_MASK;
+	TexturePackerOnce* packer = m_allocatedPacker[texture >> SURFACE_INDEX_BITS];
+	packer->setSurfaceOwner(surface & SURFACE_INDEX_MASK, owner);
 }
 
-CTextureUsage* TexturePacker::getTextureUsage(u16 surface) {
-	return m_allocatedPacker[surface>>12]->getTextureUsage();
+void TexturePacker::getSurfaceInfo(SurfaceHandle surface, u32*& pixel, float& u0, float& v0, float& u1, float& v1, float& stepU, float& stepV) {
+	klb_assertNull(surface != NULL_IDX, "Error");
+	m_allocatedPacker[surface >> SURFACE_INDEX_BITS]->getSurfaceInfo(surface & SURFACE_INDEX_MASK, pixel, u0, v0, u1, v1, stepU, stepV);
 }
 
-void TexturePacker::updateTexture(u16 texture) {
+CTextureUsage* TexturePacker::getTextureUsage(SurfaceHandle surface) {
+	return m_allocatedPacker[surface >> SURFACE_INDEX_BITS]->getTextureUsage();
+}
+
+void TexturePacker::updateTexture(SurfaceHandle texture) {
 	if (texture != NULL_IDX) {
-		m_allocatedPacker[texture>>12]->updateTexture(texture & 0xFFF);
+		m_allocatedPacker[texture >> SURFACE_INDEX_BITS]->updateTexture(texture & SURFACE_INDEX_MASK);
 	}
 }
 
@@ -1225,14 +1348,51 @@ void TexturePacker::setFormat(u16 format) {
 	m_currFormat = format;
 }
 
+void TexturePacker::releaseOwners() {
+	for (int n = 0; n < MAX_TEXTURES; n++) {
+		TexturePackerOnce* packer = m_allocatedPacker[n];
+		if (packer) {
+			if (m_lastUsedPacker[packer->m_currFormat] == packer) {
+				m_lastUsedPacker[packer->m_currFormat] = NULL;
+			}
+
+			packer->releaseOwners();
+			packer->release();
+			KLBDELETE(packer);
+			m_allocatedPacker[n] = NULL;
+		}
+	}
+}
+
+void TexturePacker::resetPendingSurfaces() {
+	m_pendingSurfaceCount = 0;
+}
+
+void TexturePacker::addPendingSurface(SurfaceHandle surface) {
+	if (m_pendingSurfaceCount < 1024) {
+		m_pendingSurfaces[m_pendingSurfaceCount++] = surface;
+	}
+}
+
+bool TexturePacker::notInPendingSurfaces(SurfaceHandle surface) const {
+	bool notPending = true;
+	for (s32 n = 0; n < m_pendingSurfaceCount; n++) {
+		if (m_pendingSurfaces[n] == surface) {
+			notPending = false;
+			break;
+		}
+	}
+	return notPending;
+}
+
 #ifdef DEBUG_TEXTURE_PACKER
 
 void TexturePackerOnce::scan(void* ctx) {
 	for (int n = 0; n<m_surfaceCount; n++) {
 		if (m_surface[n].free) {
-			klb_assert(m_surface[n].ownerCtx == NULL, "Should be cleaned by current logic");
+			klb_assert(m_surface[n].owner == NULL, "Should be cleaned by current logic");
 		} else {
-			klb_assert(m_surface[n].ownerCtx != ctx , "Should not own ref anymore !");
+			klb_assert(m_surface[n].owner != ctx , "Should not own ref anymore !");
 		}
 	}
 }

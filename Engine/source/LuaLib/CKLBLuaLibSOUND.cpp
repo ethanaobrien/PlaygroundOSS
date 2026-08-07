@@ -96,6 +96,7 @@ CKLBLuaLibSOUND::addLibrary()
 	// addFunction("<Lua関数名>",     CKLBLuaLibSOUND::<static関数名>);
 	// …を列挙することで関数定義
 	addFunction("SND_Open",			CKLBLuaLibSOUND::luaSoundOpen);
+	addFunction("SND_SetLoop",		CKLBLuaLibSOUND::luaSoundSetLoop);
     addFunction("SND_setBufSize",	CKLBLuaLibSOUND::luaSetBufSize);
 	addFunction("SND_Close",		CKLBLuaLibSOUND::luaSoundClose);
 	addFunction("SND_CloseAll",		CKLBLuaLibSOUND::luaSoundCloseAll);
@@ -111,6 +112,8 @@ CKLBLuaLibSOUND::addLibrary()
 	addFunction("SND_getLength", 	CKLBLuaLibSOUND::luaGetLength);
     addFunction("SND_State", 		CKLBLuaLibSOUND::luaSoundState);
     addFunction("SND_Fade", 		CKLBLuaLibSOUND::luaSoundSetFade);
+	addFunction("SND_KeepSessions",	CKLBLuaLibSOUND::luaSoundKeepSessions);
+	addFunction("SND_DecompressBGM", CKLBLuaLibSOUND::luaSoundDecompressBGM);
     
 	addFunction("SND_VolumeBGM",	CKLBLuaLibSOUND::luaVolumeBGM);
 	addFunction("SND_VolumeSE",		CKLBLuaLibSOUND::luaVolumeSE);
@@ -200,7 +203,10 @@ CKLBLuaLibSOUND::luaGetLength(lua_State * L)
 	}
 	IPlatformRequest& pForm = CPFInterface::getInstance().platform();
     
-	SOUND * pSnd = (SOUND *)lua.getPointer(1);
+	SOUND * pSnd = NULL;
+	if(!lua.isNil(1)) {
+		pSnd = (SOUND *)lua.getPointer(1);
+	}
 
 	s32 length = -1;
 	if(checkSoundExist(pSnd)) {
@@ -225,6 +231,10 @@ CKLBLuaLibSOUND::luaSoundOpen(lua_State * L)
 	bool f_bgm = (argc >= 2) ? lua.getBool(2) : false;
 
 	SOUND * pSnd = createSound(snd_asset, !f_bgm);
+	if(!pSnd) {
+		lua.retNil();
+		return 1;
+	}
 
 	if( !f_bgm && pSnd ) pForm.preLoad(pSnd->hSND);	// SEモードの場合はオンメモリ状態にしておく
 
@@ -242,7 +252,10 @@ CKLBLuaLibSOUND::luaSetBufSize(lua_State *L)
         return 1;
     }
     IPlatformRequest& pForm = CPFInterface::getInstance().platform();
-    SOUND * pSnd = (SOUND *)lua.getPointer(1);
+    SOUND * pSnd = NULL;
+    if(!lua.isNil(1)) {
+        pSnd = (SOUND *)lua.getPointer(1);
+    }
     int level = lua.getInt(2);
     bool bResult = pForm.setBufSize(pSnd->hSND, level);
     lua.retBool(bResult);
@@ -258,7 +271,10 @@ CKLBLuaLibSOUND::luaSoundClose(lua_State * L)
 	if(argc < 1) return 0;
 
 	for(int i = 1; i <= argc; i++) {
-		SOUND * pSnd = (SOUND *)lua.getPointer(i);
+		SOUND * pSnd = NULL;
+		if(!lua.isNil(i)) {
+			pSnd = (SOUND *)lua.getPointer(i);
+		}
 		removeSound(pSnd);
 		lua.retNil();
 	}
@@ -291,7 +307,10 @@ CKLBLuaLibSOUND::luaSoundPlay(lua_State * L)
 	}
 	IPlatformRequest& pForm = CPFInterface::getInstance().platform();
     
-	SOUND * pSnd = (SOUND *)lua.getPointer(1);
+	SOUND * pSnd = NULL;
+	if(!lua.isNil(1)) {
+		pSnd = (SOUND *)lua.getPointer(1);
+	}
     u32 fade_msec = 0;
     float tgtVol = 1.0f;
 	float globalVol = 1.0f;
@@ -305,7 +324,7 @@ CKLBLuaLibSOUND::luaSoundPlay(lua_State * L)
 		globalVol = (float)lua.getDouble(4);
 	}
     // 与えられたポインタが無効であれば何もしない
-	float startVol = (fade_msec > 0.0f) ? (0.0f) : (1.0f);
+	float startVol = (fade_msec > 0.0f) ? (0.0f) : tgtVol;
     if(checkSoundExist(pSnd)) pForm.playAudio(pSnd->hSND, fade_msec, tgtVol * globalVol, startVol * globalVol);
     
 	lua.retBoolean(true);
@@ -333,7 +352,7 @@ CKLBLuaLibSOUND::luaSoundStop(lua_State * L)
         tgtVol = (float)lua.getDouble(3);
     }
     
-	SOUND * pSnd = (SOUND *)lua.getPointer(1);
+	SOUND * pSnd = lua.isNil(1) ? NULL : (SOUND *)lua.getPointer(1);
     if(checkSoundExist(pSnd)) pForm.stopAudio(pSnd->hSND, fade_msec, tgtVol);
 	lua.retBoolean(true);
 	return 1;
@@ -349,7 +368,10 @@ CKLBLuaLibSOUND::luaSoundVolume(lua_State *L)
         return 1;
     }
     IPlatformRequest& pForm = CPFInterface::getInstance().platform();
-    SOUND * pSnd = (SOUND *)lua.getPointer(1);
+    SOUND * pSnd = NULL;
+    if(!lua.isNil(1)) {
+        pSnd = (SOUND *)lua.getPointer(1);
+    }
     float volume = lua.getFloat(2);
     if(checkSoundExist(pSnd)) pForm.setAudioVolume(pSnd->hSND, volume);
     lua.retBoolean(true);
@@ -366,7 +388,10 @@ CKLBLuaLibSOUND::luaSoundPan(lua_State *L)
         return 1;
     }
     IPlatformRequest& pForm = CPFInterface::getInstance().platform();
-    SOUND * pSnd = (SOUND *)lua.getPointer(1);
+    SOUND * pSnd = NULL;
+    if(!lua.isNil(1)) {
+        pSnd = (SOUND *)lua.getPointer(1);
+    }
     float pan = lua.getFloat(2);
     if(checkSoundExist(pSnd)) pForm.setAudioPan(pSnd->hSND, pan);
     lua.retBoolean(true);
@@ -460,7 +485,10 @@ CKLBLuaLibSOUND::luaSoundPause(lua_State * L)
 	}
     IPlatformRequest& pForm = CPFInterface::getInstance().platform();
     
-    SOUND * pSnd = (SOUND *)lua.getPointer(1);
+    SOUND * pSnd = NULL;
+    if(!lua.isNil(1)) {
+        pSnd = (SOUND *)lua.getPointer(1);
+    }
     u32 fade_msec = 0;
     float tgtVol = 0.0f;
     if( argc > 1 ) {
@@ -486,7 +514,10 @@ CKLBLuaLibSOUND::luaSoundResume(lua_State * L)
 	}
     IPlatformRequest& pForm = CPFInterface::getInstance().platform();
     
-    SOUND * pSnd = (SOUND *)lua.getPointer(1);
+    SOUND * pSnd = NULL;
+    if(!lua.isNil(1)) {
+        pSnd = (SOUND *)lua.getPointer(1);
+    }
     u32 fade_msec = 0;
     float tgtVol = 1.0f;
     if( argc > 1 ) {
@@ -511,8 +542,11 @@ CKLBLuaLibSOUND::luaSoundSeek(lua_State * L)
         return 1;
     }
     IPlatformRequest& pForm = CPFInterface::getInstance().platform();
-    SOUND * pSnd = (SOUND *)lua.getPointer(1);
-    s32 millisec = (s32)lua.getDouble(2);
+    SOUND * pSnd = NULL;
+    if(!lua.isNil(1)) {
+        pSnd = (SOUND *)lua.getPointer(1);
+    }
+    s32 millisec = lua.getInt(2);
     if(checkSoundExist(pSnd)) pForm.seekAudio(pSnd->hSND, millisec);
     lua.retBoolean(true);
     return 1;
@@ -528,7 +562,10 @@ CKLBLuaLibSOUND::luaSoundTell(lua_State * L)
         return 1;
     }
     IPlatformRequest& pForm = CPFInterface::getInstance().platform();
-    SOUND * pSnd = (SOUND *)lua.getPointer(1);
+    SOUND * pSnd = NULL;
+    if(!lua.isNil(1)) {
+        pSnd = (SOUND *)lua.getPointer(1);
+    }
     s32 millisec = 0;
     if(checkSoundExist(pSnd)) millisec = pForm.tellAudio(pSnd->hSND);
 	lua.retInt(millisec);
@@ -550,7 +587,10 @@ CKLBLuaLibSOUND::luaSoundState(lua_State * L)
         return 1;
     }
     IPlatformRequest& pForm = CPFInterface::getInstance().platform();
-    SOUND * pSnd = (SOUND *)lua.getPointer(1);
+    SOUND * pSnd = NULL;
+    if(!lua.isNil(1)) {
+        pSnd = (SOUND *)lua.getPointer(1);
+    }
     s32 state = 0;
     if( checkSoundExist(pSnd) ) {
         // ハンドルが見つかったのでステータスを返す
@@ -579,7 +619,10 @@ CKLBLuaLibSOUND::luaSoundSetFade(lua_State * L)
         return 1;
     }
     IPlatformRequest& pForm = CPFInterface::getInstance().platform();
-    SOUND * pSnd = (SOUND *)lua.getPointer(1);
+    SOUND * pSnd = NULL;
+    if(!lua.isNil(1)) {
+        pSnd = (SOUND *)lua.getPointer(1);
+    }
     s32 millisec = (s32)lua.getDouble(2);
     float tgtVol = (float)lua.getDouble(3);
     
@@ -631,6 +674,66 @@ int CKLBLuaLibSOUND::luaSoundPauseOnInterruption(lua_State * L)
     
     lua.retBoolean(true);
     return 1;
+}
+
+int
+CKLBLuaLibSOUND::luaSoundSetLoop(lua_State * L)
+{
+	CLuaState lua(L);
+	int argc = lua.numArgs();
+	if(argc != 3) {
+		lua.retBoolean(false);
+		return 1;
+	}
+
+	IPlatformRequest& pForm = CPFInterface::getInstance().platform();
+	SOUND * pSnd = NULL;
+	if(!lua.isNil(1)) {
+		pSnd = (SOUND *)lua.getPointer(1);
+	}
+	s32 loopStart = (s32)lua.getFloat(2);
+	s32 loopEnd   = (s32)lua.getFloat(3);
+	if(checkSoundExist(pSnd)) {
+		pForm.setAudioLoop(pSnd->hSND, loopStart, loopEnd);
+	}
+	lua.retBoolean(true);
+	return 1;
+}
+
+int
+CKLBLuaLibSOUND::luaSoundKeepSessions(lua_State * L)
+{
+	CLuaState lua(L);
+	int argc = lua.numArgs();
+	if(argc < 1) {
+		lua.retBoolean(false);
+		return 1;
+	}
+
+	IPlatformRequest& pForm = CPFInterface::getInstance().platform();
+	SOUND * pSnd = NULL;
+	if(!lua.isNil(1)) {
+		pSnd = (SOUND *)lua.getPointer(1);
+	}
+	s32 sessionCount = (argc > 1) ? lua.getInt(2) : 1;
+	if(checkSoundExist(pSnd)) {
+		pForm.keepAudioSessions(pSnd->hSND, sessionCount);
+	}
+	lua.retBoolean(true);
+	return 1;
+}
+
+int
+CKLBLuaLibSOUND::luaSoundDecompressBGM(lua_State * L)
+{
+	CLuaState lua(L);
+	int argc = lua.numArgs();
+	if(argc > 0) {
+		IPlatformRequest& pForm = CPFInterface::getInstance().platform();
+		pForm.decompressBGM(lua.getBool(1));
+	}
+	lua.retBoolean(argc > 0);
+	return 1;
 }
 
 

@@ -65,11 +65,10 @@ CKLBUIControl::CKLBUIControl()
 , m_onPinch     (NULL)
 , m_onLongTap   (NULL)
 , m_onEventRaw  (NULL)
-, m_modalStack  (false)
-, m_bModalEnable(true)
-, m_callbackMask(0)
+, m_modalStack  ()
 , m_lastClick   (0)
-, m_bAll        (false) 
+, m_callbackMask(0)
+, m_bAll        (false)
 {
 }
 
@@ -125,24 +124,11 @@ CKLBUIControl::init(CKLBTask* /*pTask*/, const char* onClick, const char* onDrag
 	m_bControl  = false;
 	m_usePt     = 0;
 
-	m_ctrlList.pGroup   = NULL;
-	m_ctrlList.pGrpPrev = NULL;
-	m_ctrlList.pGrpNext = NULL;
-
-	m_ctrlList.pBegin   = NULL;
-	m_ctrlList.next     = NULL;
 	m_ctrlList.bEnable  = true;
-	m_ctrlList.bExclusive       = false;
-	m_ctrlList.bWorking         = false;
-	m_ctrlList.pCallbackIF      = NULL;
-	m_ctrlList.nativeCallback   = NULL;
-	m_ctrlList.pID      = NULL;
 
 	if(regist(0, P_AFTER)) {
 		m_modalStack.setModal(false);
-		m_modalStack.setEnable(true);
 		m_modalStack.push();
-		m_bModalEnable = true;
 		return true;
 	}
 	// regist に失敗した場合
@@ -306,9 +292,7 @@ CKLBUIControl::commandScript(CLuaState& lua)
 void
 CKLBUIControl::execute(u32 deltaT)
 {
-	m_bModalEnable = m_modalStack.isEnable();
-
-	if(!m_bModalEnable) {
+	if(!m_modalStack.isEnable()) {
 		// 呼び出したcallback中などにmodal form等が表示されると、
 		// その後のexecuteが処理されないことにより、あるtapのreleaseが検知できないことがある。
 		// このため、modal状態によって操作をブロックされている間は操作状態を完全にリセットする。
@@ -319,7 +303,7 @@ CKLBUIControl::execute(u32 deltaT)
 		return;
 	}
 
-	int frameID = CKLBTaskMgr::getInstance().getFrameID();	
+	int frameID = CKLBTaskMgr::getInstance().getFrameID();
 	CKLBFormGroup& fGrp = CKLBFormGroup::getInstance();
 	CKLBTouchPadQueue& tpq = CKLBTouchPadQueue::getInstance();
 	const PAD_ITEM * item;
@@ -457,7 +441,6 @@ CKLBUIControl::execute(u32 deltaT)
 			}
 			break;
 		case PAD_ITEM::RELEASE:
-		case PAD_ITEM::CANCEL:
 			{
 				// 自身の操作中でなければ、アイテムがあってもそれは自身への操作ではない。
 				if(!m_bControl) break;
@@ -558,7 +541,7 @@ CKLBUIControl::execute(u32 deltaT)
         m_timeCnt += deltaT;
         if(m_timeCnt >= CLICKTIME) {
             m_timeCnt = 0;
-            m_bClick = false;
+			m_bClick = false;
 			if(!fGrp.isWorking(&m_ctrlList, this) && !(m_callbackMask & MASK_CLICK)) {
 				if(m_lastClick != frameID) {
 					m_lastClick = frameID;

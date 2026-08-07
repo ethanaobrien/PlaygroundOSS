@@ -31,9 +31,9 @@ extern "C" {
 #define klb_assertAlways(msg,...)		{ assertFunction(__LINE__, __FILE__, msg, __VA_ARGS__); }
 #else
 #if (DEBUG == 1)
-#define klb_assert(cond,msg...)			if(!(cond)) { assertFunction(__LINE__, __FILE__, msg); }
-#define klb_assertNull(cond, msg, ...)	;
-#define klb_assertAlways(msg...)		{ assertFunction(__LINE__, __FILE__, msg); }
+#define klb_assert(cond,msg...)			if(!(cond)) { assertFunction(__LINE__, __FILE__, msg); __builtin_trap(); }
+#define klb_assertNull(cond,msg...)		if(!(cond)) { assertFunction(0, "", msg); __builtin_trap(); }
+#define klb_assertAlways(msg...)		{ assertFunction(__LINE__, __FILE__, msg); __builtin_trap(); }
 #else
 #define klb_assert(cond,msg...)			;
 #define klb_assertNull(cond, msg, ...)	;

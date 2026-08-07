@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,6 +15,9 @@
 */
 #include "CKLBLanguageDatabase.h"
 #include "CKLBUtility.h"
+
+extern void KLBRegisterObjectName(void* object, const char* className, int flags);
+extern void KLBUnregisterObjectName(void* object, const char* className);
 
 bool CKLBLanguageDatabase::addString(const char* id, const char* string) {
 	const char* newstr = CKLBUtility::copyString(string);
@@ -133,6 +136,14 @@ bool CKLBLanguageDatabase::runStatement(const char* SQLStatement) {
 	}
 }
 
+const char*
+CKLBLanguageDatabase::findString(const char* id) const
+{
+	return m_dictionnary
+		? static_cast<const char*>(m_dictionnary->find(id))
+		: NULL;
+}
+
 const char*	CKLBLanguageDatabase::getString(const char* id) {
 	if (id) {
 		if (id[0] == '#') {
@@ -159,7 +170,7 @@ CKLBLanguageDatabase::CKLBLanguageDatabase()
 , m_fieldKey    (NULL) 
 , m_dictionnary (NULL)
 {
-	// Do nothing.
+	KLBRegisterObjectName(this, "CKLBLanguageDatabase", 0);
 }
 
 bool CKLBLanguageDatabase::init() {
@@ -174,7 +185,7 @@ bool CKLBLanguageDatabase::init() {
 }
 
 CKLBLanguageDatabase::~CKLBLanguageDatabase() {
-	// Dictionnary destroyed automatically.
+	KLBUnregisterObjectName(this, "CKLBLanguageDatabase");
 }
 
 void CKLBLanguageDatabase::callbackDictionnary(const void* /*this_*/, const void* ptrToDelete) {
@@ -197,4 +208,10 @@ void CKLBLanguageDatabase::_release() {
 	KLBDELETEA(m_fieldGroup);
 	KLBDELETEA(m_fieldKey);
 	KLBDELETE(m_dictionnary);
+
+	m_tableName = NULL;
+	m_fieldValue = NULL;
+	m_fieldGroup = NULL;
+	m_fieldKey = NULL;
+	m_dictionnary = NULL;
 }

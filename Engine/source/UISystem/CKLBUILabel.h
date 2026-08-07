@@ -32,13 +32,14 @@ private:
 	CKLBUILabel();
 	virtual ~CKLBUILabel();
 
-	bool init(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, u32 alpha, u32 color, const char* font, u32 size, const char* text,u32 align);
-	bool initCore(u32 order, float x, float y, u32 alpha, u32 color, const char* font, u32 size, const char* text,u32 align);
+	bool init(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, u32 width, u32 height, u32 alpha, u32 color, const char* font, u32 size, const char* text, u32 align, float shadowBlur, u32 shadowColor, s32 shadowOffsetX, s32 shadowOffsetY, u32 shadowEnabled, bool marqueeActive);
+	bool initCore(u32 order, float x, float y, u32 width, u32 height, u32 alpha, u32 color, const char* font, u32 size, const char* text,u32 align);
 public:
-	static CKLBUILabel* create(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, u32 alpha, u32 color, const char* font, u32 size, const char* text,u32 align);
+	static CKLBUILabel* create(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, u32 width, u32 height, u32 alpha, u32 color, const char* font, u32 size, const char* text, u32 align, float shadowBlur, u32 shadowColor, s32 shadowOffsetX, s32 shadowOffsetY, u32 shadowEnabled, bool marqueeActive);
 	virtual u32 getClassID();
 
 	bool initUI (CLuaState& lua);
+	void onResume();
 	void execute(u32 deltaT);
 	void dieUI  ();
 
@@ -49,7 +50,7 @@ public:
 	inline virtual void setOrder(u32 order) {
 		if (order != m_order) {
 			m_order = order;
-			REFRESH_A;
+			REFRESH_C;
 		}
 	}
 
@@ -62,7 +63,7 @@ public:
 		}
 	}
 
-	inline void setText(const char* txt) {
+	inline void setText(const char* txt, const char* ellipsis = NULL) {
 		if (txt) {
 			if ((!m_text) || (strcmp(txt,m_text)!=0)) {
 				setStrC(m_text, txt);
@@ -71,6 +72,18 @@ public:
 		} else {
 			if (m_text) {
 				setStrC(m_text, txt);
+				REFRESH_A;
+			}
+		}
+
+		if (ellipsis) {
+			if ((!m_textEllipsis) || (strcmp(ellipsis,m_textEllipsis)!=0)) {
+				setStrC(m_textEllipsis, ellipsis);
+				REFRESH_A;
+			}
+		} else {
+			if (m_textEllipsis) {
+				setStrC(m_textEllipsis, ellipsis);
 				REFRESH_A;
 			}
 		}
@@ -110,6 +123,9 @@ public:
 
 	inline u32 getColor()	{ return m_color | (m_alpha<<24);	}
 
+	CKLBNodeVirtualDocument* getVirtualDocument() const;
+	void setMarqueeActive(u32 active);
+
 	inline void setFont(const char* font) {
 		if (font) {
 			if ((!m_font) || (strcmp(font,m_font)!=0)) {
@@ -142,13 +158,24 @@ public:
 	}
 
 private:
+	u32			m_width;
+	u32			m_height;
 	u32			m_align;
 	u32			m_color;
 	u32			m_size;
 	u32			m_order;
 	const char* m_font;
 	const char* m_text;
+	const char* m_textEllipsis;
+	float		m_shadowBlur;
+	u32			m_shadowColor;
 	u8			m_alpha;
+	s8			m_shadowOffsetX;
+	s8			m_shadowOffsetY;
+	u8			m_shadowEnabled;
+	u8			m_marqueeActive;
+	bool		m_useNativeFont;
+	u32			m_fitMode;
 
 	bool setup_node();
 	

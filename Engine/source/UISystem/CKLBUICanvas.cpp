@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,7 +28,8 @@ enum {
 	UI_CANVAS_STARTSECTION      = 5,
 	UI_CANVAS_ENDSECTION        = 6,
 	UI_CANVAS_SECTIONTRANSLATE  = 7,
-	UI_CANVAS_SECTIONCOLOR      = 8
+	UI_CANVAS_SECTIONCOLOR      = 8,
+	UI_CANVAS_TILEDRECT         = 9
 };
 
 static IFactory::DEFCMD cmd[] = {
@@ -41,6 +42,7 @@ static IFactory::DEFCMD cmd[] = {
 	{"UI_CANVAS_ENDSECTION",		UI_CANVAS_ENDSECTION		},
 	{"UI_CANVAS_SECTIONTRANSLATE",	UI_CANVAS_SECTIONTRANSLATE	},
 	{"UI_CANVAS_SECTIONCOLOR",		UI_CANVAS_SECTIONCOLOR		},
+	{"UI_CANVAS_TILEDRECT",		UI_CANVAS_TILEDRECT			},
 	{0, 0}
 };
 
@@ -68,7 +70,7 @@ enum {
 	ARG_NUMS = ARG_CALLBACK
 };
 
-CKLBUICanvas::CKLBUICanvas() : CKLBUITask()
+CKLBUICanvas::CKLBUICanvas() : CKLBUITask(P_UIAFTER)
 , m_handle          (0)
 , m_assetCount      (0)
 , m_maxAssetCount   (0)
@@ -100,7 +102,7 @@ CKLBUICanvas::initUI(CLuaState& lua)
 
 	u32 order = lua.getInt(ARG_ORDER);
 
-	const char* cb  = lua.getString(ARG_CALLBACK);
+	const char* cb  = lua.isString(ARG_CALLBACK) ? lua.getString(ARG_CALLBACK) : NULL;
 	float x         = lua.getFloat(ARG_X);
 	float y         = lua.getFloat(ARG_Y);
 
@@ -159,7 +161,7 @@ CKLBUICanvas::initCore(u32 order, float x, float y, u32 vertexMax, u32 indexMax,
 		return false;
 	}
 
-	klb_assert((((s32)order) >= 0), "Order Problem");
+	klb_assertNull((((s32)order) >= 0), "Order Problem");
 
 	m_order = order;
 	if(callback) {
@@ -414,6 +416,19 @@ CKLBUICanvas::commandUI(CLuaState& lua, int argc, int cmd)
 				lua.getInt(4) |		// Color + Alpha
 				(lua.getInt(5) << 24)
 			);
+		}
+		break;
+	case UI_CANVAS_TILEDRECT:
+		if(argc == 6) {
+			ret    = 1;
+			result = true;
+
+			u32 width       = lua.getInt(3);
+			u32 height      = lua.getInt(4);
+			const char* asset = lua.getString(5);
+			u32 alpha       = lua.getInt(6);
+			setTiledRect(width, height, asset, alpha);
+			setFreeze(true);
 		}
 		break;
 	default:

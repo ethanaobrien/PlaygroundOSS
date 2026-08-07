@@ -28,6 +28,9 @@ public:
 
 	void release();
 
+	// 生成済みのグループとその状態を標準出力に一覧する(デバッグ用)
+	void dump();
+
 	bool addForm(SFormCtrlList * list, const char * group_name);
 	bool delForm(SFormCtrlList * list);
 
@@ -58,28 +61,23 @@ public:
 
 private:
 	struct GROUP {
-		GROUP		*	prev;
+		int				refCount;
 		GROUP		*	next;
 
 		// グループの持つ属性
 		const char	*	name;
-		bool			exclusive;	// 排他制御(trueで排他)
 		bool			working;	// 操作中
 		void		*	locker;		// ロックした者の識別子(ポインタ)
 
 		SFormCtrlList	*	worker;
-
-		// グループ所属のコントロールリスト構造体リスト(「リスト」が多くてめんどくさい)
-		SFormCtrlList	*	begin;
-		SFormCtrlList	*	end;
 	};
 
 	GROUP * searchGroup(const char * group_name);
 	GROUP * createGroup(const char * group_name);
 	void    checkGroup(GROUP * pGrp);
+	void    releaseGroup(GROUP * pGrp);
 
 	GROUP		*	m_begin;
-	GROUP		*	m_end;
 };
 
 #endif // CKLBFormGroup_h

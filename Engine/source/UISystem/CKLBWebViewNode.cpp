@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,8 +21,9 @@
 #include "CKLBDrawTask.h"
 
 CKLBUIWebView::CKLBUIWebView(bool isPageJump, const char * initialURL,
-                            const char * token, const char * region, const char * client,
-                            const char * consumerKey, const char * applicationId, const char * userID)
+                            const char * token, const char * region, const char * bundleVersion,
+                            const char * client, const char * consumerKey, const char * applicationId,
+                            const char * userID, const char * language)
 : nativeInputItem   (NULL)
 , m_width           (0)
 , m_height          (0)
@@ -38,13 +39,13 @@ CKLBUIWebView::CKLBUIWebView(bool isPageJump, const char * initialURL,
 	CKLBDrawResource& draw = CKLBDrawResource::getInstance();
 	int px,py;
 	draw.toPhisicalPosition(m_tx, m_ty, px, py);
-	nativeInputItem = pForm.createControl(control , 0, url, px, py, 0, 0, token, region, client, consumerKey, applicationId, userID);
+	nativeInputItem = pForm.createControl(control , 0, url, px, py, 0, 0, token, region, bundleVersion, client, consumerKey, applicationId, userID, language);
+
+	klb_assert(nativeInputItem, "EditBox allocation failed");
 
 	if (nativeInputItem) {
 		nativeInputItem->visible(false);
 	}
-
-	klb_assert(nativeInputItem, "EditBox allocation failed");
 }
 
 CKLBUIWebView::~CKLBUIWebView() 
@@ -195,4 +196,3 @@ CKLBUIWebView::getText()
 	}
 	return NULL;
 }
-

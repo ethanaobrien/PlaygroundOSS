@@ -41,6 +41,7 @@ CKLBLuaLibDEBUG::addLibrary()
 	addFunction("DEBUG_SetCallback",		CKLBLuaLibDEBUG::luaDBGSetCallback);
 	addFunction("DEBUG_AddItem",			CKLBLuaLibDEBUG::luaDBGSetMenu);
 	addFunction("DEBUG_DelItem",			CKLBLuaLibDEBUG::luaDBGRemoveMenu);
+	addFunction("DEBUG_DelItemAll",		CKLBLuaLibDEBUG::luaDBGRemoveAllMenu);
 }
 
 int
@@ -52,11 +53,27 @@ CKLBLuaLibDEBUG::luaDBGRemoveMenu(lua_State * L)
 		lua.retBoolean(false);
 		return 1;
 	}
-#ifdef DEBUG_MENU
+#if defined(DEBUG_MENU) && !defined(__ANDROID__)
 	const char * key = lua.getString(1);
 
 	CKLBDebugResource& dbg = CKLBDebugResource::getInstance();
 	dbg.removeGroup(key);
+#endif
+	lua.retBoolean(true);
+	return 1;
+}
+
+int
+CKLBLuaLibDEBUG::luaDBGRemoveAllMenu(lua_State * L)
+{
+	CLuaState lua(L);
+	int argc = lua.numArgs();
+	if(argc != 0) {
+		lua.retBoolean(false);
+		return 1;
+	}
+#if defined(DEBUG_MENU) && !defined(__ANDROID__)
+	CKLBDebugResource::getInstance().clear();
 #endif
 	lua.retBoolean(true);
 	return 1;
@@ -72,7 +89,7 @@ CKLBLuaLibDEBUG::luaDBGSetMenu(lua_State * L)
 		lua.retBoolean(false);
 		return 1;
 	}
-#ifdef DEBUG_MENU
+#if defined(DEBUG_MENU) && !defined(__ANDROID__)
 	const char * caption = lua.getString(1);
 	const char * key = lua.getString(2);
 
@@ -102,7 +119,7 @@ CKLBLuaLibDEBUG::luaDBGSetCallback(lua_State * L)
 		return 1;
 	}
 
-#ifdef DEBUG_MENU
+#if defined(DEBUG_MENU) && !defined(__ANDROID__)
 	CKLBDebugResource& dbg = CKLBDebugResource::getInstance();
 	const char * callback = 0;
 	if(argc == 1) callback = lua.getString(1);
@@ -117,7 +134,7 @@ CKLBLuaLibDEBUG::luaDBGSetCallback(lua_State * L)
 void
 CKLBLuaLibDEBUG::startMenu(u32 maxCount, const char * caption, const char * key) 
 {
-#ifdef DEBUG_MENU
+#if defined(DEBUG_MENU) && !defined(__ANDROID__)
 	CKLBLuaLibDEBUG::s_maxCount	= maxCount;
 	CKLBLuaLibDEBUG::s_arrMenu	= KLBNEWA(DBG_MENU, maxCount + 1);
 	CKLBLuaLibDEBUG::s_caption	= CKLBUtility::copyString(caption);
@@ -129,7 +146,7 @@ CKLBLuaLibDEBUG::startMenu(u32 maxCount, const char * caption, const char * key)
 void 
 CKLBLuaLibDEBUG::addItem(u32 mode, const char* caption, const char* key, s32 min, s32 max, s32 value, const char** items, u32 itemsCount) 
 {
-#ifdef DEBUG_MENU
+#if defined(DEBUG_MENU) && !defined(__ANDROID__)
 	klb_assert(CKLBLuaLibDEBUG::s_idx <= CKLBLuaLibDEBUG::s_maxCount, "Max Count reached.");
 	
 	CKLBLuaLibDEBUG::s_arrMenu[CKLBLuaLibDEBUG::s_idx].mode		= (DBG_MENU::MODE)mode;
@@ -176,7 +193,7 @@ CKLBLuaLibDEBUG::addItem(u32 mode, const char* caption, const char* key, s32 min
 void
 CKLBLuaLibDEBUG::endMenu() 
 {
-#ifdef DEBUG_MENU
+#if defined(DEBUG_MENU) && !defined(__ANDROID__)
 	CKLBDebugResource& dbg = CKLBDebugResource::getInstance();
 	for(u32 i = CKLBLuaLibDEBUG::s_idx; i < CKLBLuaLibDEBUG::s_maxCount + 1; ++i) {
 		CKLBLuaLibDEBUG::s_arrMenu[i].caption = NULL;
@@ -200,7 +217,7 @@ CKLBLuaLibDEBUG::endMenu()
 void
 CKLBLuaLibDEBUG::removeMenu(const char * key) 
 {
-#ifdef DEBUG_MENU
+#if defined(DEBUG_MENU) && !defined(__ANDROID__)
 	CKLBDebugResource& dbg = CKLBDebugResource::getInstance();
 	dbg.removeGroup(key);
 #endif

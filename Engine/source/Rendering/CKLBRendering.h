@@ -38,6 +38,7 @@ enum RENDERCOMMAND_TYPE {
 	RENDERCOMMAND_UNSETSHADER			= 0x200,
 	RENDERCOMMAND_DEPTHRANGE			= 0x400,
 	RENDERCOMMAND_IGNORE				= 0x800,
+	RENDERCOMMAND_STATECALLBACK		= 0x1000,
 };
 
 // Buffer length have changed
@@ -53,9 +54,16 @@ enum RENDERCOMMAND_TYPE {
 
 class CKLBRenderingManager;
 
+struct SRenderStateCallback {
+	SRenderState*	(*callback)(void* context);
+	void*			context;
+};
+
 class CKLBRenderCommand {
 	friend class CKLBRenderingManager;
 	friend class CKLBNode;
+	friend class CKLBAssetManager;
+	friend class CKLBShaderTask;
 public:
 	CKLBRenderCommand();
 	virtual ~CKLBRenderCommand  ()	{ /* Do nothing */ }
@@ -67,6 +75,8 @@ public:
 
 	inline	
     u32 getOrder        ()	        { return m_uiOrder; }
+	inline
+	u16 getCommandType  () const      { return m_commandType; }
 
 	bool setLocalColor  (u32 color)	{
 				if (color != m_uiLocalColor) {
@@ -93,7 +103,7 @@ protected:
 	CKLBRenderCommand*	m_pAllocNext;
 	CKLBRenderCommand*	m_pPrev;
 	CKLBRenderCommand*	m_pNext;
-	u32					m_uiOrder;
+	s32					m_uiOrder;
 	s32					m_renderOffset;
 	u32					m_uiLocalColor;
 	u16					m_commandType;
@@ -112,14 +122,15 @@ public:
 	virtual	void		applyNode		(CKLBNode* pNode);
 	
 	inline
-	SRenderState*		getState		()									{ return &internalState;	}
+	SRenderState*		getState		()									{ return m_pState;		}
 
 	inline
 	CShaderInstance*	getShader		()									{ return pShaderInstance;	}
 										
-	CKLBRenderCommand*	setJump			(CKLBRenderCommand*	jump)			{ this->jump = jump;		return this->jump;  }
-	CKLBRenderCommand*	setReturn		(CKLBRenderCommand*	return_)		{ this->end	 = return_;		return this->end;   }
 	void				executeCommand	();
+	void				setRenderTarget	(CFrame* pFrame);
+	inline void			enableRenderTargetChange() { m_commandType |= RENDERCOMMAND_CHANGETARGET; }
+	void				setStateCallback(SRenderStateCallback* pCallback);
 	void				setUse			(bool useRenderState, bool useCommand, CShaderInstance* pShaderInstance);
 	void				setClearColor	(bool active, float r, float g, float b, float alpha);
 	void				setClearDepth	(bool active, float depth);
@@ -128,10 +139,12 @@ public:
 	void				setScissor		(bool active, s32 x = 0, s32 y = 0, s32 w = 0, s32 h = 0);
     inline
 	float*				getPostScissor	()	                                { return m_scissorPost;     }
+	void				getClearColor	(float* color);
 protected:
-	CKLBRenderCommand*	jump;
-	CKLBRenderCommand*	end;
+	SRenderState*		m_pState;
 	CShaderInstance*	pShaderInstance;
+	CFrame*				m_pRenderTarget;
+	SRenderStateCallback* m_pStateCallback;
 
 	void				setupShaderParams	();
 
@@ -155,7 +168,15 @@ class CKLBRenderCommand;
 
 class CKLBSprite : public CKLBRenderCommand {
 	friend class CKLBRenderingManager;
+	friend class CKLBAssetManager;
 public:
+	enum GEOMETRY_TYPE {
+		GEOMETRY_STATIC = 0,
+		GEOMETRY_DYNAMIC,
+		GEOMETRY_SCALE9,
+		GEOMETRY_CANVAS
+	};
+
 	CTextureUsage*			m_pTexture;
 	CTextureUsage*			m_pMaskTexture;
 	CKLBImageAsset*			m_pImageAsset;
@@ -172,6 +193,7 @@ public:
 	 */
 	u16					m_uiVertexCount;
 	u16					m_uiIndexCount;
+	bool				m_preserveImageCenter;
 
 	virtual		void	applyNode		(CKLBNode* pNode);
 
@@ -183,9 +205,10 @@ public:
 	void		switchImage	    (CKLBImageAsset* pImage);
 	void		setMask		    (CKLBImageAsset* pMask);
 	void		setRenderState	(SRenderState* pState) { m_pState = pState; }
+	void		setPreserveImageCenter(bool preserve) { m_preserveImageCenter = preserve; }
 	void		setClickID	    (u32 id);
-protected:
 	virtual	void setColor		(const float* vec4);
+	virtual GEOMETRY_TYPE getGeometryType() const;
 
 protected:
 	SRenderState*		m_pState;
@@ -213,6 +236,7 @@ private:
 };
 
 class CKLBDynSprite : public CKLBSprite {
+	friend class CKLBAssetManager;
 public:
 	static const int	MARK_CHANGE_XY	= FLAG_XYUPDATE;
 	static const int	MARK_CHANGE_UV	= FLAG_UVUPDATE;
@@ -220,7 +244,8 @@ public:
 	CKLBDynSprite();
 	~CKLBDynSprite();
 
-	bool	setTriangleCount(u16 vertexCount, u16 indexCount);
+	bool	setTriangleCount(u16 vertexCount, u16 indexCount, bool resetTexture = false);
+	u16		getMaxIndexCount() const { return m_uiMaxIndexCount; }
 	void	setVertexXY		(u32 index, float x, float y);
 	void	setVertexUV		(u32 index, float u, float v);
 	void	setVertexColor	(CKLBNode* owner, u32 index, u32 color);
@@ -228,14 +253,24 @@ public:
 	void	setTexture		(CKLBImageAsset* pImage);
 	void	setTexture		(CTextureUsage*	pUsage);
 	void	setVICount		(u32 vertexCount, u32 indexCount);
+	inline void setTranslation(float x, float y) {
+		m_useTranslation = true;
+		m_translationX = x;
+		m_translationY = y;
+	}
 
 	virtual	void setColor		(const float* vec4);
+	virtual GEOMETRY_TYPE getGeometryType() const;
 
 	inline void		mark                (u32 mask)	{ m_uiStatus |= mask; }
 	inline float*	getSrcUVBuffer      ()	        { return _internalImg.getUVBuffer();	}
 	inline float*	getSrcXYBuffer      ()	        { return _internalImg.getXYBuffer();	}
 	inline u16*		getSrcIndexBuffer   ()	        { return _internalImg.getIndexBuffer();	}
+	inline u32*		getLocalColorBuffer ()	        { return m_pLocalColors;	            }
 protected:
+	bool m_useTranslation;
+	float m_translationX;
+	float m_translationY;
 	CKLBImageAsset _internalImg;
 	u32*	m_pLocalColors;
 };
@@ -246,8 +281,11 @@ public:
 	~CKLBSpriteScale9();
 	void	setWidth		(s32 width);
 	void	setHeight		(s32 height);
+	void beginSizeUpdate();
+	void endSizeUpdate();
 
 	void	useImage		(CKLBImageAsset* pImage);
+	virtual GEOMETRY_TYPE getGeometryType() const;
 protected:
 	CKLBImageAsset* m_pOriginalImage;
 	float			m_fRight;
@@ -260,6 +298,7 @@ protected:
 	s16				m_top;
 	s16				m_bottom;
 	s16				m_middleY;
+	bool			m_deferRecompute;
 
 
 	void	recomputeVertex	(u32 mode);
@@ -288,6 +327,8 @@ class CIndexBuffer;
 class CBuffer;
 
 class CKLBRenderingManager {
+	friend class CKLBDynSprite;
+	friend class CKLBAssetManager;
 public:
 	inline
 	static CKLBRenderingManager& getInstance() {
@@ -299,7 +340,7 @@ public:
 	bool		setup(u16 maxVertexCount, u16 maxIndexCount);
 
 	// Rendering Allocation.
-	CKLBSprite*         allocateCommandSprite	    (CKLBImageAsset* pImage, u32 priority = 0);
+	CKLBSprite*         allocateCommandSprite	    (CKLBImageAsset* pImage, u32 priority = 0, bool deferScale9Recompute = false);
 	CKLBSprite*         allocateCommandSprite	    (u16 maxVertexCount, u16 maxIndexcount, u32 priority = 0);
 	CKLBDynSprite*      allocateCommandDynSprite    (u16 vertexCount, u16 indexCount, u32 priority = 0);
 	CKLBCanvasSprite*   allocateCommandCanvasSprite (u32 vertexCount, u32 indexCount, u32 priority = 0);
@@ -307,20 +348,42 @@ public:
 	CKLBPolyline*       allocateCommandPolyline	    (u16 maxPointCount, u32 priority);
 
 	void		releaseCommand			(CKLBRenderCommand* pCommand);
+	bool		setClearColor			(float r, float g, float b, float alpha);
 
 	void		removeFromRendering		(CKLBRenderCommand* pRender);
-	void		addToRendering			(CKLBRenderCommand* pRender, u32 uiOrder);
+	void		addToRendering			(CKLBRenderCommand* pRender, s32 order);
 
 	// Rendering.
-	void		enableRange				(u32 start, u32 end, bool active);
+	void		enableRange				(s32 start, s32 end, bool active);
 	void		draw					();
+	void		draw					(CBuffer** buffers,
+									 CIndexBuffer* indexBuffer,
+									 CTextureUsage** textures,
+									 s32* uniformIDs,
+									 s32 indexCount);
 	void		drawOverdraw			();
+	void		onResume				();
 
 	CKLBRenderCommand*
 				drawClick				(u32 x, u32 y);
 	void		dump					(u32 mask);
 	void		dumpMetrics				();
 SRenderState*	getTextState			()	        { return &textState; }
+	SRenderState*	getNoAlphaState		()	        { return &noAlphaState; }
+	SRenderState*	getAlphaState			()	        { return &alphaState; }
+	SRenderState*	getAdditiveState		()	        { return &additiveState; }
+	SRenderState*	getSubtractiveState	()	        { return &subtractiveState; }
+	SRenderState*	getAdditiveAlphaState	()	        { return &additiveAlphaState; }
+	SRenderState*	getDefaultSpriteState	()	        { return m_defaultSpriteState; }
+	void			selectDefaultSpriteState(u32 state) {
+		switch(state) {
+		case 0: m_defaultSpriteState = &alphaState;			break;
+		case 1: m_defaultSpriteState = &additiveState;		break;
+		case 2: m_defaultSpriteState = &subtractiveState;	break;
+		case 3: m_defaultSpriteState = &additiveAlphaState;	break;
+		default:										break;
+		}
+	}
 	void		setRenderMode			(u32 mode);
 
 	void		renderOverdraw			(u32 mode)	{ m_bRenderOverDraw = mode; }
@@ -332,45 +395,61 @@ private:
 	u32			m_bRenderOverDraw;
 
 	struct S_SHADERDEF {
+		char*				m_name;
 		CShaderSet*			m_definition;
 		CShader*			m_pixelShader;
-		u8*					m_paramList;
+		CShader*			m_vertexShader;
+		u8*					m_pixelParamList;
+		u8*					m_vertexParamList;
+		u16					m_refCount;
+		u16					m_variant;
 	};
 
 	struct S_SHADERINSTANCE {
 		S_SHADERINSTANCE*	m_pNext;
+		CKLBRenderState*	m_pStartState;
+		CShaderSet*			m_pDefinition;
 		CShaderInstance*	m_pInstanceShader;
+		u8*					m_pixelParamList;
+		u8*					m_vertexParamList;
 		u32					m_min;
-		u32					m_max;
-		u8*					m_paramList;
+		u16					m_shaderDefinition;
 	};
 
-	#define SHADER_DEF_MAX		(20)
+	#define SHADER_DEF_MAX		(50)
+	#define SHADER_PARAM_STREAM_SIZE	(500)
 	
 	S_SHADERDEF			m_shaderDef[SHADER_DEF_MAX];
-	u8					m_stackParam[1000];
-	u8*					m_stackParamFiller;
+	u8					m_stackParam[2][SHADER_PARAM_STREAM_SIZE];
+	u8*					m_stackParamFiller[2];
 	S_SHADERINSTANCE*	m_shaderInstanceList;	// TODO : set NULL at start, delete all when free rendering manager.
-
-	CShaderInstance*	m_stackShader	[10];
-	u32					m_stackShaderIdx;
 	bool				m_coloring;
 
 protected:
 	void initShaderSystem		();
 	void destroyShaderSystem	();
-	void completeParameter		();
+	void completeParameter		(bool pixelShader);
+	u8*  buildShaderParameters	(bool pixelShader, SParam* parameters, u32 parameterCapacity, u32 parameterCount);
+	static bool isShaderWhitespace(char character);
+	static const char* readShaderToken(const char* source, s32* tokenLength);
+	static bool shaderTokenEquals(const char* token, s32 tokenLength, const char* expected);
+	static bool checkPrecisionQualifier(const char* source, const char* shaderName);
 public:
-	void stackParameter			(const char* name, u8 type, QUALITY_TYPE quality);
-	u32  createShaderDefinition	(const char* shaderCode);
-	void destroyShaderDefinition(u32 shaderDefinition);
+	void stackParameter			(const char* name, u8 type, QUALITY_TYPE quality, bool pixelShader = true);
+	u16  getShaderDefinition	(const char* name);
+	u16  createShaderDefinition	(const char* name, const char* pixelShaderCode, const char* vertexShaderCode, u32 variant);
+	u16  createShaderDefinition	(const char* name, u32 variant);
+	void destroyShaderDefinition(u16 shaderDefinition);
 	
-	void* instanceShader		(u32 shaderDefinition, u32 startRange, u32 endRange);
+	void* instanceShader		(u32 shaderDefinition, u32 startRange);
 	void removeShader			(void* instanceShader);
+	u32  getShaderParamID		(void* instanceShader, const char* name);
 	
 	void setShaderParamI		(void* instanceShader, const char* name, GLint* value);
 	void setShaderParamF		(void* instanceShader, const char* name, GLfloat* value);
+	void setVertexShaderParamF	(void* instanceShader, const char* name, GLfloat* value);
 	void setShaderParamTexture	(void* instanceShader, const char* name, CTextureUsage* value);
+	void setShaderParamTexture	(void* instanceShader, u32 uniformID, CTextureUsage* value);
 	//======================================================================================
 	//  /Shader support
 	//======================================================================================
@@ -382,32 +461,41 @@ private:
 
 	CKLBRenderingManager	(CKLBRenderingManager const&);		// Dont implement.
 	void operator=			(CKLBRenderingManager const&);		// Dont implement.
+	void registerCommand	(CKLBRenderCommand* pCommand);
 
 
 	void emitDrawCall		(u16*	pIndexCounter,
 							 u16*	offsetIndex,
 							 u16*	offsetVertex,
 							 u16	offsetVertexHead,
-							 CTextureUsage*	pTextureUsage,
-							 CTextureUsage* pMask);
+							 CTextureUsage** textures,
+							 s32* uniformIDs,
+							 CBuffer** buffers);
 	CKLBRenderCommand		m_innerWatchDog;
 	CKLBRenderCommand*		m_pListStart;
 	CKLBRenderCommand*		m_pRenderWatchDog;
+	CKLBRenderState*		m_pDefaultStateCommand;
 	CKLBRenderCommand*		m_pRenderLastModify;
 	CKLBRenderCommand*		m_pAllocatedSpriteList;
+	CTexture*				m_pWhiteTexture;
+	CTextureUsage*			m_pWhiteTextureUsage;
 	CIndexBuffer*			m_pIdxBuffer;
 	CBuffer*				m_pVerBuffer;
 	CBuffer*				m_pColBuffer;
-	SRenderState			state;
+	CBuffer*				m_pMaskUVBuffer;
+	SRenderState			noAlphaState;
+	SRenderState			alphaState;
+	SRenderState			additiveState;
+	SRenderState			subtractiveState;
+	SRenderState			additiveAlphaState;
 	SRenderState			textState;
+	SRenderState*			m_defaultSpriteState;
 	SRenderState*			m_pCurrState;
-
 	CShader*				m_pVShader;
 	CShader*				m_pPShader;
 	CShaderSet*				m_pShaderSet;
 	CShaderInstance*		m_pShaderInstance;
 	CShaderInstance*		m_pCurrShader;
-	CTextureUsage*			m_pTextureUsage;
 
 	u32		m_renderMode;
 	u32		m_callMode;

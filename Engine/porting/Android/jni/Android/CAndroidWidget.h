@@ -112,8 +112,9 @@ public:
 
 	bool create(IWidget::CONTROL type, int id, const char * caption,
 					int x, int y, int width, int height,
-					const char * token, const char * region, const char * client,
-					const char * consumerKey, const char * applicationId, const char * userID);
+					const char * token, const char * region, const char * bundleVersion,
+					const char * client, const char * consumerKey, const char * applicationId,
+					const char * userID, const char * language);
 
 	void cmd(int cmd, ...);
 

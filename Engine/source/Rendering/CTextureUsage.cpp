@@ -31,13 +31,13 @@ CTextureUsage::~CTextureUsage() {
 
 void	CTextureUsage::init(CTextureBase* pTexture) {
 	this->samplingSetupDone = false;
-	this->minSampling = GL_LINEAR;
+	this->maxSampling = GL_LINEAR;
 
 	CTexture* topTexture = pTexture->pMaster;
 	if (topTexture->isMipmapped) {
-		this->maxSampling = GL_LINEAR_MIPMAP_NEAREST;
+		this->minSampling = GL_LINEAR_MIPMAP_NEAREST;
 	} else {
-		this->maxSampling = GL_LINEAR;
+		this->minSampling = GL_LINEAR;
 	}
 
 	this->pTexture	= pTexture;
@@ -73,44 +73,28 @@ void 	CTextureUsage::activate(s32 sampler) {
 void	CTextureUsage::setSampling(SAMPLING minmode, SAMPLING magmode) {
 	samplingSetupDone = false;
 
-	switch (minmode) {
+	switch (magmode) {
 	case LINEAR:
-		this->minSampling = GL_LINEAR;
+		this->maxSampling = GL_LINEAR;
 		break;
 	case NEAREST:
 	default:
-		this->minSampling = GL_NEAREST;
+		this->maxSampling = GL_NEAREST;
 		break;
 	}
 
 	if (pTexture->pMaster->isMipmapped) {
-		GLuint samplingType;
-		switch (magmode & 1) {
-		case LINEAR:
-			if (magmode & BLEND_IFMIPMAP_BIT) {
-				samplingType = GL_LINEAR_MIPMAP_LINEAR;
-			} else {
-				samplingType = GL_LINEAR_MIPMAP_NEAREST;
-			}
-			break;
-		default:
-		case NEAREST:
-			if (magmode & BLEND_IFMIPMAP_BIT) {
-				samplingType = GL_NEAREST_MIPMAP_LINEAR;
-			} else {
-				samplingType = GL_NEAREST_MIPMAP_NEAREST;
-			}
-			break;
-		}
-		this->maxSampling = samplingType;
+		this->minSampling = GL_NEAREST_MIPMAP_NEAREST
+			| (minmode & LINEAR)
+			| (magmode & BLEND_IFMIPMAP_BIT);
 	} else {
-		switch (magmode) {
+		switch (minmode) {
 		case LINEAR:
-			this->maxSampling = GL_LINEAR;
+			this->minSampling = GL_LINEAR;
 			break;
 		case NEAREST:
 		default:
-			this->maxSampling = GL_NEAREST;
+			this->minSampling = GL_NEAREST;
 			break;
 		}
 	}

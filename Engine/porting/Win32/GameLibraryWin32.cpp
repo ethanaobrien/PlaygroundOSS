@@ -627,7 +627,7 @@ int GameEngineMain(int argc, _TCHAR* argv[])
 		}
 	}
 
-	pfif.client().finishGame();
+	pfif.client().finishGame(true);
 
 	SoundSystemExitFor_Win32();
 

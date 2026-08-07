@@ -68,6 +68,8 @@ CKLBNodeAnimPack::skipAnim(CKLBNode * pNode, const char * name)
 bool
 CKLBNodeAnimPack::kickAnim(CKLBNode * pNode, const char * name, bool doBlend, int id, bool kill)
 {
+	if(!pNode) { return false; }
+
 	ANIMCOUNT * anim = KLBNEW(ANIMCOUNT);
     if(!anim) { return false; }
 	anim->name = CKLBUtility::copyString(name);

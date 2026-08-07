@@ -285,7 +285,7 @@ bool CKLBSplineNode::setParamCount(u8 splineCount, u8 maxKeyCount) {
 }
 
 void CKLBSplineNode::setTarget(u8 splineIndex, u8 targetParameter) {
-	klb_assert(splineIndex < m_uiSplineCount, "Invalid index");
+	klb_assertNull(splineIndex < m_uiSplineCount, "Invalid index");
 
 	// Do not verify target used twice.
 	m_target[splineIndex] = targetParameter;
@@ -296,7 +296,7 @@ void CKLBSplineNode::addKeys(u8 splineIndex, u32 time, s16 value) {
 }
 
 void CKLBSplineNode::addKeysFixed(u8 splineIndex, u32 time, s32 fixedValue) {
-	klb_assert(splineIndex < m_uiSplineCount, "Invalid index");
+	klb_assertNull(splineIndex < m_uiSplineCount, "Invalid index");
 
 	// Find new key index and update key counter
 	u32 idx = m_splinesKeyCount[splineIndex]++;
@@ -311,7 +311,7 @@ void CKLBSplineNode::addKeysFixed(u8 splineIndex, u32 time, s32 fixedValue) {
 	vector[2] = 0;
 	vector[3] = 0;
 
-	if (time > m_uiTotalTime) {
+	if ((s32)time > (s32)m_uiTotalTime) {
 		m_uiTotalTime = time;
 	}
 }
@@ -346,7 +346,7 @@ void CKLBSplineNode::generateAnimation() {
 }
 
 void CKLBSplineNode::setAnimation(s32 milliSecondsPlayTime, s32 timeShift, u32 type, s32* keys, u32 keycount, u32 affected, float* arrayParam) {
-	klb_assert(type <= NB_SPLINE, "Wrong spline type index");
+	klb_assertNull(type <= NB_SPLINE, "Wrong spline type index");
 
 	if (milliSecondsPlayTime == 0) {
 		return;
@@ -431,7 +431,7 @@ void CKLBSplineNode::setAnimation(s32 milliSecondsPlayTime, s32 timeShift, u32 t
 
 void CKLBSplineNode::endAnimation(s32* keys) {
 	if ((keys == NULL) || (keys == m_aKeyVector)) {
-		m_uiLastLocalTime	= m_uiTotalTime;
+		m_uiLocalTime		= m_uiTotalTime;
 		m_loop				= false;
 	}
 }

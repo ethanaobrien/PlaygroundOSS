@@ -85,7 +85,7 @@ enum {
 
 
 CKLBUITextInput::CKLBUITextInput() 
-: CKLBUITask()
+: CKLBUITask(P_UIAFTER)
 , m_pTextBox(NULL)
 , m_text    (NULL) 
 , m_width   (0)
@@ -224,6 +224,15 @@ CKLBUITextInput::dieUI()
 {
 	KLBDELETEA(m_callback);
 	KLBDELETE(m_pTextBox);
+}
+
+void
+CKLBUITextInput::onResume()
+{
+	const char* fontName = m_pTextBox->getFontName();
+	if (fontName) {
+		m_pTextBox->setFont(fontName, m_pTextBox->getFontSize());
+	}
 }
 
 int

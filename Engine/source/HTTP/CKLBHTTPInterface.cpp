@@ -15,6 +15,9 @@
 */
 #include "CKLBHTTPInterface.h"
 #include "CKLBUtility.h"
+#include "CKLBNetAPIKeyChain.h"
+#include "KLBBase64.h"
+#include "MultithreadedNetwork.h"
 #include <string.h>
 #include <ctype.h>
 ;
@@ -22,19 +25,656 @@
 #ifdef USE_NEW_CURL_WRAPPER
 
 #include "curl.h"
+#include <list>
 
 // Prototypes
 int strncmpi(const char* str1, const char* str2, int len);
 
+class ConnectionEntry {
+public:
+	friend class ConnectionPool;
+
+	enum STATE {
+		BUSY,
+		AVAILABLE,
+		SHUTTING_DOWN
+	};
+
+	ConnectionEntry(bool pooled, const char* name, bool proxy);
+
+	~ConnectionEntry();
+
+	static bool isAvailable(const char* name);
+	static bool start(CKLBHTTPInterface* request, const char* name, bool proxy);
+
+private:
+	bool start(CKLBHTTPInterface* request);
+	void download();
+	static s32 threadMain(void* thread, void* data);
+	static char* getConnectionName(const char* url);
+	static ConnectionEntry* getConnection(const char* name);
+	static ConnectionEntry* create(bool pooled, const char* name, bool proxy);
+
+	const char*		m_name;
+	volatile STATE		m_state;
+	bool			m_proxy;
+	bool			m_pooled;
+	CKLBHTTPInterface*	m_request;
+	CurlObjectInternal*	m_operation;
+};
+
+class ConnectionPool {
+public:
+	static void lock();
+	static void unlock();
+	static void clear();
+};
+
+static std::list<ConnectionEntry*> s_connections;
+static void* s_connectionMutex = NULL;
+static char s_userAgent[256];
+static const char s_hexDigits[] = "0123456789abcdef";
+
+static inline u32
+rotateLeft(u32 value, u32 bits)
+{
+	return (value << bits) | (value >> (32 - bits));
+}
+
+static void
+sha1Transform(u32 state[5], u32 words[80])
+{
+	volatile u32* schedule = words;
+	u32 a = state[0];
+	u32 b = state[1];
+	u32 c = state[2];
+	u32 d = state[3];
+	u32 e = state[4];
+
+	u32 round;
+	for(round = 0; round < 16; ++round) {
+		u32 next = rotateLeft(a, 5) + ((b & c) | (~b & d)) + e +
+			schedule[round] + 0x5a827999;
+		e = d;
+		d = c;
+		c = rotateLeft(b, 30);
+		b = a;
+		a = next;
+	}
+	for(; round < 20; ++round) {
+		u32 word = rotateLeft(
+			schedule[round - 8] ^ schedule[round - 3] ^
+			schedule[round - 14] ^ schedule[round - 16], 1);
+		schedule[round] = word;
+		u32 next = rotateLeft(a, 5) + ((b & c) | (~b & d)) + e +
+			word + 0x5a827999;
+		e = d;
+		d = c;
+		c = rotateLeft(b, 30);
+		b = a;
+		a = next;
+	}
+
+	for(; round < 40; ++round) {
+		u32 word = rotateLeft(
+			schedule[round - 8] ^ schedule[round - 3] ^
+			schedule[round - 14] ^ schedule[round - 16], 1);
+		schedule[round] = word;
+		u32 next = rotateLeft(a, 5) + (b ^ c ^ d) + e +
+			word + 0x6ed9eba1;
+		e = d;
+		d = c;
+		c = rotateLeft(b, 30);
+		b = a;
+		a = next;
+	}
+
+	for(; round < 60; ++round) {
+		u32 word = rotateLeft(
+			schedule[round - 8] ^ schedule[round - 3] ^
+			schedule[round - 14] ^ schedule[round - 16], 1);
+		schedule[round] = word;
+		u32 next = rotateLeft(a, 5) + ((b & c) | (b & d) | (c & d)) + e +
+			word + 0x8f1bbcdc;
+		e = d;
+		d = c;
+		c = rotateLeft(b, 30);
+		b = a;
+		a = next;
+	}
+
+	for(; round < 80; ++round) {
+		u32 word = rotateLeft(
+			schedule[round - 8] ^ schedule[round - 3] ^
+			schedule[round - 14] ^ schedule[round - 16], 1);
+		schedule[round] = word;
+		u32 next = rotateLeft(a, 5) + (b ^ c ^ d) + e +
+			word + 0xca62c1d6;
+		e = d;
+		d = c;
+		c = rotateLeft(b, 30);
+		b = a;
+		a = next;
+	}
+
+	state[0] += a;
+	state[1] += b;
+	state[2] += c;
+	state[3] += d;
+	state[4] += e;
+}
+
+static void
+sha1(const u8* input, int inputLength, u8 digest[20])
+{
+	u32 state[5] = {
+		0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0
+	};
+	u32 words[80];
+	int processed = 0;
+
+	if(inputLength > 63) {
+		int lastBlockOffset = inputLength - 64;
+		do {
+			for(int i = 0; i < 16; ++i) {
+				const u8* source = input + processed + i * 4;
+				words[i] = source[3] |
+					(static_cast<u32>(source[2]) << 8) |
+					(static_cast<u32>(source[1]) << 16) |
+					(static_cast<u32>(source[0]) << 24);
+			}
+			processed += 64;
+			sha1Transform(state, words);
+		} while(processed <= lastBlockOffset);
+	}
+
+	int remaining = inputLength - processed;
+	memset(words, 0, 64);
+	int remainingIndex = 0;
+	for(; remainingIndex < remaining; ++remainingIndex) {
+		words[remainingIndex >> 2] |=
+			static_cast<u32>(input[processed + remainingIndex]) <<
+			(24 - (remainingIndex & 3) * 8);
+	}
+	words[remainingIndex >> 2] |=
+		0x80U << (24 - (remainingIndex & 3) * 8);
+	if(remaining >= 56) {
+		sha1Transform(state, words);
+		memset(words, 0, 64);
+	}
+	words[15] = static_cast<u32>(inputLength) << 3;
+	sha1Transform(state, words);
+
+	for(int i = 19; i >= 0; --i) {
+		digest[i] = static_cast<u8>(
+			state[i >> 2] >> (((3 - i) & 3) * 8));
+	}
+}
+
+// The HTTP signer keeps its working buffers together and allocates only the
+// request-sized inner message.  This is the natural 0x180-byte layout used by
+// the shipped HMAC helper.
+class CHMAC_SHA1 {
+public:
+	CHMAC_SHA1()
+	: m_innerMessage(NULL)
+	{}
+
+	~CHMAC_SHA1()
+	{
+		KLBDELETEA(m_innerMessage);
+	}
+
+	bool HMAC_SHA1(u8* text, int textLength, u8* key, int keyLength, u8* digest);
+
+private:
+	u8 m_innerPad[64];
+	u8 m_outerPad[64];
+	u8 m_normalizedKey[64];
+	u8 m_innerDigest[80];
+	u8 m_outerMessage[104];
+	u8* m_innerMessage;
+};
+
+typedef char CHMAC_SHA1_shipped_layout[(sizeof(CHMAC_SHA1) == 0x180) ? 1 : -1];
+
+bool
+CHMAC_SHA1::HMAC_SHA1(u8* text, int textLength, u8* key, int keyLength, u8* digest)
+{
+	m_innerMessage = KLBNEWA(u8, static_cast<size_t>(textLength) + 64);
+	memset(m_normalizedKey, 0, sizeof(m_normalizedKey));
+	memset(m_innerPad, 0x36, sizeof(m_innerPad));
+	memset(m_outerPad, 0x5c, sizeof(m_outerPad));
+
+	if(keyLength > 64) {
+		sha1(key, keyLength, m_normalizedKey);
+	} else {
+		memcpy(m_normalizedKey, key, keyLength);
+	}
+
+	for(u32 i = 0; i < sizeof(m_innerPad); ++i) {
+		m_innerPad[i] ^= m_normalizedKey[i];
+	}
+	memcpy(m_innerMessage, m_innerPad, sizeof(m_innerPad));
+	memcpy(m_innerMessage + sizeof(m_innerPad), text, textLength);
+	sha1(m_innerMessage, textLength + sizeof(m_innerPad), m_innerDigest);
+
+	for(u32 i = 0; i < sizeof(m_outerPad); ++i) {
+		m_outerPad[i] ^= m_normalizedKey[i];
+	}
+	memcpy(m_outerMessage, m_outerPad, sizeof(m_outerPad));
+	memcpy(m_outerMessage + sizeof(m_outerPad), m_innerDigest, 20);
+	sha1(m_outerMessage, 84, digest);
+	return true;
+}
+
+ConnectionEntry::ConnectionEntry(bool pooled, const char* name, bool proxy)
+: m_state(AVAILABLE)
+, m_proxy(proxy)
+, m_pooled(pooled)
+, m_request(NULL)
+, m_operation(NULL)
+{
+	m_name = CKLBUtility::copyString(name);
+}
+
+ConnectionEntry::~ConnectionEntry()
+{
+	if(m_operation) {
+		CPFInterface::getInstance().platform().freeNetworkFormHeaders(m_operation);
+		CPFInterface::getInstance().platform().cleanupNetworkOperation(m_operation);
+		CPFInterface::getInstance().platform().destroyNetworkOperation(m_operation);
+	}
+	KLBDELETEA(m_name);
+}
+
+bool
+ConnectionEntry::start(CKLBHTTPInterface* request)
+{
+	m_request = request;
+	request->m_bDataComplete = false;
+	IPlatformRequest& platform = CPFInterface::getInstance().platform();
+	if(m_request->m_thread) {
+		CPFInterface::getInstance().platform().deleteThread(m_request->m_thread);
+		m_request->m_thread = NULL;
+	}
+	m_request->m_thread = platform.createThread(ConnectionEntry::threadMain, this);
+	return m_request->m_thread != NULL;
+}
+
+void
+ConnectionPool::lock()
+{
+	CPFInterface::getInstance().platform().mutexLock(s_connectionMutex);
+}
+
+void
+ConnectionPool::unlock()
+{
+	CPFInterface::getInstance().platform().mutexUnlock(s_connectionMutex);
+}
+
+void
+ConnectionPool::clear()
+{
+	if(!s_connectionMutex) {
+		return;
+	}
+
+	CPFInterface::getInstance().platform().mutexLock(s_connectionMutex);
+	for(std::list<ConnectionEntry*>::iterator it = s_connections.begin();
+		it != s_connections.end(); ++it) {
+		ConnectionEntry* entry = *it;
+		if(entry->m_state == ConnectionEntry::AVAILABLE) {
+			KLBDELETE(entry);
+		} else {
+			entry->m_state = ConnectionEntry::SHUTTING_DOWN;
+		}
+	}
+	s_connections.clear();
+	CPFInterface::getInstance().platform().mutexUnlock(s_connectionMutex);
+}
+
+char*
+ConnectionEntry::getConnectionName(const char* url)
+{
+	size_t schemeLength;
+	if(strncmp(url, "http://", 7) == 0) {
+		schemeLength = 7;
+	} else if(strncmp(url, "https://", 8) == 0) {
+		schemeLength = 8;
+	} else {
+		return NULL;
+	}
+
+	const char* end = url + schemeLength;
+	while(*end != '/') {
+		++end;
+	}
+	size_t length = end - url;
+	char* name = KLBNEWA(char, length + 1);
+	memcpy(name, url, length);
+	name[length] = 0;
+	return name;
+}
+
+ConnectionEntry*
+ConnectionEntry::getConnection(const char* name)
+{
+	for(std::list<ConnectionEntry*>::iterator it = s_connections.begin();
+		it != s_connections.end(); ++it) {
+		ConnectionEntry* entry = *it;
+		if(strcmp(name, entry->m_name) == 0) {
+			return entry;
+		}
+	}
+	return NULL;
+}
+
+ConnectionEntry*
+ConnectionEntry::create(bool pooled, const char* name, bool proxy)
+{
+	ConnectionEntry* entry = KLBNEWC(ConnectionEntry, (pooled, name, proxy));
+	if(entry && pooled) {
+		s_connections.push_back(entry);
+	}
+	return entry;
+}
+
+bool
+ConnectionEntry::isAvailable(const char* name)
+{
+	bool available = true;
+	ConnectionPool::lock();
+	for(std::list<ConnectionEntry*>::iterator it = s_connections.begin();
+		it != s_connections.end(); ++it) {
+		ConnectionEntry* entry = *it;
+		if(strcmp(name, entry->m_name) == 0) {
+			if(entry) {
+				available = (entry->m_state == AVAILABLE);
+			}
+			break;
+		}
+	}
+	ConnectionPool::unlock();
+	return available;
+}
+
+bool
+ConnectionEntry::start(CKLBHTTPInterface* request, const char* requestedName, bool proxy)
+{
+	char* derivedName = NULL;
+	const char* name = requestedName;
+	if(!name) {
+		const char* url = request->m_url;
+		size_t schemeLength;
+		if(strncmp(url, "http://", 7) == 0) {
+			schemeLength = 7;
+		} else if(strncmp(url, "https://", 8) == 0) {
+			schemeLength = 8;
+		} else {
+			return false;
+		}
+
+		const char* end = url + schemeLength;
+		while(*end != '/') {
+			++end;
+		}
+		size_t length = end - url;
+		derivedName = KLBNEWA(char, length + 1);
+		memcpy(derivedName, url, length);
+		derivedName[length] = 0;
+		name = derivedName;
+	}
+
+	ConnectionEntry* connection = NULL;
+	ConnectionPool::lock();
+	for(std::list<ConnectionEntry*>::iterator it = s_connections.begin();
+		it != s_connections.end(); ++it) {
+		ConnectionEntry* entry = *it;
+		if(strcmp(name, entry->m_name) == 0) {
+			connection = entry;
+			break;
+		}
+	}
+	if(connection) {
+		if(connection->m_state != AVAILABLE) {
+			connection = KLBNEWC(ConnectionEntry, (false, name, proxy));
+		}
+	} else {
+		connection = KLBNEWC(ConnectionEntry, (true, name, proxy));
+		if(connection) {
+			s_connections.push_back(connection);
+		}
+	}
+	if(connection) {
+		connection->m_state = BUSY;
+		connection->m_proxy = proxy;
+	}
+	ConnectionPool::unlock();
+
+	KLBDELETEA(derivedName);
+	if(!connection) {
+		return false;
+	}
+
+	connection->m_request = request;
+	request->m_bDataComplete = false;
+	IPlatformRequest& platform = CPFInterface::getInstance().platform();
+	if(connection->m_request->m_thread) {
+		CPFInterface::getInstance().platform().deleteThread(connection->m_request->m_thread);
+		connection->m_request->m_thread = NULL;
+	}
+	connection->m_request->m_thread = platform.createThread(ConnectionEntry::threadMain, connection);
+	return connection->m_request->m_thread != NULL;
+}
+
+s32
+ConnectionEntry::threadMain(void* /*thread*/, void* data)
+{
+	ConnectionEntry* entry = static_cast<ConnectionEntry*>(data);
+	entry->download();
+	entry->m_request->m_bDataComplete = true;
+
+	if(!entry->m_pooled || entry->m_state == SHUTTING_DOWN) {
+		KLBDELETE(entry);
+	} else {
+		entry->m_state = AVAILABLE;
+	}
+	NetworkManager::wakeUp();
+	return 1;
+}
+
+void
+ConnectionEntry::download()
+{
+	if(!m_operation) {
+		m_operation = CPFInterface::getInstance().platform().createNetworkOperation();
+		if(!m_operation) {
+			return;
+		}
+	}
+
+	CPFInterface::getInstance().platform().resetNetworkOperation(m_operation);
+	if(m_request->m_post) {
+		CPFInterface::getInstance().platform().appendNetworkHeader(m_operation, "Expect:");
+	}
+	for(u32 i = 0; i < m_request->m_headerEntryCount; ++i) {
+		CPFInterface::getInstance().platform().appendNetworkHeader(
+			m_operation, m_request->m_headerEntry[i]);
+	}
+
+	char messageCode[64];
+	bool hasMessageCode = false;
+	if(m_request->m_post && m_request->m_postForm) {
+		for(u32 i = 0; m_request->m_postForm[i]; ++i) {
+			char* formItem = const_cast<char*>(m_request->m_postForm[i]);
+			char* value = formItem;
+			while(*value && *value != '=') {
+				++value;
+			}
+			if(*value) {
+				*value++ = 0;
+				CPFInterface::getInstance().platform().addNetworkFormData(
+					m_operation,
+					formItem,
+					static_cast<long>(strlen(value)),
+					value
+				);
+				if(strncmp(formItem, "request_data", 12) == 0) {
+					CHMAC_SHA1* hmac = KLBNEW(CHMAC_SHA1);
+					CKLBNetAPIKeyChain& keyChain = CKLBNetAPIKeyChain::getInstance();
+					const u8* macKey = m_proxy
+						? keyChain.m_sessionMACKey : keyChain.m_requestMACKey;
+					u8 digest[40];
+					hmac->HMAC_SHA1(
+						reinterpret_cast<u8*>(value), strlen(value),
+						const_cast<u8*>(macKey), keyChain.m_macKeyLength,
+						digest
+					);
+					CKLBHTTPInterface::formatMessageCode(digest, messageCode);
+
+					char header[100];
+					snprintf(header, sizeof(header), "X-Message-Code: %s", messageCode);
+					CPFInterface::getInstance().platform().appendNetworkHeader(
+						m_operation, header);
+					KLBDELETE(hmac);
+					hasMessageCode = true;
+				}
+				value[-1] = '=';
+			}
+		}
+	}
+	if(m_request->m_post) {
+		CPFInterface::getInstance().platform().setNetworkPostFields(m_operation);
+	}
+
+	CPFInterface::getInstance().platform().setupNetworkConnection(
+		m_operation,
+		m_request->m_url,
+		s_userAgent[0] ? s_userAgent : NULL,
+		m_request,
+		reinterpret_cast<void*>(CKLBHTTPInterface::progress_func),
+		reinterpret_cast<void*>(CKLBHTTPInterface::headerReceive_func),
+		reinterpret_cast<void*>(CKLBHTTPInterface::write_func)
+	);
+	int result = CPFInterface::getInstance().platform().performNetworkOperation(m_operation);
+	m_request->m_errorCode = result;
+	if(result) {
+		m_request->m_tmpErrorCode = 500;
+	} else {
+		m_request->m_tmpErrorCode =
+			CPFInterface::getInstance().platform().getNetworkHttpCode(m_operation);
+		m_request->m_receivedData = m_request->m_buffer;
+		m_request->m_receivedSize = m_request->m_writeIndex;
+
+		if(hasMessageCode && m_request->m_tmpErrorCode == 200) {
+			char* encodedSignature = KLBNEWA(char, m_request->m_messageSignLen + 1);
+			memcpy(encodedSignature, m_request->m_pMessageSign,
+				   m_request->m_messageSignLen);
+			encodedSignature[m_request->m_messageSignLen] = 0;
+
+			u32 signatureLength;
+			char* signature;
+			char* decodedSignature = static_cast<char*>(
+				malloc(strlen(encodedSignature) + 1));
+			if(decodedSignature) {
+				u32 decodedSignatureLength;
+				KLBNetAPI_decodeBase64(
+					encodedSignature, decodedSignature, &decodedSignatureLength);
+				signature = decodedSignature;
+				signatureLength = decodedSignatureLength;
+			} else {
+				m_request->m_tmpErrorCode = 500;
+				signatureLength = 0;
+				signature = NULL;
+			}
+			KLBDELETEA(encodedSignature);
+
+			if(m_request->m_tmpErrorCode == 200) {
+				size_t signedLength = m_request->m_receivedSize;
+				signedLength += strlen(messageCode);
+				u8* signedResponse = KLBNEWA(u8, signedLength + 1);
+				memcpy(signedResponse, m_request->m_receivedData,
+					   m_request->m_receivedSize);
+				strcpy(reinterpret_cast<char*>(signedResponse + m_request->m_receivedSize),
+					   messageCode);
+				if(!CPFInterface::getInstance().platform().publicKeyVerify(
+					signedResponse, static_cast<int>(signedLength),
+					reinterpret_cast<u8*>(signature), signatureLength
+				)) {
+					m_request->m_tmpErrorCode = 500;
+				}
+				KLBDELETEA(signedResponse);
+			}
+			free(signature);
+		}
+	}
+
+	CPFInterface::getInstance().platform().freeNetworkFormHeaders(m_operation);
+	CPFInterface::getInstance().platform().cleanupNetworkOperation(m_operation);
+	CPFInterface::getInstance().platform().destroyNetworkOperation(m_operation);
+	m_operation = NULL;
+
+	if(m_request->m_bDownload && m_request->m_pTmpFile) {
+		if(m_request->m_pTmpFile->closeTmp()) {
+			m_request->m_errorCode = 23;
+		}
+		delete m_request->m_pTmpFile;
+		m_request->m_pTmpFile = NULL;
+	}
+}
+
 // static
 bool CKLBHTTPInterface::initHTTPLib()
 {
-	return curl_global_init(CURL_GLOBAL_ALL) == CURLE_OK;
+	if(!CPFInterface::getInstance().platform().initNetwork()) {
+		return false;
+	}
+	s_connectionMutex = CPFInterface::getInstance().platform().allocMutex();
+	return s_connectionMutex != NULL;
 }
 
 // static
 void CKLBHTTPInterface::releaseHTTPLib() {
-	curl_global_cleanup();
+	ConnectionPool::clear();
+	if(s_connectionMutex) {
+		CPFInterface::getInstance().platform().freeMutex(s_connectionMutex);
+		s_connectionMutex = NULL;
+	}
+	CPFInterface::getInstance().platform().shutdownNetwork();
+}
+
+bool allocateConnectionMutex()
+{
+	s_connectionMutex = CPFInterface::getInstance().platform().allocMutex();
+	return s_connectionMutex != NULL;
+}
+
+void releaseConnectionMutex()
+{
+	if(s_connectionMutex) {
+		CPFInterface::getInstance().platform().freeMutex(s_connectionMutex);
+		s_connectionMutex = NULL;
+	}
+}
+
+// static
+void
+CKLBHTTPInterface::setUserAgent(const char* userAgent)
+{
+	strncpy(s_userAgent, userAgent, sizeof(s_userAgent) - 1);
+}
+
+// static
+void
+CKLBHTTPInterface::formatMessageCode(const u8 digest[20], char messageCode[41])
+{
+	for(s32 i = 19; i >= 0; --i) {
+		messageCode[i * 2] = s_hexDigits[digest[i] >> 4];
+		messageCode[i * 2 + 1] = s_hexDigits[digest[i] & 0xf];
+	}
+	messageCode[40] = 0;
 }
 
 //_______________________________________________________________________
@@ -49,9 +689,8 @@ s32 CKLBHTTPInterface::HTTPConnectionThread(void * /*hThread*/, void * data)
 }
 
 void CKLBHTTPInterface::download() {
-	m_threadStop = 0;
-	m_pCurl      = curl_easy_init();
-	if(m_pCurl)
+	CURL* curl = curl_easy_init();
+	if(curl)
 	{
 		curl_slist* headerlist = NULL;
 		if (m_post) {
@@ -91,27 +730,27 @@ void CKLBHTTPInterface::download() {
 			}
 		}
 
-		curl_easy_setopt(m_pCurl, CURLOPT_HTTPHEADER, headerlist);
+		curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerlist);
 		if (m_post) {
-			curl_easy_setopt(m_pCurl, CURLOPT_HTTPPOST, formpost);
+			curl_easy_setopt(curl, CURLOPT_HTTPPOST, formpost);
 		}
 
-		curl_easy_setopt(m_pCurl, CURLOPT_URL,				m_url			);
-		curl_easy_setopt(m_pCurl, CURLOPT_WRITEDATA,		(void*)this		);
-		curl_easy_setopt(m_pCurl, CURLOPT_WRITEFUNCTION,	write_func		);
-//		curl_easy_setopt(m_pCurl, CURLOPT_READFUNCTION,		my_read_func	);
-		curl_easy_setopt(m_pCurl, CURLOPT_NOPROGRESS,		0L				);
-		curl_easy_setopt(m_pCurl, CURLOPT_NOSIGNAL,			1				);
-		curl_easy_setopt(m_pCurl, CURLOPT_PROGRESSFUNCTION,	progress_func	);
-		curl_easy_setopt(m_pCurl, CURLOPT_PROGRESSDATA,		(void*)this		);
-		curl_easy_setopt(m_pCurl, CURLOPT_WRITEHEADER,		(void*)this		);
- 		curl_easy_setopt(m_pCurl, CURLOPT_HEADERFUNCTION,	headerReceive_func);
+		curl_easy_setopt(curl, CURLOPT_URL,				m_url			);
+		curl_easy_setopt(curl, CURLOPT_WRITEDATA,		(void*)this		);
+		curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION,	write_func		);
+//		curl_easy_setopt(curl, CURLOPT_READFUNCTION,		my_read_func	);
+		curl_easy_setopt(curl, CURLOPT_NOPROGRESS,		0L				);
+		curl_easy_setopt(curl, CURLOPT_NOSIGNAL,			1				);
+		curl_easy_setopt(curl, CURLOPT_PROGRESSFUNCTION,	progress_func	);
+		curl_easy_setopt(curl, CURLOPT_PROGRESSDATA,		(void*)this		);
+		curl_easy_setopt(curl, CURLOPT_WRITEHEADER,		(void*)this		);
+		curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION,	headerReceive_func);
 #ifndef _WIN32
-		curl_easy_setopt(m_pCurl, CURLOPT_ACCEPT_ENCODING,	"gzip,deflate");
+		curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING,	"gzip,deflate");
 #endif
-		CURLcode res = curl_easy_perform(m_pCurl);
+		CURLcode res = curl_easy_perform(curl);
 		if (res == CURLE_OK) {
-			curl_easy_getinfo (m_pCurl, CURLINFO_RESPONSE_CODE, &m_errorCode);
+			curl_easy_getinfo (curl, CURLINFO_RESPONSE_CODE, &m_errorCode);
 			// WARNING : IN THAT ORDER, because of multithreading, flag set LAST, after everything else.
 			m_receivedData	= m_buffer;
 			m_receivedSize	= m_writeIndex;
@@ -138,8 +777,7 @@ void CKLBHTTPInterface::download() {
 		}
 
 		// always cleanup
-		curl_easy_cleanup(m_pCurl);
-		m_pCurl = NULL;
+		curl_easy_cleanup(curl);
 
 		if (m_bDownload) {
 			// Close file anyway
@@ -149,7 +787,6 @@ void CKLBHTTPInterface::download() {
 			}
 		}
 	}
-	m_threadStop = 1;
 }
 
 int strncmpi(const char* str1, const char* str2, int len) {
@@ -173,20 +810,22 @@ size_t CKLBHTTPInterface::headerReceive_func( void *ptr, size_t size, size_t nme
 		data+=12; // Skip Maintenance
 		while ((*data != '\r') && (*data != '\n') && (*data != 0)) {
 			if (*data == '1') {
-				((CKLBHTTPInterface*)userdata)->m_maintenance = true;
+				((CKLBHTTPInterface*)userdata)->m_update = true;
 				break;
 			}
 			data++;
 		}
 	}
 
-	if (strncmpi("Status: ",data, 8/*Status: */)==0) {
-		int code = 0;
-		while ((*data >= '0') && (*data <= '9')) {
-			code = (code * 10) + (*data);
+	if (strncmpi("Client-Update:", data, 14/*Client-Update: 1*/) == 0) {
+		data += 14; // Skip Client-Update
+		while ((*data != '\r') && (*data != '\n') && (*data != 0)) {
+			if (*data == '1') {
+				((CKLBHTTPInterface*)userdata)->m_maintenance = true;
+				break;
+			}
 			data++;
 		}
-		((CKLBHTTPInterface*)userdata)->m_tmpErrorCode = code;
 	}
 
 	if (strncmpi("Server-Version:", data, 15/*Server-Version*/) == 0) {
@@ -208,6 +847,25 @@ size_t CKLBHTTPInterface::headerReceive_func( void *ptr, size_t size, size_t nme
 			// pForm.logging("HTTPInterface::get Server-Version %s %8X",mem);
 
 		}
+	}
+
+	if (strncmpi("X-Message-Sign:", data, 15/*X-Message-Sign:*/) == 0) {
+		data += 15;
+		while (*data == ' ') {
+			data++;
+		}
+
+		const char* end = data;
+		while (*end > ' ') {
+			end++;
+		}
+
+		CKLBHTTPInterface* http = (CKLBHTTPInterface*)userdata;
+		KLBDELETEA(http->m_pMessageSign);
+		u32 messageLength = end - data;
+		http->m_messageSignLen = messageLength;
+		http->m_pMessageSign = KLBNEWA(u8, messageLength);
+		memcpy(http->m_pMessageSign, data, messageLength);
 	}
 	if (!((CKLBHTTPInterface*)userdata)->m_stopThread) {
 		return totalSize;
@@ -269,6 +927,7 @@ size_t CKLBHTTPInterface::write(char* ptr, size_t size, size_t nmemb)
 
 	if (m_pTmpFile && (m_bothFileAndMem == false)) {
 		if (m_pTmpFile->writeTmp(ptr, blockSize) == blockSize) {
+			m_writeIndex = newByteSize;
 			noErr = true;
 		}
 	} else {
@@ -303,30 +962,30 @@ size_t CKLBHTTPInterface::write(char* ptr, size_t size, size_t nmemb)
 //_______________________________________________________________________
 
 CKLBHTTPInterface::CKLBHTTPInterface()
-: m_errorCode       (-1)
+: m_thread          (NULL)
+, m_tmpErrorCode    (-1)
 , m_bDataComplete   (false)
 , m_bDownload       (false)
+, m_bothFileAndMem  (true)
+, m_update          (false)
+, m_maintenance     (false)
+, m_errorCode       (-1)
+, m_url             (NULL)
+, m_pServerVersion  (NULL)
 , m_pTmpFile        (NULL)
 , m_receivedSize    (0)
 , m_writeIndex      (0)
 , m_receivedData    (NULL)
-, m_thread          (NULL)
 , m_buffer          (NULL)
-, m_bothFileAndMem  (true)
-, m_headers         (NULL)
+, m_pMessageSign    (NULL)
+, m_messageSignLen  (0)
+, m_stopThread      (false)
 , m_headerEntry     (NULL)
 , m_headerEntryLen  (NULL)
+, m_postForm        (NULL)
+, m_headers         (NULL)
 , m_hdrlen          (0)
 , m_headerEntryCount(0)
-, m_post            (false)
-, m_url             (NULL)
-, m_pCurl           (NULL)
-, m_postForm        (NULL)
-, m_pServerVersion  (NULL)
-, m_maintenance     (false)
-, m_threadStop      (0)
-, m_stopThread      (false)
-, m_tmpErrorCode    (-1)
 {
 	init();
 }
@@ -334,21 +993,8 @@ CKLBHTTPInterface::CKLBHTTPInterface()
 // virtual
 CKLBHTTPInterface::~CKLBHTTPInterface()
 {
-	IPlatformRequest& pForm = CPFInterface::getInstance().platform();
-
-	// True : thread still working
-	bool result = false;
- 	if (m_thread) {
-		int status;
-		result = pForm.watchThread(m_thread, &status);
-		m_stopThread = true;
-		while (m_threadStop == 0) {
-		}
-	}
-
-	// May use result here...
-
 	if (m_thread) {
+		IPlatformRequest& pForm = CPFInterface::getInstance().platform();
 		pForm.deleteThread(m_thread);
 		m_thread = NULL;
 	}
@@ -434,10 +1080,10 @@ char * CKLBHTTPInterface::setForm(const char ** postForm)
 void CKLBHTTPInterface::reuse() {
 	// DEBUG_PRINT("HTTPInterface::reuse");
 	clear();
-	init();
 }
 
 void CKLBHTTPInterface::init() {
+	m_tmpErrorCode      = -1;
 	m_errorCode         = -1;
 	m_bDataComplete	    = false;
 	m_bDownload         = false;
@@ -445,21 +1091,20 @@ void CKLBHTTPInterface::init() {
 	m_receivedSize      = 0;
 	m_writeIndex        = 0;
 	m_receivedData      = NULL;
-	m_thread            = NULL;
 	m_buffer            = NULL;
 	m_bothFileAndMem    = true;
+	m_pMessageSign      = NULL;
+	m_messageSignLen    = 0;
 	m_headers           = NULL;
 	m_headerEntry       = NULL;
 	m_headerEntryLen    = NULL;
 	m_hdrlen            = 0;
 	m_headerEntryCount  = 0;
-	m_post              = false;
+	m_update            = false;
 	m_url               = NULL;
-	m_pCurl             = NULL;
 	m_postForm          = NULL;
 	m_pServerVersion    = NULL;
 	m_maintenance       = false;
-	m_threadStop        = 0;
 	m_stopThread        = false;
 }
 
@@ -474,6 +1119,7 @@ void CKLBHTTPInterface::clear() {
 	KLBDELETEA(m_headerEntry);
 	KLBDELETEA(m_headerEntryLen);
 	KLBDELETEA(m_pServerVersion);
+	KLBDELETEA(m_pMessageSign);
 
 	if (m_postForm) {
 		u32 i = 0;
@@ -485,44 +1131,41 @@ void CKLBHTTPInterface::clear() {
 		m_postForm = NULL;
 	}
 
-	m_url				= NULL;
-	m_buffer			= NULL;
-	m_headers			= NULL;
-	m_headerEntry		= NULL;
-	m_headerEntryLen	= NULL;
-	m_pServerVersion	= NULL;
-
 	init();
 }
 
-// GET発衁
-bool CKLBHTTPInterface::httpGET(const char * url, bool isProxy)
+bool
+CKLBHTTPInterface::isConnectionAvailable(const char* connectionName)
 {
-	klb_assert(isProxy==false,"Proxy Not supported");
+	return ConnectionEntry::isAvailable(connectionName);
+}
 
-	m_post	= false;
+bool
+CKLBHTTPInterface::startConnection(const char* connectionName, bool isProxy)
+{
+	return ConnectionEntry::start(this, connectionName, isProxy);
+}
+
+// GET発衁
+bool CKLBHTTPInterface::httpGET(const char * url, bool isProxy, const char* connectionName)
+{
+	klb_assertNull(isProxy==false,"Proxy Not supported");
+
 	KLBDELETEA(m_url);
 	m_url = CKLBUtility::copyString(url);
-
-    IPlatformRequest& pForm = CPFInterface::getInstance().platform();
-	//pForm.logging("HTTPInterface::httpGET");
-	m_thread = pForm.createThread(CKLBHTTPInterface::HTTPConnectionThread, this);
-	return (m_thread != NULL);
+	m_post = false;
+	return startConnection(connectionName, false);
 }
 
 // POST発衁
-bool CKLBHTTPInterface::httpPOST(const char * url, bool isProxy)
+bool CKLBHTTPInterface::httpPOST(const char * url, bool isProxy, const char* connectionName, bool connectionProxy)
 {
-	klb_assert(isProxy==false,"Proxy Not supported");
+	klb_assertNull(isProxy==false,"Proxy Not supported");
 
-	m_post = true;
 	KLBDELETEA(m_url);
 	m_url = CKLBUtility::copyString(url);
-
-    IPlatformRequest& pForm = CPFInterface::getInstance().platform();
-	// pForm.logging("HTTPInterface::httpPost");
-	m_thread = pForm.createThread(CKLBHTTPInterface::HTTPConnectionThread, this);
-	return (m_thread != NULL);
+	m_post = true;
+	return startConnection(connectionName, connectionProxy);
 }
 
 // ダウンロード保存パス名を持し、ダウンロードモードでの動作を開始する
@@ -535,6 +1178,7 @@ bool CKLBHTTPInterface::setDownload(const char * path)
 		m_pTmpFile = CPFInterface::getInstance().platform().openTmpFile(path);
 		if(m_pTmpFile) {
 			m_bDownload = true;
+			m_bothFileAndMem = false;
 		}
 	}
 	return m_bDownload; 
@@ -545,16 +1189,25 @@ u8* CKLBHTTPInterface::getRecvResource() {
 	return m_receivedData;
 }
 
-// 現在の受信サイズ
-s64 CKLBHTTPInterface::getSize()
+bool CKLBHTTPInterface::isDataComplete()
 {
-	return m_receivedSize;
+	return m_bDataComplete;
 }
 
 // 受信スチEタス
 bool CKLBHTTPInterface::httpRECV()
 {
 	return m_bDataComplete;
+}
+
+void CKLBHTTPInterface::stop()
+{
+	m_stopThread = true;
+}
+
+int CKLBHTTPInterface::getHttpStatus()
+{
+	return (int)m_tmpErrorCode;
 }
 
 // httpのstate取征2013.2.13  追加

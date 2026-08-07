@@ -49,6 +49,8 @@ public:
 	const char*	getText			();
     
     void        setFont         (const char* fontname, float fontsize);
+	const char* getFontName     () const { return m_fontName; }
+	float       getFontSize     () const { return m_fontSize; }
     void        setPlaceHolder  (const char* placeholder);
     void        setAlign        (IWidget::TEXTALIGNMENTTYPE _alignType);
     void        setMaxlen       (int maxlen);
@@ -80,6 +82,8 @@ protected:
 
 	char	*	m_textBuf;
 	size_t		m_textLen;
+	const char* m_fontName;
+	float       m_fontSize;
 };
 
 #endif

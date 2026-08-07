@@ -44,11 +44,11 @@ void CIndexBuffer::load(short* pIndex, s32 startIndex, s32 count) {
 }
 
 short* CIndexBuffer::updateStart(s32 startIndexIncluded) {
-	klb_assertc(startIndexIncluded >= 0 && startIndexIncluded < 32768,
+	klb_assertNull(startIndexIncluded >= 0 && startIndexIncluded < 32768,
 			"Invalid index range");
 
 	if (vboID != 0) {
-		klb_assertc(this->VBOModifying == false, "Call twice updateStart without proper updateComplete.");
+		klb_assertNull(this->VBOModifying == false, "Call twice updateStart without proper updateComplete.");
 		if (VBOModified == true) {
 			if (VBOModifyStart > startIndexIncluded) {
 				VBOModifyStart = startIndexIncluded;
@@ -69,7 +69,7 @@ void CIndexBuffer::updateComplete(s32 endIndexExcluded) {
 
 	if (VBOModifying) {
 		VBOModifying = false;
-		klb_assertc(endIndexExcluded >= VBOModifyStart, "Update end before start");
+		klb_assertNull(endIndexExcluded >= VBOModifyStart, "Update end before start");
 		if (endIndexExcluded > VBOModifyEnd) {
 			this->VBOModifyEnd	 = endIndexExcluded;
 		}
@@ -82,7 +82,7 @@ void CIndexBuffer::commitVBO() {
 	#ifdef STD_OPENGL
 		#pragma message ("Warning : feature not supported with standard OpenGL for now")
 	#else
-		klb_assertc(VBOModified == true, "VBO is not modified but commitVBO is executed.");
+		klb_assertNull(VBOModified == true, "VBO is not modified but commitVBO is executed.");
 		dglBindBuffer	(GL_ELEMENT_ARRAY_BUFFER, this->vboID);
 		GLintptr	offset	= this->VBOModifyStart * sizeof(short);
 		GLsizeiptr	size	= (VBOModifyEnd - VBOModifyStart) * sizeof(short);

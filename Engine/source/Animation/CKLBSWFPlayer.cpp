@@ -35,7 +35,7 @@ KLBFlashAssetPlugin::~KLBFlashAssetPlugin() {
 }
 
 /*virtual*/
-CKLBAbstractAsset* KLBFlashAssetPlugin::loadAsset(u8* stream, u32 /*streamSize*/) {
+CKLBAbstractAsset* KLBFlashAssetPlugin::loadAsset(u8* stream, size_t /*streamSize*/) {
 	//
 	// Create asset and forward to loader.
 	//
@@ -306,7 +306,7 @@ bool CKLBSWFAsset::LoadData(u8* pData) {
 				for (u16 n = 0; n < m_uiShapeCount; n++) {
 					m_shapes[n].shapeID		= READU16P(pData);
 					m_shapes[n].styleCount	= READU16P(pData);
-					klb_assert(m_shapes[n].styleCount == 1, "Multiple style not supported yet");
+					klb_assertNull(m_shapes[n].styleCount == 1, "Multiple style not supported yet");
 					for (int m=0; m < m_shapes[n].styleCount; m++) {
 						//
 						// Support only one style for now.
@@ -368,9 +368,18 @@ bool CKLBSWFAsset::LoadData(u8* pData) {
 							}
 							break;
 						case TYPE_FILL_COLOR:
-							pTexture = NULL;
-							m_shapes[n].fillColor = READU32P(pData);
-							break;
+							{
+								pTexture = NULL;
+								u32 argb = READU32P(pData);
+								u32 color;
+								u8* pColor = (u8*)&color;
+								pColor[0] = argb >> 16;
+								pColor[1] = argb >> 8;
+								pColor[2] = argb;
+								pColor[3] = argb >> 24;
+								m_shapes[n].fillColor = color;
+								break;
+							}
 						default:
 						case TYPE_BITMAP:
 							pTexture = NULL;
@@ -504,7 +513,7 @@ bool CKLBSWFAsset::LoadData(u8* pData) {
 					// Resolve all Audio Asset.
 					IPlatformRequest& plt = CPFInterface::getInstance().platform();
 					for (u32 n = 0; n < m_uiSoundCount; n++) {
-						m_sounds[n].handle = plt.loadAudio(m_aConstants[m_sounds[n].nameIdx], true);
+						m_sounds[n].handle = plt.loadAudio(m_aConstants[m_sounds[n].nameIdx], true, 2);
 						plt.preLoad(m_sounds[n].handle);
 					}
 					return true;
@@ -529,7 +538,7 @@ u16 CKLBSWFAsset::findMovie(char* name) {
 }
 
 CKLBSWFAsset* CKLBSWFAsset::findMovieAsset(char* name) {
-	klb_assert(m_isMaster, "Can not using findMovieAsset on a sub asset");
+	klb_assertNull(m_isMaster, "Can not using findMovieAsset on a sub asset");
 	// OPTIMIZE : registration could register VALID name before EMPTY NAME to fasten up search (2 pass register)
 	CKLBSWFAsset* pLinkAsset = m_subAssets;
 	while (pLinkAsset) {
@@ -538,6 +547,18 @@ CKLBSWFAsset* CKLBSWFAsset::findMovieAsset(char* name) {
 		}
 	}
 	return NULL;
+}
+
+void CKLBSWFAsset::replaceAsset(const char* name, CKLBAbstractAsset* /*asset*/) {
+	if (m_aBitmapLoaded && m_uiMovieCount) {
+		for (u32 n = 0; n < m_uiMovieCount; n++) {
+			CKLBImageAsset* image = m_aBitmapLoaded[n];
+			if (image && image->getFileSource() && strcmp(image->getFileSource(), name) == 0) {
+				image->getTexture()->decrementRefCount();
+				m_aBitmapLoaded[n] = NULL;
+			}
+		}
+	}
 }
 
 void CKLBSWFAsset::setVolumeSE(float volume) {
@@ -549,7 +570,7 @@ void CKLBSWFAsset::setVolumeSE(float volume) {
 }
 
 static char* copyStr(const char* str) {
-	u32 len = strlen(str);
+	size_t len = strlen(str);
 	char* buff = KLBNEWA(char, len+1);
 	memcpy(buff, str, len + 1);
 	return buff;
@@ -619,13 +640,13 @@ CKLBImageAsset* CKLBSWFMovie::getImage(u16 movieID) {
 	if (pBmpLoaded == NULL) {
 		pBmpLoaded = m_player->m_aBitmapLoaded;
 	}
-	
+
 	if (pBmpLoaded[movieID] == NULL) {
 		int cteId = m_player->m_aMovieInfo[ (movieID * SIZE_MOVIE_INFO) + CODE_NAMEINDEX];
 		if (cteId != NULL_IDX) {
 			CKLBAssetManager& pAssetMgr = CKLBAssetManager::getInstance();
 			const char* name;
-			
+
 			s32 offX = 0;
 			s32 offY = 0;
 
@@ -643,8 +664,11 @@ CKLBImageAsset* CKLBSWFMovie::getImage(u16 movieID) {
 					// that means it's a template image that does not
 					// exist on disk.
 					if (origName[0] != '%') {
-						u16 assetID = pAssetMgr.getAssetIDFromName(origName ,m_player->m_aConstants[cteId][0]); // char 0 = 'I'
-						CKLBAbstractAsset* pAsset = pAssetMgr.getAsset(assetID);
+						CKLBAbstractAsset* pAsset = NULL;
+						u16 assetID = pAssetMgr.getAssetIDFromName(origName, m_player->m_aConstants[cteId][0], 0, &pAsset); // char 0 = 'I'
+						if (!pAsset) {
+							pAsset = pAssetMgr.getAsset(assetID);
+						}
 						if (pAsset) {
 							CKLBImageAsset* pImgOrig = ((CKLBTextureAsset*)pAsset)->getImage(origName);
 							pImgOrig->getCenter(offX, offY);
@@ -657,8 +681,11 @@ CKLBImageAsset* CKLBSWFMovie::getImage(u16 movieID) {
 				replace = false;
 			}
 
-			u16 assetID = pAssetMgr.getAssetIDFromName(name,m_player->m_aConstants[cteId][0]); // char 0 = 'I'
-			CKLBAbstractAsset* pAsset = pAssetMgr.getAsset(assetID);
+			CKLBAbstractAsset* pAsset = NULL;
+			u16 assetID = pAssetMgr.getAssetIDFromName(name, m_player->m_aConstants[cteId][0], 0, &pAsset); // char 0 = 'I'
+			if (!pAsset) {
+				pAsset = pAssetMgr.getAsset(assetID);
+			}
 			if (pAsset) {
 				if (pAsset->getAssetType() == ASSET_TEXTURE) {
 					CKLBImageAsset* pImgUsed = ((CKLBTextureAsset*)pAsset)->getImage(name);
@@ -672,15 +699,13 @@ CKLBImageAsset* CKLBSWFMovie::getImage(u16 movieID) {
 				} else {
 					klb_assertAlways( "invalid resource type");
 				}
-			} else {
-				DEBUG_PRINT("[Flash] Asset %s not found !!!!!", name);
 			}
 		}
 	}
 	return pBmpLoaded[movieID];
 }
 
-CKLBNode* CKLBSWFAsset::addMovieA(char* name, u16 layer, SMatrix2D* m, CKLBNode* root, const char** templateTable, u32 pairCount) {
+CKLBNode* CKLBSWFAsset::addMovieA(char* name, u16 layer, u16 maskLayer, u8 maskFlag, SMatrix2D* m, CKLBNode* root, const char** templateTable, u32 pairCount) {
 	u16 index;
 	if (name == NULL) {
 		index = this->m_uiMovieCount-1;
@@ -690,20 +715,55 @@ CKLBNode* CKLBSWFAsset::addMovieA(char* name, u16 layer, SMatrix2D* m, CKLBNode*
 
 	CKLBNode* newMovie = NULL;
 	if (index != NULL_IDX) {
-		newMovie = addMovieB(index, layer, m, root, templateTable, pairCount);	// Only called from UI SWF Player.
+		newMovie = addMovieB(index, layer, maskLayer, maskFlag, m, root, templateTable, pairCount);	// Only called from UI SWF Player.
 	}
 	return newMovie;
 }
 
-CKLBNode* CKLBSWFAsset::addMovieB(u16 movieID, u16 layer, SMatrix2D* m, CKLBNode* root, const char** convTable, u32 convCount) {
+CKLBNode* CKLBSWFAsset::addMovieB(u16 movieID, u16 layer, u16 maskLayer, u8 maskFlag, SMatrix2D* m, CKLBNode* root, const char** convTable, u32 convCount) {
 	CKLBNode* newMovie = NULL; // Fail by default.
 	int movieIndex = movieID * SIZE_MOVIE_INFO;
 	int type = m_aMovieInfo[ movieIndex + CODE_FRAMECOUNT];
 
+	CKLBRenderingManager& renderingManager = CKLBRenderingManager::getInstance();
+	maskFlag = (maskLayer != NULL_IDX) | maskFlag;
+	u16 nodeLayer = layer * 2;
+	s16 renderMaskLayer = (s16)NULL_IDX;
+	CKLBRenderState* maskWriteState = NULL;
+	if (maskLayer != NULL_IDX) {
+		CKLBNode* restoreDepthNode = KLBNEW(CKLBNode);
+		CKLBNode* testDepthNode = KLBNEW(CKLBNode);
+		renderMaskLayer = (maskLayer << 1) | 1;
+
+		CKLBRenderState* clearDepthState = renderingManager.allocateCommandState();
+		CKLBRenderState* testDepthState = renderingManager.allocateCommandState();
+		maskWriteState = clearDepthState;
+		if (restoreDepthNode && testDepthNode && clearDepthState && testDepthState) {
+			CKLBRenderState* restoreDepthState = renderingManager.allocateCommandState();
+			restoreDepthState->setUse(true, false, NULL);
+			restoreDepthState->getState()->setDepthState(false, false, SRenderState::ALWAYS);
+			restoreDepthNode->setRender(restoreDepthState, 0);
+			root->addNode(restoreDepthNode, renderMaskLayer);
+
+			clearDepthState->setUse(true, true, NULL);
+			clearDepthState->setClearDepth(true, 1.0f);
+			clearDepthState->setDepthRange(0.0f, 1.0f);
+			clearDepthState->getState()->setDepthState(true, true, SRenderState::ALWAYS);
+
+			SRenderState* testDepthRenderState = testDepthState->getState();
+			testDepthState->setUse(true, true, NULL);
+			testDepthState->setDepthRange(0.5f, 1.0f);
+			testDepthRenderState->setDepthState(false, true, SRenderState::GEQUAL);
+			testDepthNode->setRender(testDepthState, 0);
+			root->addNode(testDepthNode, nodeLayer | 1);
+		}
+	}
 	if (type < 32768) {
-		CKLBSWFMovie* lMovie = KLBNEWC(CKLBSWFMovie,(this, root, layer));
+		CKLBSWFMovie* lMovie = KLBNEWC(CKLBSWFMovie,(this, root, nodeLayer));
 
 		if (lMovie) {
+			lMovie->m_isClipped = maskFlag;
+
 			// Propagate link to top node (MUST BE SET JUST AFTER CONSTRUCTION)
 			if (root) {
 				lMovie->m_flashRoot = ((CKLBSWFMovie*)root)->m_flashRoot;
@@ -715,6 +775,7 @@ CKLBNode* CKLBSWFAsset::addMovieB(u16 movieID, u16 layer, SMatrix2D* m, CKLBNode
 			lMovie->m_movieEndCode	= m_aMovieInfo[ movieIndex + CODE_ENDINDEX];
 			lMovie->m_movieCode		= lMovie->m_movieStartCode + SKIP_SHOW; // Skip custom show frame "0"
 			lMovie->m_uiFrame		= 1;
+			lMovie->m_frameIncrement		= 1;
 			lMovie->m_isPlaying			= PLAYING;
 			lMovie->m_isPlayingBackup	= PLAYING;
 			lMovie->m_msPerFrame	= m_msPerFrame;
@@ -726,7 +787,10 @@ CKLBNode* CKLBSWFAsset::addMovieB(u16 movieID, u16 layer, SMatrix2D* m, CKLBNode
 			// Force execution first frame.
 			lMovie->nextFrame(1);
 
-
+			if (maskLayer != NULL_IDX) {
+				lMovie->setRender(maskWriteState, 0);
+				lMovie->setRenderOnDestroy(true);
+			}
 		}
 
 		newMovie = lMovie;
@@ -745,10 +809,10 @@ CKLBNode* CKLBSWFAsset::addMovieB(u16 movieID, u16 layer, SMatrix2D* m, CKLBNode
 					//
 					// Include offset in dynamic sprite.
 					//
-					CKLBDynSprite* pSprite = CKLBRenderingManager::getInstance().allocateCommandDynSprite(pImg->getVertexCount(), pImg->getIndexCount());
+					CKLBDynSprite* pSprite = renderingManager.allocateCommandDynSprite(pImg->getVertexCount(), pImg->getIndexCount());
 
 					// Assign texture reference.
-					pSprite->setTexture(pImg->getTexture()->m_pTextureUsage);
+					pSprite->setTexture(pImg);
 
 					// Copy UV.
 					memcpy(pSprite->getSrcUVBuffer(),pImg->getUVBuffer(), pImg->getVertexCount() * 2 * sizeof(float));
@@ -770,19 +834,30 @@ CKLBNode* CKLBSWFAsset::addMovieB(u16 movieID, u16 layer, SMatrix2D* m, CKLBNode
 						*coords++ = *srcXY++ + offX;
 						*coords++ = *srcXY++ + offY;
 					}
+					pSprite->setTranslation(offX, offY);
 
 					pSpr = pSprite;
 				} else {
 					pSpr = CKLBRenderingManager::getInstance().allocateCommandSprite(pImg);
+					pSpr->setPreserveImageCenter(true);
 				}
 
 				CKLBNode* pMovie	= KLBNEW(CKLBNode);
 				if (pMovie) {
-					pMovie->setRender(pSpr);
+					if (maskFlag != 0) {
+						float transparentColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+						pSpr->setColor(transparentColor);
+					}
+					if (maskFlag == 0) {
+						pMovie->setRender(pSpr, 0);
+					} else if (pMovie->setRenderSlotCount(2)) {
+						pMovie->setRender(maskWriteState, 0);
+						pMovie->setRender(pSpr, 1);
+					}
 					pMovie->setRenderOnDestroy(true);
 					newMovie = pMovie;
 
-					root->addNode(pMovie, layer);
+					root->addNode(pMovie, nodeLayer);
 
 					pMovie->markUpMatrix();
 
@@ -799,7 +874,7 @@ CKLBNode* CKLBSWFAsset::addMovieB(u16 movieID, u16 layer, SMatrix2D* m, CKLBNode
 					CKLBNode* pMovie	= KLBNEW(CKLBNode);
 					CKLBDynSprite*	pSprite = CKLBRenderingManager::getInstance().allocateCommandDynSprite(pShp->vertexCount, pShp->indexCount);
 					if (pSprite && pMovie) {
-						root->addNode(pMovie,layer);
+						root->addNode(pMovie,nodeLayer);
 						pMovie->setRenderOnDestroy(true);
 
 						// Transfer Index Buffer
@@ -808,19 +883,23 @@ CKLBNode* CKLBSWFAsset::addMovieB(u16 movieID, u16 layer, SMatrix2D* m, CKLBNode
 						// Transfer XY Coordinate
 						memcpy(pSprite->getSrcXYBuffer(), &m_aMatrixData[pShp->XYBuffer], pShp->vertexCount * 2 * sizeof(float));
 						// Transfer UV Coordinate
-						memcpy(pSprite->getSrcUVBuffer(), &m_aMatrixData[pShp->UVBuffer], pShp->vertexCount * 2 * sizeof(float));
-						pMovie->setRender(pSprite);
+						if (pShp->UVBuffer) {
+							memcpy(pSprite->getSrcUVBuffer(), &m_aMatrixData[pShp->UVBuffer], pShp->vertexCount * 2 * sizeof(float));
+						} else {
+							memset(pSprite->getSrcUVBuffer(), 0, pShp->vertexCount * 2 * sizeof(float));
+						}
+						if (maskLayer == NULL_IDX) {
+							pMovie->setRender(pSprite, 0);
+						} else if (pMovie->setRenderSlotCount(2)) {
+							pMovie->setRender(maskWriteState, 0);
+							pMovie->setRender(pSprite, 1);
+						}
 						pSprite->setTexture(pShp->textureUsage); // Use CTextureUsage directly !
 						if (pShp->styleType == TYPE_FILL_COLOR) {
-							// Optimize u32 -> float -> u32 color conv.
-							u8* pCol = (u8*)&pShp->fillColor;
-							float vec4[4];
-							vec4[0]	= (pCol[0] / 255.0f);
-							vec4[1]	= (pCol[1] / 255.0f);
-							vec4[2]	= (pCol[2] / 255.0f);
-							vec4[3]	= (pCol[3] / 255.0f);
-
-							pSprite->setColor(vec4);
+							u32 color = maskFlag ? 0 : pShp->fillColor;
+							for (u32 vertex = 0; vertex < pShp->vertexCount; vertex++) {
+								pSprite->setVertexColor(pMovie, vertex, color);
+							}
 						}
 						pSprite->mark(CKLBDynSprite::MARK_CHANGE_UV | CKLBDynSprite::MARK_CHANGE_XY);
 						((CKLBSWFMovie*)root)->m_flashRoot->m_rebuildSort = true;
@@ -840,6 +919,7 @@ CKLBNode* CKLBSWFAsset::addMovieB(u16 movieID, u16 layer, SMatrix2D* m, CKLBNode
 
 	if (newMovie != NULL) {
 		newMovie->m_movieID = movieID;
+		newMovie->setMaskLayer(renderMaskLayer);
 		if (m != NULL) {
 			for (int n = 0; n < 5; n++) {
 				newMovie->m_matrix.m_matrix[n] = m->m_matrix[n];    // copy Array
@@ -850,7 +930,16 @@ CKLBNode* CKLBSWFAsset::addMovieB(u16 movieID, u16 layer, SMatrix2D* m, CKLBNode
 
 		// Node added at construction already.
 		
-		newMovie->m_useParentColor	= true;
+		if (maskFlag == 0) {
+			newMovie->m_useParentColor = true;
+		} else {
+			SColorVector color;
+			color.m_vector[0] = 0.0f;
+			color.m_vector[1] = 0.0f;
+			color.m_vector[2] = 0.0f;
+			color.m_vector[3] = 0.0f;
+			newMovie->setColorMatrix(color);
+		}
 	}
 	return newMovie;
 }
@@ -859,10 +948,10 @@ CKLBNode* CKLBSWFAsset::createSubTree(u32 priorityBase) {
 	CKLBSWFMovie* pMov;
 	if (this->m_parentSWF) {
 		// Submovies.
-		pMov = (CKLBSWFMovie*)m_parentSWF->addMovieB(this->m_refMovieID, 0, NULL, NULL, NULL, 0);
+		pMov = (CKLBSWFMovie*)m_parentSWF->addMovieB(this->m_refMovieID, 0, NULL_IDX, 0, NULL, NULL, NULL, 0);
 	} else {
 		// Main timeline.
-		pMov = (CKLBSWFMovie*)addMovieB(this->m_uiMovieCount-1, 0, NULL, NULL, NULL, 0);
+		pMov = (CKLBSWFMovie*)addMovieB(this->m_uiMovieCount-1, 0, NULL_IDX, 0, NULL, NULL, NULL, 0);
 	}
 	if (pMov) { pMov->setPriority(priorityBase); }
 	return pMov;
@@ -878,14 +967,14 @@ CKLBSWFMovie::CKLBSWFMovie(CKLBSWFAsset* pPlayer, CKLBNode* pParent, u16 layer)
 : CKLBNode          ()
 , m_player          (pPlayer)
 , m_movieStartCode  (NULL_IDX)
-, m_movieCode       (NULL_IDX)
+, m_movieCode       (STOPPED_MOVIE_CODE)
 , m_movieEndCode    (NULL_IDX)
 , m_uiFrame         (0)
 , m_localTime       (0)
 , m_renderOffset    (0)
 , m_isPlaying       (false)
 , m_firstFrame      (true)
-, m_updateFrame     (0)
+, m_frameIncrement  (0)
 , m_isFlashRoot     (false)
 , m_flashRoot       (NULL)
 , m_rebuildSort     (true)
@@ -895,7 +984,9 @@ CKLBSWFMovie::CKLBSWFMovie(CKLBSWFAsset* pPlayer, CKLBNode* pParent, u16 layer)
 , m_nameTable       (NULL)
 , m_playMode        (true)
 , m_volume          (1.0f)
+, m_totalFrame      (0)
 , m_supportCaching	(false)
+, m_isClipped       (false)
 {
 	// Is animated by factory design BEFORE ANY OPERATION.
 	this->m_status |= ANIMATED;
@@ -939,6 +1030,26 @@ void CKLBSWFMovie::freeTables() {
 	}
 }
 
+void CKLBSWFMovie::replaceAsset(const char* sourceName, CKLBAsset* replacement) {
+	CKLBImageAsset** images = m_aBitmapLoaded ? m_aBitmapLoaded : m_player->m_aBitmapLoaded;
+	if (images && m_player->m_uiMovieCount) {
+		for (u32 n = 0; n < m_player->m_uiMovieCount; n++) {
+			CKLBImageAsset* image = images[n];
+			if (image && image->getFileSource() && strcmp(image->getFileSource(), sourceName) == 0) {
+				image->getTexture()->decrementRefCount();
+				images[n] = NULL;
+				images[n] = getImage(n);
+			}
+		}
+	}
+
+	CKLBNode* child = m_pChild;
+	while (child) {
+		child->replaceAsset(sourceName, replacement);
+		child = ((CKLBSWFMovie*)child)->m_pBrother;
+	}
+}
+
 void CKLBSWFMovie::setVolumeSE(float volume) {
 	m_volume = volume;
 	m_player->setVolumeSE(volume);
@@ -960,12 +1071,14 @@ void CKLBSWFMovie::gotoFrame(u16 frame) {
 		// If player is still active : force to play
 		if (m_playMode) {
 			m_isPlaying = PLAYING;
+			m_frameIncrement = 1;
 		} else {
 		// If player is inactive : force to play when the play() function is called.
 			m_isPlayingBackup = PLAYING;
 		}
 
 		nextFrame(frame);
+		m_totalFrame = frame;
 		m_disableJump = false;
 	}
 }
@@ -1238,6 +1351,7 @@ void CKLBSWFAsset::restoreSceneGraph(CKLBSWFMovie* node, u16 frame) {
 			node->m_updateFrame		=	newMovie->m_updateFrame;
 			node->m_isPlaying		=	newMovie->m_isPlaying;
 			node->m_isPlayingBackup =	newMovie->m_isPlayingBackup;
+			node->m_frameIncrement	=	newMovie->m_frameIncrement;
 
 			KLBDELETE(pNewTree);
 			return;
@@ -1274,6 +1388,7 @@ CKLBNode* CKLBSWFMovie::clone(CKLBNode* newItem, CKLBNode* parent, CKLBNode* bro
 		newMovie->m_updateFrame		= m_updateFrame;
 		newMovie->m_isPlaying		= m_isPlaying;
 		newMovie->m_isPlayingBackup = m_isPlayingBackup;
+		newMovie->m_frameIncrement	= m_frameIncrement;
 
 		// Flash root is the only one to own the arrays
 		// And flash root is never going to be destroyed.
@@ -1291,6 +1406,10 @@ CKLBNode* CKLBSWFMovie::clone(CKLBNode* newItem, CKLBNode* parent, CKLBNode* bro
 
 	return newItem;
 }
+
+// Colour matrix restored on every non mask child when a movie rewinds to its
+// first frame : an explicit, fully opaque white colour matrix.
+static const SColorVector s_firstFrameColor(MATRIX_COL, 1.0f, 1.0f, 1.0f, 1.0f);
 
 void CKLBSWFMovie::nextFrame(u16 frame) {
 	int mode = SWF_NORMAL;
@@ -1311,9 +1430,24 @@ void CKLBSWFMovie::nextFrame(u16 frame) {
 
 		u16 lblCode = NULL_IDX;
 
+		if (m_firstFrame) {
+			CKLBNode* child = m_pChild;
+			while (child) {
+				CKLBNode* nextChild = ((CKLBSWFMovie*)child)->m_pBrother;
+				if (!(((CKLBSWFMovie*)child)->m_layer & 1)) {
+					child->m_status |= CMATRIX_CHANGE;
+					child->m_localColorMatrix = s_firstFrameColor;
+					child->m_pColorMatrix = ((CKLBSWFMovie*)child)->m_parent->m_pColorMatrix;
+					child->m_useParentColor = true;
+					child->markUpTree();
+				}
+				child = nextChild;
+			}
+		}
+
 		while (m_uiFrame < frame) {
 nextInstruction:
-			u16 val = m_player->m_aStreamInstruction[m_movieCode++];
+			u32 val = m_player->m_aStreamInstruction[m_movieCode++];
 			if (val & 0x8000) {								// Bit 15
 				klb_assertAlways("Future Extension Invalid code");
 				if (val & 0x4000) {							// Bit 14
@@ -1341,7 +1475,7 @@ nextInstruction:
 						}
 
 						if (movie == NULL) {
-							movie = addMovie(objId, layer); // Default matrix is set, update by place.
+							movie = addMovie(objId, layer, NULL_IDX, false); // Default matrix is set, update by place.
 						}
 					}
 			
@@ -1440,7 +1574,7 @@ nextInstruction:
 				}
 				goto nextInstruction;
 			} else {
-				switch (val) {
+				switch ((u16)val) {
 				case SHOW_FRAME:
 
 					//
@@ -1486,6 +1620,7 @@ nextInstruction:
 										mode			= SWF_GOTO_AND_PLAY;
 										m_disableJump	= true;
 									}
+									m_totalFrame	= frameTarget;
 									// Freeze player once reached.
 									if (type == GOTO_AND_STOP) {
 										m_isPlaying = STOPPED;
@@ -1505,18 +1640,19 @@ nextInstruction:
 						u16 movieID			= m_player->m_aStreamInstruction[m_movieCode++];
 						u16 matrixIdx		= m_player->m_aStreamInstruction[m_movieCode++];
 						u16 matrixColIdx	= m_player->m_aStreamInstruction[m_movieCode++];
-						u16 layer			= m_player->m_aStreamInstruction[m_movieCode++];
-						u16 clipLayer;
+						u32 layer			= m_player->m_aStreamInstruction[m_movieCode++];
+						u16 clipLayer = NULL_IDX;
 
 						if (m_player->m_aStreamInstruction[m_movieCode-5] == PLACE_OBJECT_CLIP) {
 							clipLayer		= m_player->m_aStreamInstruction[m_movieCode++];
 						}
+						u16 objectLayer = layer;
 						CKLBNode* movie;
 
 						//
 						// Remove movie if replace
 						//
-						movie = getNode(layer);
+						movie = getNode(objectLayer << 1);
 						if (movieID != NULL_IDX) {
 							if (movie != NULL) {
 								if (movie->m_movieID != movieID) {
@@ -1527,11 +1663,9 @@ nextInstruction:
 							}
 
 							if (movie == NULL) {
-								movie = addMovie(movieID, layer); // Default matrix is set, update by place.
+								movie = m_player->addMovieB(movieID, objectLayer, clipLayer, m_isClipped, NULL, this, NULL, 0); // Default matrix is set, update by place.
 							}
 						}
-
-						klb_assertNull(movie, "Null pointer");
 
 						if (movie) {
 							//
@@ -1552,12 +1686,18 @@ nextInstruction:
 								float* pFL = movie->m_matrix.m_matrix;
 								switch (m_player->m_aMatrixType[matrixIdx]) {
 								case MATRIX_TG:
-									// Thru. no break.
 									pFL[A]  = m_player->m_aMatrixData[idx++];
 									pFL[D]  = m_player->m_aMatrixData[idx++];
 									pFL[B]  = m_player->m_aMatrixData[idx++];
 									pFL[C]  = m_player->m_aMatrixData[idx++];
+									pFL[TX] = m_player->m_aMatrixData[idx++];
+									pFL[TY] = m_player->m_aMatrixData[idx++];
+									break;
 								case MATRIX_T:
+									pFL[A]  = 1.0f;
+									pFL[D]  = 1.0f;
+									pFL[B]  = 0.0f;
+									pFL[C]  = 0.0f;
 									pFL[TX] = m_player->m_aMatrixData[idx++];
 									pFL[TY] = m_player->m_aMatrixData[idx++];
 									break;
@@ -1595,6 +1735,11 @@ nextInstruction:
 								movie->markUpMatrix();
 							}
 
+							//
+							// Layer field carries the optional render mode.
+							//
+							u8 renderMode = static_cast<u8>(layer >> 16);
+
 							if (matrixColIdx != NULL_IDX) {
 								float* pFL = movie->m_localColorMatrix.m_vector;
 								if (m_player->m_aMatrixType[matrixColIdx] == 0) {
@@ -1613,6 +1758,8 @@ nextInstruction:
 								movie->m_useParentColor	= false;
 								movie->markUpColor();
 							}
+
+							((CKLBSWFMovie*)movie)->updateRenderMode(renderMode);
 						}
 					}
 			
@@ -1620,9 +1767,11 @@ nextInstruction:
 				case REMOVE_OBJECT:
 					{
 						u16 layer			= m_player->m_aStreamInstruction[m_movieCode++];
-						CKLBNode*	pNode	= getNode(layer);
-						removeMovie(pNode);
-						KLBDELETE(pNode);
+						CKLBNode*	pNode	= getNode(layer << 1);
+						if (pNode) {
+							removeMovie(pNode);
+							KLBDELETE(pNode);
+						}
 					}
 
 					goto nextInstruction;
@@ -1630,7 +1779,7 @@ nextInstruction:
 					{
 						u8 sndId = (u8)m_player->m_aStreamInstruction[m_movieCode++];
 						if (mode != SWF_GOTO_AND_PLAY) {
-							CPFInterface::getInstance().platform().playAudio(m_player->m_sounds[sndId].handle);
+							CPFInterface::getInstance().platform().playAudio(m_player->m_sounds[sndId].handle, 0, m_volume);
 						}
 					}
 					goto nextInstruction;
@@ -1649,8 +1798,11 @@ nextInstruction:
 				CKLBNode* pChild = m_pChild;
 				while (pChild) {
 					CKLBNode* pChildNext = ((CKLBSWFMovie*)pChild)->m_pBrother;
-					if (pChild->m_updateFrame != m_uiFrame) {
-						this->removeNode(pChild);
+					if ((pChild->m_updateFrame != m_uiFrame) &&
+						!(((CKLBSWFMovie*)pChild)->m_layer & 1)) {
+						if (removeMovie(pChild)) {
+							pChildNext = m_pChild;
+						}
 						KLBDELETE(pChild);
 					}
 					pChild = pChildNext;
@@ -1688,6 +1840,25 @@ nextInstruction:
 	}
 }
 
+//
+// Placement instructions may embed a render mode in the low bits of their
+// layer field. Bit 2 flags its presence, bits 0..1 carry the requested mode.
+// The node keeps its inherited mode in the high nibble of m_renderMode : the
+// inherited mode wins over the local one when both are set.
+//
+void CKLBSWFMovie::updateRenderMode(u8 mode) {
+	if (mode & PLACE_RENDERMODE) {
+		mode &= PLACE_RENDERMODE_MASK;
+		if ((m_renderMode & 0x0F) != mode) {
+			u8 inheritedMode = m_renderMode & 0xF0;
+			u32 effectiveMode = inheritedMode ? (inheritedMode >> 4) : mode;
+			m_renderMode = inheritedMode | mode;
+			propagateRenderMode(effectiveMode << 4);
+			applyRenderMode(effectiveMode);
+		}
+	}
+}
+
 // -----------------------------------------------------------------
 //   Tree marking and update.
 /*virtual*/
@@ -1696,11 +1867,12 @@ void CKLBSWFMovie::animate(u32 deltaTimeMilli) {
 	// 1. Execute movie
 	// Note : same behavior as flash : all sub movies continue to "play".
 	//
-	if (m_movieCode != NULL_IDX) {
+	if (m_movieCode != STOPPED_MOVIE_CODE) {
 		m_localTime += deltaTimeMilli;
 		if (m_localTime >= m_msPerFrame) {
 			// m_localTime -= m_msPerFrame;  <-- Best Effort method, try to get back lost time.
 			m_localTime = 0;	// Do not accelerate if late, but no frame skip.
+			m_totalFrame += m_frameIncrement;
 			nextFrame(NULL_IDX);
 		}
 	} else {
@@ -1732,13 +1904,6 @@ void CKLBSWFMovie::rebuildRecurse(CKLBNode* pNode, u32* pIndex, CKLBRenderingMan
 	CKLBSWFMovie* pBrother = (CKLBSWFMovie*)pNode;
 	while (pBrother) {
 		//
-		// Child first.
-		//
-		if (pBrother->m_pChild) {
-			rebuildRecurse(pBrother->m_pChild, pIndex, pRdr);
-		}
-
-		//
 		// Process node itself
 		//
 		for (u32 n=0; n<pBrother->m_renderCount; n++) {
@@ -1751,16 +1916,38 @@ void CKLBSWFMovie::rebuildRecurse(CKLBNode* pNode, u32* pIndex, CKLBRenderingMan
 			}
 		}
 
+		//
+		// Children follow their parent in render order.
+		//
+		if (pBrother->m_pChild) {
+			rebuildRecurse(pBrother->m_pChild, pIndex, pRdr);
+		}
+
 		pBrother = (CKLBSWFMovie*)pBrother->m_pBrother;	// Cast to access ancestor protected.
 	}
 }
 
-CKLBNode* CKLBSWFMovie::addMovie(u16 movieID, u16 layer) {
-	return m_player->addMovieB(movieID, layer, NULL, this, NULL, 0);
+CKLBNode* CKLBSWFMovie::addMovie(u16 movieID, u16 layer, u16 maskLayer, bool maskFlag) {
+	return m_player->addMovieB(movieID, layer, maskLayer, maskFlag, NULL, this, NULL, 0);
 }
 
-void CKLBSWFMovie::removeMovie(CKLBNode* pMovie) {
+bool CKLBSWFMovie::removeMovie(CKLBNode* pMovie) {
+	if (pMovie == NULL) {
+		return false;
+	}
+	bool removedLayerNode = (((CKLBSWFMovie*)pMovie)->m_maskLayer != NULL_IDX);
+	if (removedLayerNode) {
+		CKLBNode* maskStart;
+		CKLBNode* maskEnd = NULL;
+		searchMaskRange(pMovie, &maskStart, &maskEnd);
+
+		this->removeNode(maskStart);
+		KLBDELETE(maskStart);
+		this->removeNode(maskEnd);
+		KLBDELETE(maskEnd);
+	}
 	this->removeNode(pMovie);
+	return removedLayerNode;
 }
 
 // -----------------------------------------------------------------
@@ -1774,3 +1961,26 @@ void CKLBSWFMovie::removeMovie(CKLBNode* pMovie) {
 
 // LATER RP : may need some API extension to free all sub movies also ?
 // LATER RP : may need some API to replace bitmaps already loaded, ...
+
+//
+// A flash mask is stored as a pair of sibling nodes placed just after the node
+// owning the mask : the first sibling opens the mask, and the first following
+// sibling flagged as a mask layer closes it. When no closing node is found the
+// caller keeps its own end node untouched.
+//
+void CKLBNode::searchMaskRange(CKLBNode* pNode, CKLBNode** pMaskStart, CKLBNode** pMaskEnd) {
+	CKLBNode* maskStart = pNode->m_pBrother;
+	*pMaskStart = maskStart;
+
+	CKLBNode* cursor = maskStart;
+	while (true) {
+		cursor = cursor->m_pBrother;
+		if (cursor == NULL) {
+			break;
+		}
+		if (cursor->m_layer & 1) {
+			*pMaskEnd = cursor;
+			break;
+		}
+	}
+}

@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -70,8 +70,8 @@ void CBuffer::load(float* vertexArrayStart, s32 vertexSize, s32 vertexInfoID, s3
 }
 
 float*	CBuffer::updateStart	(s32 vertexInfoID, s32 startVertexIncluded, u16* stride, void* internalptr) {
-	klb_assertc(this->VBOModifying == false, "Call twice updateStart without proper updateComplete.");
-	klb_assertc(startVertexIncluded >= 0 && startVertexIncluded < 32768,
+	klb_assertNull(this->VBOModifying == false, "Call twice updateStart without proper updateComplete.");
+	klb_assertNull(startVertexIncluded >= 0 && startVertexIncluded < 32768,
 			"Invalid index range");
 
 	s32 n	= 0;
@@ -82,7 +82,7 @@ float*	CBuffer::updateStart	(s32 vertexInfoID, s32 startVertexIncluded, u16* str
 				*((void**)internalptr) = &structure[n];
 			}
 			if (structure[n].isVBO) {
-				klb_assertc(this->VBOModifying == false, "Call twice updateStart without proper updateComplete.");
+				klb_assertNull(this->VBOModifying == false, "Call twice updateStart without proper updateComplete.");
 				
 				if (stride) {
 					*stride = strideVBO;
@@ -122,7 +122,7 @@ void	CBuffer::updateComplete	(s32 endVertexExcluded) {
 
 	if (VBOModifying) {
 		VBOModifying = false;
-		klb_assertc(endVertexExcluded >= VBOModifyStart, "");
+		klb_assertNull(endVertexExcluded >= VBOModifyStart, "");
 		if (endVertexExcluded > VBOModifyEnd) {
 			this->VBOModifyEnd	 = endVertexExcluded;
 		}
@@ -135,7 +135,7 @@ void	CBuffer::commitVBO() {
 	#ifdef STD_OPENGL
 		#pragma message ("Warning : feature not supported with standard OpenGL for now")
 	#else
-		klb_assertc(VBOModified == true, "VBO is not modified but commitVBO is executed.");
+		klb_assertNull(VBOModified == true, "VBO is not modified but commitVBO is executed.");
 		dglBindBuffer	(GL_ARRAY_BUFFER, this->vboID);
 		GLintptr	offset	= this->VBOModifyStart * strideVBO * sizeof(float);
 		GLsizeiptr	size	= (VBOModifyEnd - VBOModifyStart) * strideVBO * sizeof(float);

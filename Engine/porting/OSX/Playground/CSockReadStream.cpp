@@ -319,7 +319,7 @@ IWriteStream *CSockReadStream::getWriteStream() {
 	return m_writeStream;
 }
 
-int CSockReadStream::readU16arr(u16 *pBufferU16, int items) {
+size_t CSockReadStream::readU16arr(u16 *pBufferU16, size_t items) {
 	// リングバッファに指定サイズを要求するので、全て取得できるか、全く取れないかのどちらかになる。
 	if (!requestData((unsigned char *)pBufferU16, items * sizeof(u16))) return 0;
     
@@ -328,7 +328,7 @@ int CSockReadStream::readU16arr(u16 *pBufferU16, int items) {
 	return items;
 }
 
-int CSockReadStream::readU32arr(u32 *pBufferU32, int items) {
+size_t CSockReadStream::readU32arr(u32 *pBufferU32, size_t items) {
 	// リングバッファに指定サイズを要求するので、全て取得できるか、全く取れないかのどちらかになる。
 	if (!requestData((unsigned char *)pBufferU32, items * sizeof(u32))) return 0;
     

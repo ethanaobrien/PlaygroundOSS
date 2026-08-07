@@ -16,10 +16,15 @@
 #include "CKLBUtility.h"
 #include "CKLBFormGroup.h"
 
+extern void KLBUnregisterObjectName(void* object, const char* className);
+extern void KLBRegisterObjectName(void* object, const char* className, int flags);
 
-CKLBFormGroup::CKLBFormGroup() : m_begin(NULL), m_end(NULL) {}
+CKLBFormGroup::CKLBFormGroup() : m_begin(NULL) {
+	KLBRegisterObjectName(this, "CKLBFormGroup", 0);
+}
 CKLBFormGroup::~CKLBFormGroup()
 {
+	KLBUnregisterObjectName(this, "CKLBFormGroup");
 	release();
 }
 
@@ -33,21 +38,27 @@ CKLBFormGroup::getInstance()
 void
 CKLBFormGroup::release()
 {
-	GROUP * pGrp = m_begin;
-
-	while(pGrp) {
-		GROUP * pNxt = pGrp->next;
-
-		SFormCtrlList * pCtrl = pGrp->begin;
-		while(pCtrl) {
-			SFormCtrlList * pCtrlNext = pCtrl->pGrpNext;
-			delForm(pCtrl);
-			pCtrl = pCtrlNext;
-		}
-		pGrp = pNxt;
+	GROUP* pGroup = m_begin;
+	while(pGroup) {
+		GROUP* pNext = pGroup->next;
+		checkGroup(pGroup);
+		pGroup = pNext;
 	}
+	m_begin = NULL;
 }
 
+// 現在存在するグループと、その参照数・操作状態を一覧表示する。
+void
+CKLBFormGroup::dump()
+{
+	GROUP * pGrp = m_begin;
+	while(pGrp) {
+		printf("Group[%s][%i] %p : Working:%i (Worker:%p) (Locker:%p) \n",
+			   pGrp->name, pGrp->refCount, pGrp,
+			   pGrp->working, pGrp->worker, pGrp->locker);
+		pGrp = pGrp->next;
+	}
+}
 
 bool
 CKLBFormGroup::addForm(SFormCtrlList * list, const char * group_name)
@@ -56,20 +67,11 @@ CKLBFormGroup::addForm(SFormCtrlList * list, const char * group_name)
 	delForm(list);
 
 	// 新たに所属させるべきグループを得る。
-	GROUP * pGrp = createGroup(group_name);
-	if(!pGrp) return false;
-
-	// リストをグループに所属させる
-	list->pGroup = (void *)pGrp;
-	list->pGrpPrev = pGrp->end;
-	list->pGrpNext = NULL;
-
-	if(list->pGrpPrev) {
-		list->pGrpPrev->pGrpNext = list;
-	} else {
-		pGrp->begin = list;
+	if(group_name) {
+		GROUP * pGrp = createGroup(group_name);
+		if(!pGrp) return false;
+		list->pGroup = (void *)pGrp;
 	}
-	pGrp->end = list;
 
 	return true;
 }
@@ -83,24 +85,11 @@ CKLBFormGroup::delForm(SFormCtrlList * list)
 	if(pGrp->worker == list && pGrp->working) {
 		pGrp->working = false;
 	}
-	// フォームを完全にグループから除外する
-	if(list->pGrpPrev) {
-		list->pGrpPrev->pGrpNext = list->pGrpNext;
-	} else {
-		pGrp->begin = list->pGrpNext;
-	}
-	if(list->pGrpNext) {
-		list->pGrpNext->pGrpPrev = list->pGrpPrev;
-	} else {
-		pGrp->end = list->pGrpPrev;
-	}
-	list->pGrpNext = NULL;
-	list->pGrpPrev = NULL;
 	list->pGroup = NULL;
 
-	// 結果としてグループに所属するフォームが無くなることがあるので、
-	// その場合はグループそのものを削除する
-	checkGroup(pGrp);
+	if(--pGrp->refCount == 0) {
+		checkGroup(pGrp);
+	}
 	return true;
 }
 
@@ -111,7 +100,10 @@ CKLBFormGroup::searchGroup(const char * group_name)
 {
 	GROUP * pGrp = m_begin;
 	while(pGrp) {
-		if(!CKLBUtility::safe_strcmp(pGrp->name, group_name)) return pGrp;
+		if(!CKLBUtility::safe_strcmp(pGrp->name, group_name)) {
+			pGrp->refCount++;
+			return pGrp;
+		}
 		pGrp = pGrp->next;
 	}
 	return NULL;
@@ -123,25 +115,18 @@ CKLBFormGroup::GROUP *
 CKLBFormGroup::createGroup(const char * group_name)
 {
 	GROUP * pGrp = searchGroup(group_name);
-	if(pGrp) return pGrp;	// 既にある場合は流用する
+	if(pGrp) {
+		return pGrp;
+	}
 
 	pGrp = KLBNEW(GROUP);
 	if(!pGrp) return NULL;
 
-	pGrp->prev = m_end;
-	pGrp->next = NULL;
-
-	if(m_begin) {
-		m_end->next = pGrp;
-	} else {
-		m_begin = pGrp;
-	}
-	m_end = pGrp;
+	pGrp->next = m_begin;
+	pGrp->refCount = 1;
+	m_begin = pGrp;
 
 	pGrp->name = CKLBUtility::copyString(group_name);
-	pGrp->exclusive = true;
-	pGrp->begin = NULL;
-	pGrp->end = NULL;
 
 	return pGrp;
 }
@@ -149,19 +134,31 @@ CKLBFormGroup::createGroup(const char * group_name)
 void
 CKLBFormGroup::checkGroup(GROUP * pGrp)
 {
-	// 登録されたフォームが一つもなければ、このグループ自体を削除する。
-	if(pGrp->begin || pGrp->end) return;
-
 	KLBDELETEA(pGrp->name);
-	if(pGrp->prev) {
-		pGrp->prev->next = pGrp->next;
-	} else {
-		m_begin = pGrp->next;
+	GROUP * pPrev = NULL;
+	GROUP * pCurrent = m_begin;
+	while(pCurrent) {
+		if(pCurrent == pGrp) {
+			if(pPrev) {
+				pPrev->next = pCurrent->next;
+			} else {
+				m_begin = pCurrent->next;
+			}
+			KLBDELETE(pCurrent);
+			return;
+		}
+		pPrev = pCurrent;
+		pCurrent = pCurrent->next;
 	}
-	if(pGrp->next) {
-		pGrp->next->prev = pGrp->prev;
-	} else {
-		m_end = pGrp->prev;
+}
+
+// グループの参照をひとつ手放す。最後の参照であればグループ自体を破棄する。
+void
+CKLBFormGroup::releaseGroup(GROUP * pGrp)
+{
+	if(!pGrp) return;
+
+	if(--pGrp->refCount == 0) {
+		checkGroup(pGrp);
 	}
-	KLBDELETE(pGrp);
 }

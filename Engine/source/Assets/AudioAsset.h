@@ -57,7 +57,7 @@ public:
 	virtual	u8					charHeader		()				{ return 'A';			}
 	virtual const char*			fileExtension	()				{ return ".audio"; }
 
-	virtual CKLBAbstractAsset*	loadAsset		(u8* stream, u32 streamSize);
+	virtual CKLBAbstractAsset*	loadAsset		(u8* stream, size_t streamSize);
 	virtual CKLBAbstractAsset*	loadByFileName	(const char* fileName);
 };
 

@@ -54,7 +54,7 @@ public:
 	virtual	u8					charHeader		()			{ return 'a';							}
 	virtual const char*			fileExtension	()			{ return ".anim";						}
 
-	virtual CKLBAbstractAsset*	loadAsset		(u8* stream, u32 streamSize);
+	virtual CKLBAbstractAsset*	loadAsset		(u8* stream, size_t streamSize);
 };
 
 #endif

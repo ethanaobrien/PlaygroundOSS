@@ -24,7 +24,7 @@ public:
 	CKLBDragCallbackIF(const char * funcname);
 	virtual ~CKLBDragCallbackIF();
 
-	virtual void callback(PAD_ITEM::TYPE type, int tap_x, int tap_y, int mv_x, int mv_y) = 0;
+	virtual s32 callback(PAD_ITEM::TYPE type, int tap_x, int tap_y, int mv_x, int mv_y) = 0;
 
 protected:
 	void execCallback(void * id, PAD_ITEM::TYPE type, int tap_x, int tap_y, int mv_x, int mv_y);

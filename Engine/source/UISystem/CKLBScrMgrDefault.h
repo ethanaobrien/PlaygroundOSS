@@ -18,6 +18,21 @@
 
 #include "IMgrEntry.h"
 
+class CKLBScrMgrSurfFactory : public IMgrEntry
+{
+public:
+	CKLBScrMgrSurfFactory(const char * name);
+	virtual ~CKLBScrMgrSurfFactory();
+
+	CKLBScrollMgr * createManager(int argc, int args[]);
+	CKLBScrollMgr * createManagerByProperty(CKLBPropertyBag * pProp);
+
+	enum {
+		DEFAULT_BRAKE       = 990,
+		DEFAULT_SPEEDFACTOR = 1000
+	};
+};
+
 class CKLBScrMgrDefaultFactory : public IMgrEntry
 {
 public:

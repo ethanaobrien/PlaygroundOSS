@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -157,7 +157,7 @@ CTracker::Init(const char * target, bool retry)
 {
 	m_retrycount = 0;
 	m_retry      = retry;
-    ms_pSockR    = CPFInterface::getInstance().platform().openReadStream(target, false);
+    ms_pSockR    = CPFInterface::getInstance().platform().openReadStream(target, false, (u32)-1);
 	if(ms_pSockR->getStatus() != IReadStream::NORMAL) {
 		// 接続に問題がある
 
@@ -227,6 +227,22 @@ CTracker::End()
 	m_retrycount = 0;
 //    CPFInterface::getInstance().platform().closeWriteStream(ms_pSockW);
 //    CPFInterface::getInstance().platform().closeReadStream(ms_pSockR);
+}
+
+void
+CTracker::writeU8(u8 value)
+{
+	if (ms_pSockW) {
+		ms_pSockW->writeU8(value);
+	}
+}
+
+void
+CTracker::writeU16(u16 value)
+{
+	if (ms_pSockW) {
+		ms_pSockW->writeU16(value);
+	}
 }
 
 void
@@ -307,50 +323,17 @@ CTracker::updateFrame()
 void *
 CTracker::logNew(void* ptr, size_t size, int line, const char* file)
 {
-	if (ptr) {
-		u8 buf[25];
-		int id = getSrcID(file);
-    
-		buf[0] = CMD_ALLOC;
-		setArrU32(buf + 1, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(ptr)));
-		setArrU32(buf + 5, (u32)size);
-		setArrU32(buf + 9, ms_numFrame);  // frame
-		setArrU32(buf + 13, ms_numCounter); // counter
-		setArrU16(buf + 17, (u16)line); // line
-		setArrU16(buf + 19, (u16)id);   // sourceID
-		CKLBTask* pTask = CKLBTaskMgr::getInstance().getCurrentTask();
-		u32 classID = pTask ? pTask->getClassID() : 0;
-		setArrU32(buf + 21, classID);
-		writeBlock(buf, 25);
-
-		ms_numCounter++;    
-		// printf("Alloc:%p s:%i l.%i in %s %8x %s \n",ptr,size,line,file,classID, classID ? IFactory::getClassName(classID) : NULL);
-	}
+	(void)size;
+	(void)line;
+	(void)file;
 	return ptr;
 }
 
 void *
 CTracker::logDelete(void* ptr, int line, const char* file)
 {
-	if (ptr) {
-		u8 buf[21];
-		int id = getSrcID(file);
-    
-		buf[0] = CMD_FREE;
-		setArrU32(buf + 1, static_cast<uint32_t>(reinterpret_cast<uintptr_t>(ptr)));
-		setArrU32(buf + 5, ms_numFrame);  // frame
-		setArrU32(buf + 9, ms_numCounter); // counter
-		setArrU16(buf + 13, (u16)line); // line
-		setArrU16(buf + 15, (u16)id);   // sourceID
-		CKLBTask* pTask = CKLBTaskMgr::getInstance().getCurrentTask();
-		u32 classID = pTask ? pTask->getClassID() : 0;
-		setArrU32(buf + 17, classID);
-		writeBlock(buf, 21);
-    
-		ms_numCounter++;
-		// printf("Delete:%p l.%i in %s (Class %8x %s)\n",ptr,line,file,classID, classID ? IFactory::getClassName(classID) : NULL);
-	}
-    
+	(void)line;
+	(void)file;
 	return ptr;
 }
 

@@ -148,10 +148,11 @@ public:
 	void    setGroupLua     (const char * caption, const char * key, CLuaState& lua);
 	void    removeGroup     (const char * key);
 
-	void    createLuaTable  (CLuaState& lua);
+	void    createLuaTable  (CLuaState& lua, bool screenRightDown);
 
 	void    setCallback     (const char * callback);
-	void    finishReport    ();
+	void    finishReport    (bool screenRightDown);
+	void    setScreenHeight (int height) { m_scrnHeight = height; }
 
 	int     setScroll       (int dispY) {
 		if(dispY > m_lastY - m_scrnHeight) dispY = m_lastY - m_scrnHeight;
@@ -166,10 +167,12 @@ public:
 		m_pNode->setColorMatrix(vec);
 	}
 private:
+	void        create      ();
 	CKLBNode *  addLabel    (int x, int y, const char * label, int * width, int * height);
 	CKLBNodeVirtualDocument * createLabelItem(const char * label, int * width, int * height);
 
 	CKLBNode	*	m_pNode;
+	CKLBNodeVirtualDocument * m_pBackground;
 
 	struct SWITCH {
 		CKLBNode	*	label;
@@ -217,6 +220,7 @@ private:
 	const char	*	m_callback;
 
 	u8				m_format;
+	bool			m_needsRebuild;
 
 	static const char * ms_labelSwitch[];
 };

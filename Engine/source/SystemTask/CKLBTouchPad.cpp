@@ -19,9 +19,21 @@
 
 #include "CKLBTouchPad.h"
 #include "CKLBDrawTask.h"
+#include "assert_klb.h"
+
+extern void KLBUnregisterObjectName(void* object, const char* className);
+
+static void* s_inputMutex = NULL;
 
 CKLBTouchPadQueue::CKLBTouchPadQueue()
-	: m_begin(0), m_read(0), m_rec(0), m_get(0), m_bDoingProcess(false), m_ignoreOutScreen(false), m_maskIgnoreFinger(0)
+	: m_bDoingProcess(false)
+	, m_begin(0)
+	, m_rec(0)
+	, m_read(0)
+	, m_get(0)
+	, m_maskIgnoreFinger(0)
+	, m_ignoreOutScreen(false)
+	, m_activeTouchStateValid(false)
 {
     float matrix[6] = {
         1.0f, 0.0f, 0.0f,
@@ -29,7 +41,10 @@ CKLBTouchPadQueue::CKLBTouchPadQueue()
     };
     setConvertMatrix(matrix);
 }
-CKLBTouchPadQueue::~CKLBTouchPadQueue() {}
+CKLBTouchPadQueue::~CKLBTouchPadQueue()
+{
+	KLBUnregisterObjectName(this, "CKLBTouchPadQueue");
+}
 
 CKLBTouchPadQueue&
 CKLBTouchPadQueue::getInstance() {
@@ -38,7 +53,39 @@ CKLBTouchPadQueue::getInstance() {
 }
 
 void
-CKLBTouchPadQueue::addQueue(int id, IClientRequest::INPUT_TYPE gtype, int x, int y)
+CKLBTouchPadQueue::invalidateActiveTouchState()
+{
+	m_activeTouchStateValid = false;
+}
+
+void
+KLBInitGlobalMutex()
+{
+	s_inputMutex = CPFInterface::getInstance().platform().allocMutex();
+}
+
+void
+KLBFreeGlobalMutex()
+{
+	CPFInterface::getInstance().platform().freeMutex(s_inputMutex);
+	s_inputMutex = NULL;
+}
+
+static inline void
+lockInputMutex()
+{
+	klb_assertNull(s_inputMutex != NULL, "LOCK NOT ALLOCATED TOUCHPAD QUEUE");
+	CPFInterface::getInstance().platform().mutexLock(s_inputMutex);
+}
+
+static inline void
+unlockInputMutex()
+{
+	CPFInterface::getInstance().platform().mutexUnlock(s_inputMutex);
+}
+
+void
+CKLBTouchPadQueue::addQueueUnlocked(int id, IClientRequest::INPUT_TYPE gtype, int x, int y)
 {
 	int next = m_rec+1;
 	if (next >= QUEUE_SIZE) { next = 0; }
@@ -83,7 +130,6 @@ CKLBTouchPadQueue::addQueue(int id, IClientRequest::INPUT_TYPE gtype, int x, int
 				}
 			}
 			break;
-		case PAD_ITEM::CANCEL:
 		case PAD_ITEM::RELEASE:
 			if (m_maskIgnoreFinger & (1<<id)) {
 				next = m_rec; // Cancel release event and remove the flag.
@@ -103,6 +149,24 @@ CKLBTouchPadQueue::addQueue(int id, IClientRequest::INPUT_TYPE gtype, int x, int
 			}
 			m_maskIgnoreFinger &= ~(1<<id);
 			break;
+		default:
+			break;
+		}
+	}
+
+	if (next != m_rec) {
+		switch (type) {
+		case PAD_ITEM::TAP:
+		case PAD_ITEM::DRAG:
+			m_activeFingerMask |= 1U << id;
+			m_lastTouchPosition[id * TOUCH_POSITION_COMPONENTS + TOUCH_X] = xp;
+			m_lastTouchPosition[id * TOUCH_POSITION_COMPONENTS + TOUCH_Y] = yp;
+			break;
+		case PAD_ITEM::RELEASE:
+			m_activeFingerMask &= ~(1U << id);
+			break;
+		case PAD_ITEM::CANCEL:
+			break;
 		}
 	}
 
@@ -117,6 +181,48 @@ CKLBTouchPadQueue::addQueue(int id, IClientRequest::INPUT_TYPE gtype, int x, int
 	}
 #endif
     m_rec = next;
+}
+
+void
+CKLBTouchPadQueue::addQueue(int id, IClientRequest::INPUT_TYPE type, int x, int y)
+{
+	lockInputMutex();
+	addQueueUnlocked(id, type, x, y);
+	unlockInputMutex();
+}
+
+void
+CKLBTouchPadQueue::beginFrame()
+{
+	if (m_activeTouchStateValid) {
+		return;
+	}
+
+	lockInputMutex();
+	for (int id = 0; id < MAX_ACTIVE_TOUCHES; ++id) {
+		if (m_activeFingerMask & (1U << id)) {
+			addQueueUnlocked(id, IClientRequest::I_RELEASE,
+				m_lastTouchPosition[id * TOUCH_POSITION_COMPONENTS + TOUCH_X],
+				m_lastTouchPosition[id * TOUCH_POSITION_COMPONENTS + TOUCH_Y]);
+		}
+	}
+	unlockInputMutex();
+
+	m_activeFingerMask = 0;
+	m_activeTouchStateValid = true;
+}
+
+void
+CKLBTouchPadQueue::releaseAllTouches()
+{
+	lockInputMutex();
+	for (int id = 0; id < MAX_ACTIVE_TOUCHES; ++id) {
+		if (m_activeFingerMask & (1U << id)) {
+			addQueueUnlocked(id, IClientRequest::I_RELEASE, -1, -1);
+		}
+	}
+	unlockInputMutex();
+	m_activeFingerMask = 0;
 }
 
 void
@@ -150,7 +256,9 @@ void
 CKLBTouchPad::execute(u32)
 {
     // そのフレームでどこからどこまでを取得できるか決定
-    CKLBTouchPadQueue::getInstance().fixLimit();
+	CKLBTouchPadQueue& queue = CKLBTouchPadQueue::getInstance();
+	queue.beginFrame();
+	queue.fixLimit();
 }
 
 void

@@ -35,6 +35,11 @@ CKLBLuaLibENG::addLibrary()
 	addFunction("ENG_getFrameID",		CKLBLuaLibENG::luaGetFrameID	);
     addFunction("ENG_getElapsedTime",   CKLBLuaLibENG::luaGetElapsedTime);
     addFunction("ENG_forbidSleep",      CKLBLuaLibENG::luaForbidSleep   );
+	addFunction("ENG_getLangCodeRAW",          CKLBLuaLibENG::luaGetLangCodeRAW         );
+	addFunction("ENG_getCountryCodeRAW",       CKLBLuaLibENG::luaGetCountryCodeRAW      );
+	addFunction("ENG_getPreferredLangCodeRAW", CKLBLuaLibENG::luaGetPreferredLangCodeRAW);
+	addFunction("ENG_quitGame",                CKLBLuaLibENG::luaQuitGame               );
+	addFunction("ENG_getGyroPolar",            CKLBLuaLibENG::luaGetGyroPolar           );
 }
 
 
@@ -53,7 +58,7 @@ CKLBLuaLibENG::luaStartNanoTime(lua_State * L)
 	int idx = 0;
 	if(argc >= 1) {
 		idx = lua.getInt(1);
-		klb_assert(idx < SCRIPT_TIMER_COUNT, "Timer index %i is out of range 0..%i",idx, (SCRIPT_TIMER_COUNT-1));
+		klb_assertNull(idx < SCRIPT_TIMER_COUNT, "Timer index %i is out of range 0..%i",idx, (SCRIPT_TIMER_COUNT-1));
 	}
 
 	// Read time last.
@@ -74,7 +79,7 @@ CKLBLuaLibENG::luaEndNanoTime(lua_State * L)
 	int idx = 0;
 	if(argc >= 1) {
 		idx = lua.getInt(1);
-		klb_assert(idx < SCRIPT_TIMER_COUNT, "Timer index %i is out of range 0..%i",idx, (SCRIPT_TIMER_COUNT-1));
+		klb_assertNull(idx < SCRIPT_TIMER_COUNT, "Timer index %i is out of range 0..%i",idx, (SCRIPT_TIMER_COUNT-1));
 	}
 	s64 deltaTime = endTime - ms_timers[idx];
 	ms_timers[idx]	  = endTime;	// ready for next call to end nanotime.
@@ -166,15 +171,56 @@ int CKLBLuaLibENG::luaGetElapsedTime(lua_State * L)
 int CKLBLuaLibENG::luaForbidSleep(lua_State * L)
 {
     CLuaState lua(L);
-	int argc = lua.numArgs();
 	bool is_forbidden = lua.getBool(1);
 	CPFInterface::getInstance().platform().forbidSleep(is_forbidden);
 	return 0;
 }
 
+int CKLBLuaLibENG::luaGetLangCodeRAW(lua_State * L)
+{
+	CLuaState lua(L);
+	const char* code = CPFInterface::getInstance().platform().getLangCodeRAW();
+	lua.retString(code);
+	return 1;
+}
+
+int CKLBLuaLibENG::luaGetCountryCodeRAW(lua_State * L)
+{
+	CLuaState lua(L);
+	const char* code = CPFInterface::getInstance().platform().getCountryCodeRAW();
+	lua.retString(code);
+	return 1;
+}
+
+int CKLBLuaLibENG::luaGetPreferredLangCodeRAW(lua_State * L)
+{
+	CLuaState lua(L);
+	const char* code = CPFInterface::getInstance().platform().getPreferredLangCodeRAW();
+	lua.retString(code);
+	return 1;
+}
+
+int CKLBLuaLibENG::luaQuitGame(lua_State * L)
+{
+	CLuaState lua(L);
+	CPFInterface::getInstance().platform().quitGame();
+	return 0;
+}
+
+int CKLBLuaLibENG::luaGetGyroPolar(lua_State * L)
+{
+	CLuaState lua(L);
+	float azimuth;
+	float elevation;
+	CPFInterface::getInstance().platform().getGyroPolar(&azimuth, &elevation);
+	lua.retFloat(azimuth);
+	lua.retFloat(elevation);
+	return 2;
+}
+
 bool CKLBLuaLibENG::isRelease()
 {
-	#if defined(DEBUG_MEMORY) || defined(DEBUG_PERFORMANCE) || defined(DEBUG_LUAEDIT) || defined(DEBUG_RT_CHECK) || defined(DEBUG_MENU)
+	#if defined(DEBUG_MEMORY) || defined(DEBUG_PERFORMANCE) || defined(DEBUG_LUAEDIT) || defined(DEBUG_RT_CHECK)
 		/*
 		IPlatformRequest& pfif = CPFInterface::getInstance().platform();
 		pfif.logging("===== Engine Compile Flags =====");
@@ -219,7 +265,7 @@ void CKLBLuaLibENG::endNanoTime(int idx, s32* milli, s32* nano)
 {
 	s64 endTime = CPFInterface::getInstance().platform().nanotime();
 
-	klb_assert(idx < SCRIPT_TIMER_COUNT, "Timer index %i is out of range 0..%i",idx, (SCRIPT_TIMER_COUNT-1));
+	klb_assertNull(idx < SCRIPT_TIMER_COUNT, "Timer index %i is out of range 0..%i",idx, (SCRIPT_TIMER_COUNT-1));
 
 	s64 deltaTime = endTime - ms_timers[idx];
 	ms_timers[idx]	  = endTime;

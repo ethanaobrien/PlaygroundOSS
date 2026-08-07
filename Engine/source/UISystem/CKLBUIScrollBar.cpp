@@ -71,7 +71,7 @@ static CKLBTaskFactory<CKLBUIScrollBar> factory("UI_ScrollBar", CLB_KLBUISCROLLB
 
 
 CKLBUIScrollBar::CKLBUIScrollBar() 
-: CKLBUITask    ()
+: CKLBUITask    (P_UIAFTER)
 , m_callback    (NULL)
 , m_image       (NULL)
 , m_min         (0)
@@ -272,6 +272,7 @@ CKLBUIScrollBar::initCore(u32 order, float x, float y, float width, float height
 
 		setMin(minValue);
 		setMax(maxValue);
+		setPos(pos);
 
 		setSliderSize(slider_size);
 		setSliderSizeMin(min_slider_size);

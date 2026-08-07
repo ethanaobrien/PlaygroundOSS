@@ -36,7 +36,7 @@ static IFactory::DEFCMD cmd[] = {
 static CKLBTaskFactory<CKLBUIFreeVertItem> factory("UI_FreeVertItem", CLS_KLBUIFREEVERTITEM, cmd);
 
 CKLBUIFreeVertItem::CKLBUIFreeVertItem()
-: CKLBUITask    ()
+: CKLBUITask    (P_UIAFTER)
 , m_handle      (0)
 , m_asset       (NULL)
 {	
@@ -118,11 +118,19 @@ CKLBUIFreeVertItem::initCore(u32 order, float x, float y, const char* asset, flo
 	CKLBRenderingManager& pRdrMgr = CKLBRenderingManager::getInstance();
 
 
-	klb_assert((((s32)order) >= 0), "Order Problem");
+	klb_assertNull((((s32)order) >= 0), "Order Problem");
 
 	m_order = order;
 
 	// 初期RGBA値を設定しておく
+	m_arrLocalUV[0] = 0.0f;
+	m_arrLocalUV[1] = 0.0f;
+	m_arrLocalUV[2] = 1.0f;
+	m_arrLocalUV[3] = 0.0f;
+	m_arrLocalUV[4] = 1.0f;
+	m_arrLocalUV[5] = 1.0f;
+	m_arrLocalUV[6] = 0.0f;
+	m_arrLocalUV[7] = 1.0f;
     for(int i = 0; i < 4; i++) { m_arrColor[i] = 0xffffffff; }
 
 	m_pDynSprite = pRdrMgr.allocateCommandDynSprite(4, 2*3);
@@ -134,10 +142,12 @@ CKLBUIFreeVertItem::initCore(u32 order, float x, float y, const char* asset, flo
 	setInitPos(x, y);
 
 	m_pTex = NULL;
-    if(asset) { m_pTex = (CKLBImageAsset *)CKLBUtility::loadAssetScript(asset, &m_handle); }
+	if(asset) { m_pTex = (CKLBImageAsset *)CKLBUtility::loadAssetScript(asset, &m_handle); }
+	setUV(m_pTex);	// UV値を取り込んでおく
 	if(m_pTex) {
-		setUV(m_pTex);	// UV値を取り込んでおく
 		m_pDynSprite->setTexture(m_pTex);
+	} else {
+		m_pDynSprite->setTexture((CTextureUsage*)NULL);
 	}
 
 	getNode()->setRender(m_pDynSprite);
@@ -261,9 +271,8 @@ CKLBUIFreeVertItem::commandUI(CLuaState& lua, int argc, int cmd)
 			bool result = false;
 			if(argc == 3) { 
 				lua.retValue(3);
-				bool bResult = setArrUV(lua);	// Lua配列から頂点情報を取得
+				setArrUV(lua);	// Lua配列から頂点情報を取得
 				lua.pop(1);
-				if(bResult)	assignUV();			// 取り込んだ頂点座標をDynSpriteに設定
 			}
 			lua.retBoolean(result);
 			ret = 1;
@@ -280,12 +289,16 @@ CKLBUIFreeVertItem::setVertColors(u32* colors)
 	assignVertColors();
 }
 
-void CKLBUIFreeVertItem::setVertUV(float* uv) 
+void CKLBUIFreeVertItem::setVertUV(float* uv, bool assign)
 {
 	/* 取り込んだ値をテクスチャ内ローカルの値から、
 		テクスチャアトラスレベルの値に変換する */
-	float width  = m_arrOriginalUV[2] - m_arrOriginalUV[0];
-	float height = m_arrOriginalUV[5] - m_arrOriginalUV[1];
+	float right  = m_arrOriginalUV[2] - m_arrOriginalUV[0];
+	float bottom = m_arrOriginalUV[3] - m_arrOriginalUV[1];
+	float width  = m_arrOriginalUV[6] - m_arrOriginalUV[0];
+	float height = m_arrOriginalUV[7] - m_arrOriginalUV[1];
+	width  += right;
+	height += bottom;
 	float baseX  = m_arrOriginalUV[0];
 	float baseY  = m_arrOriginalUV[1];
 
@@ -302,7 +315,7 @@ void CKLBUIFreeVertItem::setVertUV(float* uv)
 		m_arrUV[i * 2]      = u * width + baseX;
 		m_arrUV[i * 2 + 1]  = v * height + baseY;
 	}
-	assignUV();
+	if(assign) { assignUV(); }
 }
 
 void 
@@ -375,12 +388,39 @@ CKLBUIFreeVertItem::setVertices(CLuaState& lua, float* tmpDst)
 void
 CKLBUIFreeVertItem::setUV(CKLBImageAsset * pTex)
 {
-	klb_assert(pTex->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT), "Must use a standard rectangular image in FreeVertItem task.");
+	if(!pTex) {
+		m_arrOriginalUV[0] = 0.0f;
+		m_arrOriginalUV[1] = 0.0f;
+		m_arrOriginalUV[2] = 1.0f;
+		m_arrOriginalUV[3] = 0.0f;
+		m_arrOriginalUV[4] = 1.0f;
+		m_arrOriginalUV[5] = 1.0f;
+		m_arrOriginalUV[6] = 0.0f;
+		m_arrOriginalUV[7] = 1.0f;
+		memcpy(m_arrUV, m_arrOriginalUV, sizeof(m_arrUV));
+		return;
+	}
+
+	klb_assertNull(pTex->hasStandardAttribute(CKLBImageAsset::IS_STANDARD_RECT), "Must use a standard rectangular image in FreeVertItem task.");
 
 	for(int i = 0; i < 4; i++) {
 		pTex->getUV(i, &m_arrUV[i * 2], &m_arrUV[i * 2 + 1]);
 		m_arrOriginalUV[i * 2]      = m_arrUV[i * 2];
 		m_arrOriginalUV[i * 2 + 1]  = m_arrUV[i * 2 + 1];
+	}
+}
+
+void
+CKLBUIFreeVertItem::notifyAssetUpdate(const char* assetName, CKLBAsset* asset)
+{
+	// Only the item displaying the reloaded source has to swap its texture:
+	// the atlas UVs move with it, so the retained normalized UVs are re-applied.
+	const char* source = m_pTex ? m_pTex->getFileSource() : NULL;
+	if(source && !strcmp(source, assetName)) {
+		m_pTex = (CKLBImageAsset *)asset;
+		setUV(m_pTex);
+		m_pDynSprite->setTexture(m_pTex);
+		setVertUV(m_arrLocalUV);
 	}
 }
 
@@ -444,28 +484,9 @@ CKLBUIFreeVertItem::setArrUV(CLuaState& lua)
 			lua.pop(1);
 			break;
 		}
-		m_arrUV[i] = lua.getFloat(-1);
+		m_arrLocalUV[i] = lua.getFloat(-1);
 		lua.pop(1);
 	}
-	/* 取り込んだ値をテクスチャ内ローカルの値から、
-		テクスチャアトラスレベルの値に変換する */
-	float width  = m_arrOriginalUV[2] - m_arrOriginalUV[0];
-	float height = m_arrOriginalUV[5] - m_arrOriginalUV[1];
-	float baseX  = m_arrOriginalUV[0];
-	float baseY  = m_arrOriginalUV[1];
-
-	for(int i = 0; i < 4; i++) {
-		float u = m_arrUV[i* 2];
-		float v = m_arrUV[i * 2 + 1];
-
-		// 負の値が指定された場合に、隣のテクスチャに割り込まないようにする処理。
-		// 指定された画像より左側にuvが動くとGLのテクスチャアトラス上で問題が生じることがある。
-
-		if(u < 0.0f) u = 1.0f - u;
-		if(v < 0.0f) v = 1.0f - v;
-
-		m_arrUV[i * 2] = u * width + baseX;
-		m_arrUV[i * 2 + 1] = v * height + baseY;
-	}
+	setVertUV(m_arrLocalUV, bResult);
 	return bResult;
 }

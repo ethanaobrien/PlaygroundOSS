@@ -58,8 +58,7 @@ public:
 	void		setText			(const char* text);
 	const char*	getText			();
     
-	void		setWidth		(u32 width);
-	void		setHeight		(u32 heigth);
+	void		setSize			(u32 width, u32 height);
 	u32			getWidth		()	        { return m_width;	}
 	u32			getHeight		()	        { return m_height;	}
     

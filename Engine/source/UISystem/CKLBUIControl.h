@@ -119,7 +119,6 @@ private:
     
 	SFormCtrlList	m_ctrlList;		// UI_Form / UI_List と同様のグループ制御を行うためのメンバ
 	CKLBModalStack	m_modalStack;
-	bool			m_bModalEnable;
 
 	int				m_lastClick;	// 最後にクリックイベントを発生させたフレーム
 

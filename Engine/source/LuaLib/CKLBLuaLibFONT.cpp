@@ -71,18 +71,45 @@ void
 CKLBLuaLibFONT::addLibrary()
 {
 	addFunction("FONT_load", CKLBLuaLibFONT::luaFontLoad);
+	addFunction("FONT_bind", CKLBLuaLibFONT::luaFontBind);
 	addFunction("FONT_create", CKLBLuaLibFONT::luaFontCreate);
+	addFunction("FONT_createNative", CKLBLuaLibFONT::luaFontCreateNative);
 	addFunction("FONT_release", CKLBLuaLibFONT::luaFontRelease);
 	addFunction("FONT_getTextInfo", CKLBLuaLibFONT::luaGetTextInfo);
 	addFunction("FONT_setDefaultFont", CKLBLuaLibFONT::luaSetDefaultLabelFont);
 }
+
+CKLBLuaLibFONT::FONTOBJ *
+CKLBLuaLibFONT::create_native_font(int size, int type)
+{
+	IPlatformRequest& pForm = CPFInterface::getInstance().platform();
+	pForm.setNativeFont(true);
+	void * font = pForm.getFont(size, NULL, type);
+	FONTOBJ * fontobj = (!font) ? NULL : KLBNEW(FONTOBJ);
+	if(fontobj) {
+		fontobj->native = true;
+		fontobj->font = font;
+		fontobj->size = size;
+		fontobj->prev = ms_end;
+		fontobj->next = NULL;
+		if(fontobj->prev) {
+			fontobj->prev->next = fontobj;
+		} else {
+			ms_begin = fontobj;
+		}
+		ms_end = fontobj;
+	}
+	return fontobj;
+}
+
 CKLBLuaLibFONT::FONTOBJ *
 CKLBLuaLibFONT::create_font(int size, const char * fontname)
 {
 	IPlatformRequest& pForm = CPFInterface::getInstance().platform();
-	void * font = pForm.getFont(size, fontname);
+	void * font = pForm.getFont(size, fontname, 3);
 	FONTOBJ * fontobj = (!font) ? NULL : KLBNEW(FONTOBJ);
 	if(fontobj) {
+		fontobj->native = false;
 		fontobj->font = font;
 		fontobj->size = size;
 		fontobj->prev = ms_end;
@@ -101,18 +128,23 @@ void
 CKLBLuaLibFONT::remove_font(FONTOBJ * fontobj)
 {
 	IPlatformRequest& pForm = CPFInterface::getInstance().platform();
-	pForm.deleteFont(fontobj->font);
-	if(fontobj->prev) {
-		fontobj->prev->next = fontobj->next;
-	} else {
-		ms_begin = fontobj->next;
+	if(fontobj) {
+		if(fontobj->native) {
+			pForm.setNativeFont(true);
+		}
+		pForm.deleteFontResource(fontobj->font);
+		if(fontobj->prev) {
+			fontobj->prev->next = fontobj->next;
+		} else {
+			ms_begin = fontobj->next;
+		}
+		if(fontobj->next) {
+			fontobj->next->prev = fontobj->prev;
+		} else {
+			ms_end = fontobj->prev;
+		}
+		KLBDELETE(fontobj);
 	}
-	if(fontobj->next) {
-		fontobj->next->prev = fontobj->prev;
-	} else {
-		ms_end = fontobj->prev;
-	}
-	KLBDELETE(fontobj);
 }
 
 int
@@ -143,7 +175,33 @@ CKLBLuaLibFONT::luaFontCreate(lua_State * L)
 	const char * fontname = lua.getString(2);
 	FONTOBJ * fontobj = create_font(size, fontname);
 
-	lua.retPointer(fontobj);
+	if(fontobj) {
+		lua.retPointer(fontobj);
+	} else {
+		lua.retNil();
+	}
+	return 1;
+}
+
+int
+CKLBLuaLibFONT::luaFontCreateNative(lua_State * L)
+{
+	CLuaState lua(L);
+	int argc = lua.numArgs();
+	if(argc != 2) {
+		lua.retBoolean(false);
+		return 1;
+	}
+
+	int size = lua.getInt(1);
+	int type = lua.getInt(2);
+	FONTOBJ * fontobj = create_native_font(size, type);
+
+	if(fontobj) {
+		lua.retPointer(fontobj);
+	} else {
+		lua.retNil();
+	}
 	return 1;
 }
 
@@ -153,7 +211,7 @@ CKLBLuaLibFONT::luaFontRelease(lua_State * L)
 	CLuaState lua(L);
 	int argc = lua.numArgs();
 	for(int i = 1; i <= argc; i++) {
-		FONTOBJ * fontobj = (FONTOBJ *)lua.getPointer(i);
+		FONTOBJ * fontobj = lua.isNil(i) ? NULL : (FONTOBJ *)lua.getPointer(i);
 		remove_font(fontobj);
 		lua.retNil();
 	}
@@ -161,7 +219,7 @@ CKLBLuaLibFONT::luaFontRelease(lua_State * L)
 }
 
 
-int CKLBLuaLibFONT::luaFontLoad(lua_State * L)
+int CKLBLuaLibFONT::luaFontBind(lua_State * L)
 {
 	CLuaState lua(L);
 	int argc = lua.numArgs();
@@ -171,10 +229,28 @@ int CKLBLuaLibFONT::luaFontLoad(lua_State * L)
 		const char* fontFile = lua.getString(2);
 		CPFInterface& pfif = CPFInterface::getInstance();
 		
-		res = pfif.platform().registerFont(fontName,fontFile,true);
+		res = pfif.platform().registerFont(fontName,fontFile);
 	}
 
 	lua.retBool(res);
+	return 1;
+}
+
+int CKLBLuaLibFONT::luaFontLoad(lua_State * L)
+{
+	CLuaState lua(L);
+	int argc = lua.numArgs();
+	bool result = false;
+	if(argc >= 2) {
+		const char* fontName = lua.getString(1);
+		const char* fontFile = lua.getString(2);
+		bool defaultFont = (argc == 3) ? lua.getBool(3) : true;
+		bool useHinting = (argc == 4) ? lua.getBool(4) : true;
+		IPlatformRequest& platform = CPFInterface::getInstance().platform();
+		result = platform.registerFont(fontName, fontFile, defaultFont, useHinting);
+	}
+
+	lua.retBool(result);
 	return 1;
 }
 
@@ -183,19 +259,48 @@ CKLBLuaLibFONT::luaGetTextInfo(lua_State * L)
 {
 	CLuaState lua(L);
 	int argc = lua.numArgs();
-	if(argc != 2) {
+	if(argc < 2) {
 		lua.retNil();
 		return 1;
 	}
 	IPlatformRequest& pForm = CPFInterface::getInstance().platform();
 
-	FONTOBJ * fontobj = (FONTOBJ *)lua.getPointer(1);
+	FONTOBJ * fontobj = lua.isNil(1) ? NULL : (FONTOBJ *)lua.getPointer(1);
+	lua.tableNew();
+	if(!fontobj) {
+		lua.retString("width");
+		lua.retDouble(-1.0);
+		lua.tableSet();
+
+		lua.retString("height");
+		lua.retDouble(-1.0);
+		lua.tableSet();
+
+		lua.retString("ascent");
+		lua.retDouble(0.0);
+		lua.tableSet();
+
+		lua.retString("descent");
+		lua.retDouble(0.0);
+		lua.tableSet();
+
+		lua.retString("top");
+		lua.retDouble(0.0);
+		lua.tableSet();
+
+		lua.retString("bottom");
+		lua.retDouble(-1.0);
+		lua.tableSet();
+		return 1;
+	}
+
 	void * font = fontobj->font;
+	bool native = fontobj->native;
 	const char * string = lua.getString(2);
 	STextInfo info;
-	pForm.getTextInfo(string, font, &info);
-
-	lua.tableNew();
+	info.parseInlineFormatting = true;
+	pForm.setNativeFont(native);
+	pForm.getTextInfo(string, font, &info, 1.0f, 1.0f);
 
 	lua.retString("width");
 	lua.retDouble(info.width);

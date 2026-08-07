@@ -44,7 +44,7 @@ static CKLBTaskFactory<CKLBUIRubberBand> factory("UI_RubberBand", CLS_KLBUIRUBBE
 float CKLBUIRubberBand::ms_norot_mat[4] = { 1.0f, 0.0f, 0.0f, -1.0f };
 
 CKLBUIRubberBand::CKLBUIRubberBand()
-: CKLBUITask    ()
+: CKLBUITask    (P_UIAFTER)
 , m_assetOrigin (NULL)
 , m_assetJoint  (NULL)
 , m_assetPoint  (NULL)
@@ -158,7 +158,7 @@ bool CKLBUIRubberBand::initCore(u32 order, float x, float y, u32 resolution, con
 
 	setInitPos(0, 0);
 
-	klb_assert((((s32)order) >= 0), "Order Problem");
+	klb_assertNull((((s32)order) >= 0), "Order Problem");
 
 	m_order     = order;
 	m_originX   = x;
@@ -408,13 +408,13 @@ CKLBUIRubberBand::execute(u32 deltaT)
 	if(fabs(adx) < 1.0f && fabs(ady) < 1.0f) {
 		theta = 0.0f;
 	} else {
-		theta = (adx > ady) ? atan(ady/adx) : (M_PI / 2 - atan(adx/ady));
+		theta = (adx > ady) ? atan((double)(ady/adx)) : (M_PI / 2 - atan((double)(adx/ady)));
 	}
 	if(dx < 0) { theta = M_PI - theta; }
     if(dy < 0) { theta = -theta;       }
 
-	float sin_h = sin(theta);
-	float cos_h = cos(theta);
+	float sin_h = sin((double)theta);
+	float cos_h = cos((double)theta);
 
 	float mat[4];
 	mat[0] = cos_h;

@@ -15,21 +15,6 @@
 */
 #include "CKLBPropertyBag.h"
 #include <string.h>
-
-/*
-u32 CKLBPropertyBag::propAlloc		= 0;
-u32 CKLBPropertyBag::bagAlloc		= 0;
-u32 CKLBPropertyBag::stringAlloc	= 0;
-bool CKLBPropertyBag::deletionFlag	= false;
-
-//
-// Global Array
-//
-CKLBPropertyBag			CKLBPropertyBag::bags			[MAX_PROPERTYBAG_COUNT];
-CKLBPropertyBag::_v		CKLBPropertyBag::properties		[MAX_PROP_BUFFER_COUNT];
-u8						CKLBPropertyBag::propertyTypes	[MAX_PROP_BUFFER_COUNT];
-char					CKLBPropertyBag::strings		[STRING_BUFFER_SIZE];
-*/
 CKLBPropertyBag		*	CKLBPropertyBag::ms_begin = 0;
 CKLBPropertyBag		*	CKLBPropertyBag::ms_end   = 0;
 
@@ -129,7 +114,7 @@ bool CKLBPropertyBag::init() {
 }
 
 const char*	CKLBPropertyBag::allocateName(const char* originalName, int addlen) {
-	u32 len = strlen(originalName) + 1;
+	size_t len = strlen(originalName) + 1;
 	char * buf = KLBNEWA(char, len + addlen);
 	memcpy(buf, originalName, len);
 	return (const char *)buf;
@@ -253,7 +238,7 @@ void CKLBPropertyBag::setPropertyString(const char* name, const char* value) {
 	//klb_assert(propAlloc < MAX_PROP_BUFFER_COUNT, "No more space for properties");
 	appendProperty();
 
-	int namelen  = strlen(name) + 1;
+	size_t namelen = strlen(name) + 1;
 	int valuelen = strlen(value) + 1;
 
 	const char * vname = allocateName(name, valuelen);

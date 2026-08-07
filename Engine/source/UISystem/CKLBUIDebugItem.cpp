@@ -59,12 +59,13 @@ enum {
 };
 
 CKLBUIDebugItem::CKLBUIDebugItem()
-: CKLBUITask	()
+: CKLBUITask	(P_UIAFTER)
 , m_pLabel		(NULL)
 , m_font		(NULL)
 , m_text		(NULL)
-, m_callback	(NULL)
 {
+	m_txinfo.parseInlineFormatting = false;
+	m_callback = NULL;
 	m_newScriptModel = true;
 	m_format = TexturePacker::getCurrentModeTexture();
 }
@@ -120,7 +121,7 @@ CKLBUIDebugItem::initCore(u32 order, float x, float y, u32 alpha, u32 color,
 
 	setInitPos(x, y);
 
-	klb_assert((((s32)order) >= 0), "Order Problem");
+	klb_assertNull((((s32)order) >= 0), "Order Problem");
 
 	m_order = order;
 	m_alpha = alpha;
@@ -175,8 +176,8 @@ CKLBUIDebugItem::setup_node()
 	CPFInterface& pfif = CPFInterface::getInstance();
 
 	// 指定されている文字列とフォント、フォントサイズでの表示に必要な幅と高さを取得する。
-	void * pFont = pfif.platform().getFont(m_size, m_font);
-	pfif.platform().getTextInfo(m_text,pFont, &m_txinfo);
+	void * pFont = pfif.platform().getFont(m_size, m_font, 3);
+	pfif.platform().getTextInfo(m_text, pFont, &m_txinfo, 1.0f, 1.0f);
 
 	// 必要な幅と高さが取得できたので、そのサイズで VDoc を作る
 	m_pLabel->setDocumentSize(m_txinfo.width, m_txinfo.height);
@@ -196,7 +197,7 @@ CKLBUIDebugItem::setup_node()
 	m_pLabel->setViewPortPos(0, 0);	// ViewPort とDocumentのサイズが同じで、かつ表示位置を(0,0)で固定
 
 	// Moved to optimize font cache.
-	pfif.platform().deleteFont(pFont);
+	pfif.platform().deleteFontResource(pFont);
 
 	// 表示位置を指定
 	// getNode()->setTranslate(getNum(PR_X), getNum(PR_Y));
@@ -232,7 +233,6 @@ CKLBUIDebugItem::execute(u32 /*deltaT*/)
 		case PAD_ITEM::DRAG:
 			break;
 		case PAD_ITEM::RELEASE:
-		case PAD_ITEM::CANCEL:
 			{
                 if(item->id != m_padId) { break; }
 				m_padId = -1;

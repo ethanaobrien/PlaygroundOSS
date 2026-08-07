@@ -19,12 +19,16 @@
 #include "CKLBUtility.h"
 #include "CKLBLuaEnv.h"
 
+extern void KLBUnregisterObjectName(void* object, const char* className);
+extern void KLBRegisterObjectName(void* object, const char* className, int flags);
+
 #define CAPTION_X	32
 #define VALUE_X		300
 
 #define EXIT_MARGINE 40
 #define CAP_MARGINE 32
 #define LINE_STEP 50
+#define DEBUG_BACKGROUND_WIDTH 500
 ;
 const char * CKLBDebugResource::ms_labelSwitch[] = { "OFF", "ON" };
 
@@ -57,11 +61,7 @@ CKLBDebugSign::init(CKLBDebugMenu * pMenu)
 	CKLBDrawResource& res = CKLBDrawResource::getInstance();
 	m_width = res.width();
 	m_height = res.height();
-#ifdef DEBUG_MENU
-	return regist(pMenu, P_DBGSIGN);
-#else
-	return regist(pMenu, P_UIPREV);	// 使われないがビルドエラーを出さないため
-#endif
+	return regist(pMenu, P_UIPREV);
 }
 
 void
@@ -98,7 +98,6 @@ CKLBDebugSign::execute(u32 /* deltaT */)
 			}
 			break;
 		case PAD_ITEM::RELEASE:
-		case PAD_ITEM::CANCEL:
 			{
 				if(m_cmdStep != 4 || m_cmdID != item->id) {
 					m_cmdStep = 0;
@@ -113,6 +112,8 @@ CKLBDebugSign::execute(u32 /* deltaT */)
 					m_cmdID = -1;
 				}
 			}
+			break;
+		case PAD_ITEM::CANCEL:
 			break;
 		}
 	}
@@ -138,7 +139,13 @@ CKLBDebugSign::checkPoint(int x, int y)
 
 
 CKLBDebugMenu::CKLBDebugMenu() : CKLBTask(), m_state(E_WAIT){}
-CKLBDebugMenu::~CKLBDebugMenu() {}
+CKLBDebugMenu::~CKLBDebugMenu()
+{
+	// メニューを閉じたままタスクが消えてもポーズが残らないようにする。
+	CKLBTaskMgr::getInstance().setPause(false);
+	m_state = E_WAIT;
+	m_step  = 0;
+}
 
 CKLBDebugMenu *
 CKLBDebugMenu::create()
@@ -146,44 +153,20 @@ CKLBDebugMenu::create()
 	CKLBDebugMenu * pTask = KLBNEW(CKLBDebugMenu);
 	if(!pTask) return NULL;
 
-	if(!pTask->init()) {
+	pTask->regist(NULL, P_DBGMENU);
+	CKLBTask * pChild = CKLBDebugSign::create(pTask);
+	if(!pChild) {
+		pTask->kill();
 		KLBDELETE(pTask);
 		return NULL;
 	}
 	return pTask;
 }
 
-// See dirty hack below !
-static int gInitCount = 0;
-
 bool
 CKLBDebugMenu::init()
 {
-	// 表示物初期化
-    //
-    // Dirty Hack here :
-    // ---------------------------------
-	// Now done before in CKLBGameApplication during boot.
-    // This was a necessary change to allow creation of debug menu
-    // AFTER font could be loaded with LUA.
-    // 1. Font loaded in LUA
-    // 2. Create debug menu in the same boot script.
-    // 3. Create Task does not destroy the menu we just created.
-    //    But need to destroy the next time we recreate the task.
-    // => Just a counter for the FIRST time during boot.
-    //
-	if ((gInitCount++) != 0) {
-		CKLBDebugResource& res = CKLBDebugResource::getInstance();
-		res.init();
-	}
-
-	// 実行リスト登録
-#ifdef DEBUG_MENU
 	regist(NULL, P_DBGMENU);
-#else
-	regist(NULL, P_MENU);
-#endif
-	// 操作監視タスクを起動し、子タスクとして登録する
 	CKLBTask * pChild = CKLBDebugSign::create(this);
 	if(!pChild) {
 		kill();
@@ -208,12 +191,15 @@ CKLBDebugMenu::die()
 void
 CKLBDebugMenu::menu_switch(bool bSwitch)
 {
-#ifdef DEBUG_MENU
-	CKLBTaskMgr::getInstance().setDbgPause(bSwitch);
-#else
 	CKLBTaskMgr::getInstance().setPause(bSwitch);
-#endif
-	m_state = (bSwitch) ? E_ACTIVE : E_WAIT;
+	STATE state = E_WAIT;
+	if(bSwitch) {
+		int screenHeight = CKLBDrawResource::getInstance().height();
+		CKLBDebugResource& debug = CKLBDebugResource::getInstance();
+		debug.setScreenHeight(screenHeight);
+		state = E_ACTIVE;
+	}
+	m_state = state;
 	m_step = 0;
 }
 
@@ -222,7 +208,10 @@ CKLBDebugMenu::execute_active(u32 /*deltaT*/)
 {
 	enum {
 		E_BEGIN = 0,
-		E_LOOP
+		E_LOOP,
+		SCREEN_RIGHT_X = 801,
+		SCREEN_TOP_Y = 199,
+		SCREEN_BOTTOM_Y = 441
 	};
 	CKLBDebugResource& dbg = CKLBDebugResource::getInstance();
 
@@ -257,31 +246,30 @@ CKLBDebugMenu::execute_active(u32 /*deltaT*/)
 						int mv_y = m_pad[item->id].y - item->y;
 						int mv_x = m_pad[item->id].x - item->x;
 
-						if(abs(mv_x) > abs(mv_y)) {
-							// 操作方向でx成分の絶対値が大きいため、横方向の輝度操作と見做す
-							CKLBDrawResource& res = CKLBDrawResource::getInstance();
-							int width = res.width();
-							float bright = (float)item->x / width;
-							dbg.setBright(bright);
-						} else {
+						if(abs(mv_x) <= abs(mv_y)) {
 							dbg.setScroll(m_dispY + mv_y);
 						}
 					}
 					break;
 				case PAD_ITEM::RELEASE:
-				case PAD_ITEM::CANCEL:
 					{
+						if(item->x >= SCREEN_RIGHT_X && item->y <= SCREEN_TOP_Y) {
+							dbg.dispEnable(false);
+							dbg.finishReport(false);
+							menu_switch(false);
+							break;
+						}
+						if(item->x >= SCREEN_RIGHT_X && item->y >= SCREEN_BOTTOM_Y) {
+							dbg.dispEnable(false);
+							dbg.finishReport(true);
+							dbg.dispEnable(true);
+							m_dispY = dbg.setScroll(0);
+							for(int i = 0; i < 5; i++) m_pad[i].enable = false;
+							break;
+						}
+
 						if(!m_pad[item->id].enable) break;
 						int mv_y = m_pad[item->id].y - item->y;
-						int mv_x = m_pad[item->id].x - item->x;
-
-						if(abs(mv_x) > abs(mv_y)) {
-							// 操作方向でx成分の絶対値が大きいため、横方向の輝度操作と見做す
-							CKLBDrawResource& res = CKLBDrawResource::getInstance();
-							int width = res.width();
-							float bright = (float)item->x / width;
-							dbg.setBright(bright);
-						}
 
 						m_dispY += mv_y;
 						m_dispY = dbg.setScroll(m_dispY);
@@ -291,11 +279,13 @@ CKLBDebugMenu::execute_active(u32 /*deltaT*/)
 							// [ EXIT ] が押されたので、デバッグメニューを終了する
 							dbg.dispEnable(false);
 
-							dbg.finishReport();
+							dbg.finishReport(false);
 
 							menu_switch(false);
 						}
 					}
+					break;
+				case PAD_ITEM::CANCEL:
 					break;
 				}
 			}
@@ -306,12 +296,14 @@ CKLBDebugMenu::execute_active(u32 /*deltaT*/)
 
 
 
-CKLBDebugResource::CKLBDebugResource() : m_begin(NULL), m_end(NULL), m_pNode(NULL), m_order(500000), m_callback(NULL) {
+CKLBDebugResource::CKLBDebugResource() : m_begin(NULL), m_end(NULL), m_pNode(NULL), m_pBackground(NULL), m_order(0x7fffff00), m_callback(NULL), m_needsRebuild(false) {
+	KLBRegisterObjectName(this, "CKLBDebugResource", 0);
 	m_format = TexturePacker::getCurrentModeTexture();
 }
 
 CKLBDebugResource::~CKLBDebugResource()
 {
+	KLBUnregisterObjectName(this, "CKLBDebugResource");
 	release();
 }
 
@@ -347,10 +339,10 @@ CKLBDebugResource::release()
 	}
 	m_begin = NULL;
 	m_end = NULL;
-	m_lastY = 0;
-	m_dispY = 0;
 	KLBDELETE(m_pNode);
 	m_pNode = NULL;
+	KLBDELETE(m_pBackground);
+	m_pBackground = NULL;
 	KLBDELETEA(m_callback);
 	m_callback = NULL;
 }
@@ -360,6 +352,24 @@ void
 CKLBDebugResource::init()
 {
 	release();
+	m_lastY = 0;
+	m_dispY = 0;
+	m_needsRebuild = true;
+}
+
+void
+CKLBDebugResource::clear()
+{
+	m_lastY = 0;
+	m_dispY = 0;
+	m_needsRebuild = true;
+}
+
+void
+CKLBDebugResource::create()
+{
+	if(!m_needsRebuild) return;
+	m_needsRebuild = false;
 
 	// 画面サイズを取得
 	CKLBDrawResource& res = CKLBDrawResource::getInstance();
@@ -368,38 +378,46 @@ CKLBDebugResource::init()
 	if(m_pNode) KLBDELETE(m_pNode);
 	m_pNode = KLBNEW(CKLBNode);
 
-	CKLBDrawResource& draw = CKLBDrawResource::getInstance();
-	draw.getRoot()->addNode(m_pNode);
+	res.getRoot()->addNode(m_pNode);
 	m_pNode->setTranslate(0, 0);
 	m_pNode->setVisible(false);
 
 	CKLBNode * pNode = KLBNEW(CKLBNode);
 	m_pNode->addNode(pNode);
-	pNode->setTranslate(0, 0);
+	m_lastY = EXIT_MARGINE;
+	pNode->setTranslate(0, m_lastY);
 	CKLBNodeVirtualDocument * pVDoc = createLabelItem("[ EXIT ]", &m_exitWidth, &m_exitHeight);
 	pNode->addNode(pVDoc);
 	pVDoc->setTranslate(0, 0);
 	m_lastY += EXIT_MARGINE;
-}
 
-void
-CKLBDebugResource::clear()
-{
-	init();
+	KLBDELETE(m_pBackground);
+	m_pBackground = KLBNEWC(CKLBNodeVirtualDocument, (true));
+	m_pNode->addNode(m_pBackground);
+	m_pBackground->m_useParentColor = false;
+	m_pBackground->clear(0xff111111);
+	m_pBackground->setViewPortSize(res.height(), DEBUG_BACKGROUND_WIDTH, 0.0f, 0.0f, m_order - 1, false);
+	m_pBackground->setRotation(90.0f);
+	m_pBackground->setViewPortPos(0, 0);
+	m_pBackground->setTranslate(DEBUG_BACKGROUND_WIDTH, 0);
+	m_pBackground->setVisible(false);
+	res.getRoot()->addNode(m_pBackground);
 }
 
 CKLBNodeVirtualDocument *
 CKLBDebugResource::createLabelItem(const char * label, int * width, int * height)
 {
+	create();
 	IPlatformRequest& platform = CPFInterface::getInstance().platform();
 	STextInfo txinfo;
-	void * pFont = platform.getFont(DBG_FONTSIZE, DBG_FONTNAME);
-	platform.getTextInfo(label, pFont, &txinfo);
+	txinfo.parseInlineFormatting = false;
+	void * pFont = platform.getFont(DBG_FONTSIZE, DBG_FONTNAME, 3);
+	platform.getTextInfo(label, pFont, &txinfo, 1.0f, 1.0f);
 
 	*width = txinfo.width;
 	*height = txinfo.height;
 
-	CKLBNodeVirtualDocument * pVDoc = KLBNEW(CKLBNodeVirtualDocument);
+	CKLBNodeVirtualDocument * pVDoc = KLBNEWC(CKLBNodeVirtualDocument, (true));
 	pVDoc->createDocument(1,m_format);
 	pVDoc->setDocumentSize(txinfo.width, txinfo.height);
 	pVDoc->setViewPortSize(txinfo.width, txinfo.height, 0.0f, 0.0f, m_order, false);
@@ -416,13 +434,14 @@ CKLBDebugResource::createLabelItem(const char * label, int * width, int * height
 	pVDoc->setTranslate(0, 0);
 
 	// Moved to improve font cache.
-	platform.deleteFont(pFont);
+	platform.deleteFontResource(pFont);
 	return pVDoc;
 }
 
 CKLBNode *
 CKLBDebugResource::addLabel(int x, int y, const char * label, int * width, int * height)
 {
+	create();
 	CKLBNodeVirtualDocument * pVDoc = createLabelItem(label, width, height);
 	CKLBNode * pNode = KLBNEW(CKLBNode);
 	pNode->addNode(pVDoc);
@@ -436,6 +455,7 @@ CKLBDebugResource::addLabel(int x, int y, const char * label, int * width, int *
 void
 CKLBDebugResource::addDebugItem(const char * caption, const char * key, DBG_MENU * pItem)
 {
+	create();
 	GROUP * pGrp = KLBNEW(GROUP);
 
 	pGrp->prev = m_end;
@@ -534,7 +554,9 @@ CKLBDebugResource::addDebugItem(const char * caption, const char * key, DBG_MENU
 void
 CKLBDebugResource::dispEnable(bool enable)
 {
+	create();
 	m_pNode->setVisible(enable);
+	m_pBackground->setVisible(enable);
 
 	m_dispY = 0;	// 位置を 0 にリセットする
 	m_pNode->setTranslate(0, m_dispY);
@@ -593,7 +615,7 @@ CKLBDebugResource::tapItem(int x, int y)
 	vy = y;
 
 	// [ EXIT ] が押されたら、falseを返す
-	if(vx >= 0 && vy >= 0 && vx < m_exitWidth && vy < m_exitHeight) {
+	if(vx >= 0 && vy >= EXIT_MARGINE && vx < m_exitWidth && vy < m_exitHeight + EXIT_MARGINE) {
 		return false;
 	}
 	for(GROUP * pGrp = m_begin; pGrp; pGrp = pGrp->next) {
@@ -632,11 +654,16 @@ CKLBDebugResource::tapItem(int x, int y)
 }
 
 void
-CKLBDebugResource::createLuaTable(CLuaState& lua)
+CKLBDebugResource::createLuaTable(CLuaState& lua, bool screenRightDown)
 {
 	GROUP * pGrp = m_begin;
 
 	lua.tableNew();
+	if(screenRightDown) {
+		lua.retString("screen_rightdown");
+		lua.retBoolean(true);
+		lua.tableSet();
+	}
 	while(pGrp) {
 		lua.retString(pGrp->key);
 		lua.tableNew();
@@ -838,11 +865,11 @@ CKLBDebugResource::setCallback(const char * callback)
 }
 
 void
-CKLBDebugResource::finishReport()
+CKLBDebugResource::finishReport(bool screenRightDown)
 {
 	CLua_Only_State& lua = (CLua_Only_State&)CKLBLuaEnv::getInstance().getState();
 	if(!m_callback) return;
 	lua.getGlobal(m_callback);
-	createLuaTable(lua);
+	createLuaTable(lua, screenRightDown);
 	lua.call(1, m_callback);
 }

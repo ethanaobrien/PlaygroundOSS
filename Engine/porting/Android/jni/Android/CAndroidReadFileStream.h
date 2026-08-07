@@ -40,16 +40,17 @@ private:
     static const LOCLIST m_toplevel[];
 
     // ファクトリとなるクラスメソッド以外で勝手に new はできない
-    CAndroidReadFileStream();
+    CAndroidReadFileStream(u32 allowedFormats = 0);
 public:
     // delete はできる。
     virtual ~CAndroidReadFileStream();
+    bool isUserEncrypted() { return m_decrypter.isUserEncrypted(); }
 
     // 指定されたパスで CAndroidReadStream インスタンスを作り、そのポインタを返す。
-    static CAndroidReadFileStream * openStream(const char * path, const char * home);
+    static CAndroidReadFileStream * openStream(const char * path, const char * home, u32 allowedFormats = 0);
     
     // 指定されたパス名称を EXTERN -> INSTALL の順に検索し、先に見つかった方でCiOSReadStreamインスタンスを作る。
-    static CAndroidReadFileStream * openAssets(const char * path, const char * home);
+    static CAndroidReadFileStream * openAssets(const char * path, const char * home, u32 allowedFormats = 0);
 
     s32     getSize();
     s32     getPosition();
@@ -60,8 +61,8 @@ public:
     bool    readBlock(void * buffer, u32 byteSize);
     ESTATUS getStatus();
     
-    int		readU16arr(u16 * pBufferU16, int items);
-    int		readU32arr(u32 * pBufferU32, int items);
+    size_t	readU16arr(u16 * pBufferU16, size_t items);
+    size_t	readU32arr(u32 * pBufferU32, size_t items);
 
     IWriteStream * getWriteStream();
 private:
@@ -72,27 +73,27 @@ private:
     int         m_fd;
 
     bool		m_bReadOnly;
-    CAndroidWriteFileStream * m_writeStream;
 
 public:
-	inline u32 decryptSetup(const u8* ptr) {
-		u8 hdr[4];
-		hdr[0] = 0;
-		hdr[1] = 0;
-		hdr[2] = 0;
-		hdr[3] = 0;
+	inline void decryptSetup(const u8* ptr) {
+		u8 header[4] = { 0, 0, 0, 0 };
+		u8 extendedHeader[128];
 
 		if (m_fp) {
-			fread(hdr, 1, 4, m_fp); 
+			fread(header, 1, 4, m_fp);
 		}
 
-		u32 res = m_decrypter.decryptSetup(ptr, hdr);
-		if (res == 0) {
-			if (m_fp) {
-				fseek(m_fp, 0, SEEK_SET);
+		u32 headerSize = 0;
+		m_decrypter.decryptSetup(ptr, header, &headerSize);
+		if (m_fp) {
+			if (headerSize > 4) {
+				const u32 extendedHeaderSize = headerSize - 4;
+				fread(extendedHeader, 1, extendedHeaderSize, m_fp);
+				m_decrypter.finishSetup(extendedHeader,
+					reinterpret_cast<const char*>(ptr));
 			}
+			fseek(m_fp, headerSize, SEEK_SET);
 		}
-		return res;
 	}
 private:
     CDecryptBaseClass m_decrypter;

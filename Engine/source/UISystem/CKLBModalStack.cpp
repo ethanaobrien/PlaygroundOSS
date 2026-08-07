@@ -18,10 +18,9 @@
 CKLBModalStack * CKLBModalStack::ms_begin = 0;
 CKLBModalStack * CKLBModalStack::ms_end   = 0;
 
-CKLBModalStack::CKLBModalStack(bool bModal, bool bUrgent)
-	: m_bEnable(true), m_bModal(bModal), m_bUrgent(bUrgent), m_prev(0), m_next(0)
+CKLBModalStack::CKLBModalStack()
+	: m_bEnable(true), m_bModal(false), m_bUrgent(false), m_prev(0), m_next(0)
 {
-	if(m_bUrgent) m_bModal = true;
 }
 
 CKLBModalStack::~CKLBModalStack()

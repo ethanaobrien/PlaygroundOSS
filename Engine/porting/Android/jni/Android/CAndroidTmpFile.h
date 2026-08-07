@@ -33,10 +33,12 @@ public:
     virtual ~CAndroidTmpFile();
 
     size_t writeTmp(void * ptr, size_t size);
+    int closeTmp();
     inline bool isReady() { return (m_fd > 0) ? true : false; }
 private:
     const char     *    m_fullpath;
     int                 m_fd;
+    bool                m_closed;
 };
 
 

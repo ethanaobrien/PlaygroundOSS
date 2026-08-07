@@ -186,18 +186,18 @@ CWin32ReadFileStream::getWriteStream()
     return m_writeStream;
 }
 
-int
-CWin32ReadFileStream::readU16arr(u16 *pBufferU16, int items)
+size_t
+CWin32ReadFileStream::readU16arr(u16 *pBufferU16, size_t items)
 {
-    int cnt = fread(pBufferU16, sizeof(u16), items, m_fp);
+    size_t cnt = fread(pBufferU16, sizeof(u16), items, m_fp);
 	decrypt(pBufferU16,sizeof(u16) * cnt);    
     return cnt;
 }
 
-int
-CWin32ReadFileStream::readU32arr(u32 *pBufferU32, int items)
+size_t
+CWin32ReadFileStream::readU32arr(u32 *pBufferU32, size_t items)
 {
-    int cnt = fread(pBufferU32, sizeof(u32), items, m_fp);    
+    size_t cnt = fread(pBufferU32, sizeof(u32), items, m_fp);    
 	decrypt(pBufferU32,sizeof(u32) * cnt);
     return cnt;
 }

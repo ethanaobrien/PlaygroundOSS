@@ -49,6 +49,8 @@ public:
 	void execute(u32 deltaT);
 	void dieUI  ();
 
+	virtual void notifyAssetUpdate(const char* assetName, CKLBAsset* asset);
+
 	inline u32  getOrder() { return m_order; }
 	inline void setOrder(u32 order) { 
 		if(m_order != order) {
@@ -115,8 +117,17 @@ private:
 	float				m_org_width;
 	float				m_org_height;
 
+	float				m_setUV_x;
+	float				m_setUV_y;
+	float				m_setUV_width;
+	float				m_setUV_height;
+
 	u32					m_order;
 	u32					m_vCount;
+
+	bool				m_bSetUV;
+	bool				m_useOrigSize;
+	bool				m_setCenter;
 
 	static PROP_V2		ms_propItems[];
 

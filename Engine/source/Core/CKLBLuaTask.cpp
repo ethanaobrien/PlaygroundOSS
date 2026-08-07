@@ -35,6 +35,12 @@ CKLBLuaTask::getTaskType()
     return TASK_LUA_BASIC;
 }
 
+bool
+CKLBLuaTask::initScriptSecondary(CLuaState& /*lua*/)
+{
+	return true;
+}
+
 int
 CKLBLuaTask::commandScript(CLuaState& /*lua*/)
 {
@@ -67,9 +73,12 @@ IFactory::IFactory () {}
 IFactory::~IFactory() {}
 
 void
-IFactory::addLink(const char * luaFuncName, int (*luaFunc)(lua_State * L), DEFCMD * arrCmdItem, u32 classID) {
+IFactory::addLink(const char * luaFuncName, int (*luaFunc)(lua_State * L), DEFCMD * arrCmdItem, u32 classID,
+				  const char * secondaryLuaFuncName, int (*secondaryLuaFunc)(lua_State * L)) {
     m_funcName      = luaFuncName;
     m_luaFunc       = luaFunc;
+	m_secondaryFuncName = secondaryLuaFuncName;
+	m_secondaryLuaFunc = secondaryLuaFunc;
     m_arrCmdItem    = arrCmdItem;
     m_classID       = classID;
     m_pNext         = m_begin;
@@ -86,7 +95,7 @@ IFactory::getClassID(const char* luaFuncName, bool assertIfNotFound) {
 		pFactory = pFactory->m_pNext;
 	}
 
-	klb_assert(!assertIfNotFound, "Can not find class ID from name %s", luaFuncName);
+	klb_assertNull(!assertIfNotFound, "Can not find class ID from name %s", luaFuncName);
 	return 0;
 }
 
@@ -108,12 +117,14 @@ bool
 IFactory::registLuaFunctions(lua_State *L)
 {
     IFactory * pFactory = m_begin;
-	IPlatformRequest& pfif = CPFInterface::getInstance().platform();
-	pfif.logging("<<<supported task list>>>");
+	// Keep platform initialization even though registration diagnostics are disabled.
+	CPFInterface::getInstance();
     while(pFactory) {
 		// 生成用関数を指定の名称で登録する。
         lua_register(L, pFactory->m_funcName, pFactory->m_luaFunc);
-		pfif.logging("  [task] %s", pFactory->m_funcName);
+		if (pFactory->m_secondaryFuncName) {
+			lua_register(L, pFactory->m_secondaryFuncName, pFactory->m_secondaryLuaFunc);
+		}
 
 		// 指定されたコマンド値を、指定された名称で登録する
 		for(const DEFCMD * pCmd = pFactory->m_arrCmdItem; pCmd && pCmd->name ; pCmd++) {
@@ -121,15 +132,11 @@ IFactory::registLuaFunctions(lua_State *L)
 			lua_getglobal(L, pCmd->name);
 			if(!lua_isnil(L, -1)) {
 				lua_pop(L, 1);
-				// 指定されたグローバルラベルがnilではないということは、
-				// 同名で値が定義済みであるため、エラーを出す。
-				pfif.logging("[TASK REGISTRATION ERROR] %s it is redefined.\n", pCmd->name);
 				continue;
 			}
 			lua_pop(L, 1);
 			lua_pushinteger(L, pCmd->cmd);
 			lua_setglobal(L, pCmd->name);
-			pfif.logging("\t\t[def] %s = %d", pCmd->name, pCmd->cmd);
 		}
         pFactory = pFactory->m_pNext;
     }

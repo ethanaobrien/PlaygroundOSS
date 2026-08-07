@@ -49,7 +49,6 @@ CWin32Platform::CWin32Platform(HWND hWnd)
 : IPlatformRequest  ()
 , m_hWnd            (hWnd)
 , m_version_string  (NULL)
-, m_bNoDefaultFont  (false)
 {
 	// WinSock 初期化
 	WSADATA wsaData;
@@ -187,8 +186,9 @@ bool CWin32Platform::useEncryption() {
 }
 
 IReadStream *
-CWin32Platform::openReadStream(const char* pathname, bool decrypt)
+CWin32Platform::openReadStream(const char* pathname, bool decrypt, u32 mode)
 {
+	(void)mode;
 	if(!strncmp(pathname, "file://", 7)) {
 		// ファイルストリーム
 		CWin32ReadFileStream * pRds = CWin32ReadFileStream::openStream(pathname + 7, 0);
@@ -251,7 +251,7 @@ CWin32Platform::removeFileOrFolder(const char* filePath) {
 	}
 }
 
-void removeTmpFileNative(const char* filePath) {
+int removeTmpFileNative(const char* filePath) {
 	char* pathStr = (char*)filePath;
 	while (*pathStr != 0) {
 		if (*pathStr == '/') {
@@ -273,6 +273,7 @@ void removeTmpFileNative(const char* filePath) {
 			klb_assertAlways("FILE DOES NOT EXIST %s !!!",filePath);
 		}
 	}
+	return res ? 0 : -1;
 }
 
 u32 CWin32Platform::getFreeSpaceExternalKB() {
@@ -297,7 +298,7 @@ u32 CWin32Platform::getFreeSpaceExternalKB() {
 	return result;
 }
 
-void
+int
 CWin32Platform::removeTmpFile(const char * filePath)
 {
 	// file://external/ 以外が指定された場合は処理を行わない。
@@ -305,9 +306,11 @@ CWin32Platform::removeTmpFile(const char * filePath)
 	int len = strlen(target);
 	if(!strncmp(filePath, target, len)) {
 		const char * fullpath = CWin32PathConv::getInstance().fullpath(filePath + 7);
-		removeTmpFileNative(fullpath);
+		int result = removeTmpFileNative(fullpath);
 		delete [] fullpath;
+		return result;
 	}
+	return -1;
 }
 
 void

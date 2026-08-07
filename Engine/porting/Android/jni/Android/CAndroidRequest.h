@@ -37,7 +37,8 @@ public:
 
 	void nativeSignal(int cmd, int param);
 
-	void init();
+	virtual bool init();
+	void validateEnvironment();
 
 	//! Use Encryption for disk I/O
 	virtual bool useEncryption();
@@ -48,10 +49,18 @@ public:
     
     // バンドルバージョン取得
     const char* getBundleVersion();
+    const char* getBundleId();
 
-	IReadStream * openReadStream(const char * fileName, bool decrypt);
+    IReadStream * openReadStream(const char * fileName, bool decrypt, u32 mode = 0);
+	IReadStream * openWriteStream(const char * fileName, bool encrypt, u32 mode = 0);
+	void beforeAssertFunction(const char* functionName, bool request = false);
+	void addExtMsg(const char* key, const char* value, bool sendImmediately);
+	void sendException(const char* message);
+	void leaveBreadcrumb(const char* message);
+	char* createRequestIdHeader();
+	void requestExtensionEvent(const char* eventName, ExtensionEventArgs* arguments);
 	ITmpFile * openTmpFile(const char * tmpPath);
-    void removeTmpFile(const char * tmpPath);
+    int removeTmpFile(const char * tmpPath);
 	virtual bool removeFileOrFolder	 (const char * filePath);
 	virtual u32 getFreeSpaceExternalKB();
 	virtual u32 getPhysicalMemKB	 ();
@@ -64,6 +73,7 @@ public:
 	int			ifflush	(void* file);
 	long int	iftell	(void* file);
 	bool		icreateEmptyFile(const char* name);
+	int			irename	(const char* oldName, const char* newName);
 
 	void * loadAudio(const char * url, bool is_se);
     bool   preLoad(void * handle);
@@ -88,6 +98,8 @@ public:
     
     //! サウンドの割り込み処理をエンジン側で制御するかどうか
     void setPauseOnInterruption(bool _bPauseOnInterruption);
+	char* getDeviceIntegrityInfo(const char* request);
+	void decompressBGM(bool decompress);
     
     //! 経過時間を取得(sec)
     s64 getElapsedTime(void);
@@ -95,22 +107,25 @@ public:
     void setFadeParam(void* _handle, float _tgtVol, u32 _milisec);
 
     //! フォントオブジェクト取得
-	bool registerFont(const char* logicalName, const char* physFile, bool default_);
-	void * getFont(int size, const char * fontName = 0, float* pAscent = NULL);
+	void * getFont(int size, const char * fontName = 0);
+	void * getFont(int size, const char * fontName, float* pAscent);
 	void * getFontSystem(int size, const char * fontName = 0);
+	void * getFontSystem();
 
     //! フォントオブジェクト破棄
     void deleteFont(void * pFont);
     void deleteFontSystem(void * pFont);
 
-    //! フォントテクスチャ描画
-    bool renderText(const char* utf8String, void * pFont, u32 color,    //!< 描画する文字列とフォントの指定
-                    u16 width, u16 height, u8 * pBuffer8888,    		//!< 描画対象とするテクスチャバッファとそのピクセルサイズ
-                    s16 stride, s16 base_x, s16 base_y, bool use4444);  //!< baseline起点とするテクスチャ内の位置
-
     bool getTextInfo(const char* utf8String, void * pFont, STextInfo* pReturnInfo);
 
     void* getGLExtension(const char*);
+    const char* getShaderExtension(int shaderType);
+	bool isSafeAreaScreen();
+	void setSafeAreaScreen(bool isSafeArea);
+	void onKLabIdResult(int result, const char* keyValuePairs);
+    bool setFrameRate(int frameRate);
+    int getMaxFrameRate();
+	void getSafeAreaInset(float* insets);
 
     // 追加分method
 
@@ -121,6 +136,20 @@ public:
     IWidget * createControl(IWidget::CONTROL type, int id, const char * caption, int x, int y, int width, int height, ...);
     void destroyControl(IWidget * pControl);
     bool callApplication(APP_TYPE type, ...);
+    void clearCookies();
+    void exitGame();
+    void copyToClipboard(const char* text);
+    double getFreeMemorySize();
+    double getUsedMemorySize();
+    bool getSMode();
+    void getDateTimeNow(char* buffer, int bufferSize);
+    double getUNIXTimeNow();
+    void savePng2Album(const char* path);
+    void setIdleTimerActivity(bool active);
+    void setUserDefaults(const char* key, bool value);
+    bool getUserDefaults(const char* key);
+    void setUserDefaults(const char* key, const char* value);
+    void getUserDefaults(const char* key, char* buffer, int maxLength);
 
     void * createThread(s32 (*thread_func)(void * hThread, void * data), void * data);
     void exitThread(void * hThread, s32 status);
@@ -130,6 +159,7 @@ public:
 
     int genUserID(char * retBuf, int maxlen);
     int genUserPW(const char * salt, char * retBuf, int maxlen);
+	void registerScriptSource(const char* source, int sourceSize, const char* sourceName);
 	
     bool readyDevID();
     int getDevID(char * retBuf, int maxlen);
@@ -150,7 +180,8 @@ public:
 		m_homePath = new char [len + 1];
 		strcpy(m_homePath, home);
 	}
-	bool callJavaMethod(jvalue& ret, const char * method, const char rettype, const char * form, ...);
+	jclass getJavaClass(const char* className, bool global);
+	bool callJavaMethod(jclass targetClass, jvalue& ret, const char * method, const char rettype, const char * form, ...);
 
 	inline float getMasterVolume(bool SEmode) const { return (SEmode) ? m_master_SE : m_master_BGM; }
 
@@ -166,6 +197,35 @@ public:
     void getStoreProducts(const char* json, bool currency_mode);
 	//! サーバー通信後にトランザクションを閉じて購入処理を確定させる。
 	void finishStoreTransaction(const char* receipt);
+	bool publicKeyVerify(unsigned char* message, int messageLength,
+						 unsigned char* signature, int signatureLength);
+	int publicKeyEncrypt(unsigned char* input, int inputLength,
+					 unsigned char* output, int outputLength);
+	bool randomBytes(unsigned char* output, int length);
+	int encryptAES128CBC(unsigned char* output, int outputLength,
+					 const char* input, int inputLength,
+					 const char* key, int keyLength);
+	int decryptAES128CBC(unsigned char* output, int outputLength,
+						 const char* input, int inputLength,
+						 const char* key, int keyLength);
+	virtual bool initNetwork();
+	virtual void shutdownNetwork();
+	virtual CurlObjectInternal* createNetworkOperation();
+	virtual void resetNetworkOperation(CurlObjectInternal* operation);
+	virtual void cleanupNetworkOperation(CurlObjectInternal* operation);
+	virtual int performNetworkOperation(CurlObjectInternal* operation);
+	virtual void freeNetworkFormHeaders(CurlObjectInternal* operation);
+	virtual void destroyNetworkOperation(CurlObjectInternal* operation);
+	virtual void appendNetworkHeader(CurlObjectInternal* operation, const char* header);
+	virtual void setNetworkPostFields(CurlObjectInternal* operation);
+	virtual void setNetworkPostData(CurlObjectInternal* operation, long contentLength, const void* data);
+	virtual void addNetworkFormData(CurlObjectInternal* operation, const char* name,
+	                                long contentLength, const void* data);
+	virtual void setupNetworkConnection(CurlObjectInternal* operation, const char* url,
+	                                    const char* proxy, void* callbackContext,
+	                                    void* progressCallback, void* headerCallback,
+	                                    void* writeCallback);
+	virtual long getNetworkHttpCode(CurlObjectInternal* operation);
 
 	virtual void*	allocMutex		();
 	virtual void	freeMutex		(void* mutex);
@@ -178,6 +238,16 @@ public:
 	virtual void	eventWakeup		(void* lock);
 
 	void forbidSleep(bool is_forbidden);
+	float getDeviceScale();
+	void quitGame();
+	IMovieInterface* createMoviePlayer(const char* url, int width, int height);
+	void destroyMoviePlayer(IMovieInterface* player);
+	const char* getLangCodeRAW();
+	const char* getCountryCodeRAW();
+	const char* getPreferredLangCodeRAW();
+	bool getGyroPolar(float* azimuth, float* elevation);
+	int getOptimalAudioHz();
+	int getOptimalAudioSamples();
 
 private:
 	struct PF_THREAD {
@@ -186,6 +256,7 @@ private:
 		s32 (*thread_func)(void *, void *);
 		void * data;
 		s32 result;
+		bool running;
 	};
 	static void * ThreadProc(void * data);
 	int sha512(const char * string, char * buf, int maxlen);
@@ -193,12 +264,19 @@ private:
 	enum {
 		SND_SLOT = 256
 	};
+	jobject				m_platformContext;
 	char 			*	m_homePath;
 	const char		*	m_platform;
 	float				m_master_BGM;
 	float				m_master_SE;
 
 	const char		*	m_regId;
+	char                m_languageCode[25];
+	char                m_countryCode[25];
+	char                m_preferredLanguageCode[25];
+	char*               m_deviceIntegrityInfo;
+	const char*         m_klabIdCallback;
+	bool                m_isSafeAreaScreen;
 
 	static CAndroidRequest * ms_instance;
 	static void getElapsedTimeSpec(struct timespec * ts);

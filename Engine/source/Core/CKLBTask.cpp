@@ -24,6 +24,12 @@
 #include "CPFInterface.h"
 ;
 
+CKLBTask*               CKLBTask::s_taskSlots[CKLBTask::TASK_TRACK_CAPACITY];
+CKLBTask::TaskTrackInfo CKLBTask::s_taskInfo[CKLBTask::TASK_TRACK_CAPACITY];
+u16                     CKLBTask::s_freeSlots[CKLBTask::TASK_TRACK_CAPACITY];
+u16                     CKLBTask::s_allocCursor;
+u16                     CKLBTask::s_freeCursor;
+
 
 CKLBRegistedTaskList::CKLBRegistedTaskList()
 : m_begin   (NULL)
@@ -66,7 +72,8 @@ CKLBRegistedTaskList::killTaskList(bool kill_child)
 }
 
 CKLBTask::CKLBTask()
-: m_pExePrev    (NULL)
+: m_taskTrackHandle(0)
+, m_pExePrev    (NULL)
 , m_pExeNext    (NULL)
 , m_pBrsPrev    (NULL)
 , m_pBrsNext    (NULL)
@@ -79,10 +86,12 @@ CKLBTask::CKLBTask()
 , m_activeStatus(ALWAYS_ACTIVE)
 {
     m_lstChild.begin = m_lstChild.end = 0;
+    m_taskTrackHandle = registerTask(this);
 }
 
 CKLBTask::~CKLBTask()
 {
+    unregisterTask(m_taskTrackHandle);
 }
 
 // 後始末methodとフレームmethodは、デフォルトだと何もしない。
@@ -129,6 +138,11 @@ CKLBTask::getTaskType()
     return TASK_SIMPLE;
 }
 
+void
+CKLBTask::notifyAssetUpdate(const char* /*assetName*/, CKLBAsset* /*asset*/)
+{
+}
+
 u32
 CKLBTask::getClassID()
 {
@@ -165,7 +179,7 @@ CKLBTask::kill()
     CKLBTaskMgr& mgr = CKLBTaskMgr::getInstance();
 
 	// 破棄フェーズ中でkill()を呼んではいけない。
-	klb_assert(!mgr.isKilling(), "Don't call kill() in die(). ");
+	klb_assertNull(!mgr.isKilling(), "Don't call kill() in die(). ");
 
     // 自身の子全員に対し Kill を実行する。
     CKLBTask * pChild = m_lstChild.begin;
@@ -174,8 +188,9 @@ CKLBTask::kill()
         pChild->kill();
         pChild = pNext;
     }
+	m_lstChild.begin = m_lstChild.end = NULL;
 
-	if (this->getTaskType() != TASK_SIMPLE) {
+	if ((this->getTaskType() != TASK_SIMPLE) && !mgr.m_bClearingTaskList) {
 		CKLBLuaTask* luaTask = (CKLBLuaTask*)this;
 		luaTask->performKillCallback();
 	}
@@ -193,14 +208,15 @@ CKLBTask::kill()
 CKLBTaskMgr::CKLBTaskMgr()
 : m_bPause      (false)
 , m_bExit       (true)
-, m_bStageClear (false)
 , m_frameId     (0)
 , m_pRegList    (NULL)
 , m_currentTask (NULL)
 , m_bKilling    (false)
-#ifdef DEBUG_MENU
-, m_bDbgPause   (false)
-#endif
+, m_bExecuteUIAfter(false)
+, m_bClearingTaskList(false)
+, m_frameTimeAccumulator(0)
+, m_activeTimeAccumulator(0)
+, m_bStageClear (false)
 #if defined(DEBUG_MEMORY)
 , m_bFreeze     (false)
 #endif
@@ -222,6 +238,16 @@ CKLBTaskMgr::getInstance()
 {
     static CKLBTaskMgr instance;
     return instance;
+}
+
+void
+CKLBTaskMgr::notifyAssetUpdate(const char* assetName, CKLBAsset* asset)
+{
+	for (u32 phase = 0; phase < CKLBTask::P_MAX; ++phase) {
+		for (CKLBTask* task = m_lstTask[phase].begin; task; task = task->m_pExeNext) {
+			task->notifyAssetUpdate(assetName, asset);
+		}
+	}
 }
 
 bool
@@ -250,6 +276,8 @@ CKLBTaskMgr::clearTaskList()
     CKLBTask * pTask;
 	CKLBTask * pNext;
 
+	m_bClearingTaskList = true;
+
 	// タスクが親子関係を持っていることがあるので、
 	// 全フェーズのタスクに対し、まずはkill()を発行する。
 	// これにより、削除リストは必ず子→親の順番に登録される。
@@ -270,6 +298,7 @@ CKLBTaskMgr::clearTaskList()
 	// 削除リストに登録されたタスクを、登録順に削除する。
 	// 必ず子→親の順番にリストが作成されている。
 	remove_killlist();
+	m_bClearingTaskList = false;
 
 	for(i = 0; i < CKLBTask::P_MAX; i++) {
 		// should not be necessary as each task will update the links.
@@ -304,7 +333,7 @@ CKLBTaskMgr::clearStageTask()
 	//CKLBTaskMgr& mgr = CKLBTaskMgr::getInstance();
 
 	// 破棄フェーズ中でclearStageTask()を呼んではいけない。
-	klb_assert(!m_bKilling, "Don't call clearStageTask() in die(). ");
+	klb_assertNull(!m_bKilling, "Don't call clearStageTask() in die(). ");
 
     m_bStageClear = true;
 }
@@ -333,7 +362,7 @@ CKLBTaskMgr::is_remove(CKLBTask * pTask)
 	// 指定されたポインタが、実行リストのどこにも登録されていなければ
 	// 破棄ずみの領域を再度破棄しようとしている可能性がある。
 	bool bResult = isExistTask(pTask);
-	klb_assert(bResult, "unknow task pointer !");
+	klb_assertNull(bResult, "unknow task pointer !");
 
 	// 既に削除リストに登録されている場合
     if(pTask->m_pRmvNext || pTask->m_pRmvPrev) { return true; }
@@ -444,10 +473,10 @@ CKLBTaskMgr::dump() {
 	int count = 0;
     for(int i = 0; i < CKLBTask::P_MAX; i++) {
         for(CKLBTask* pTask = m_lstTask[i].begin; pTask; pTask = pTask->m_pExeNext) {
-			fprintf(pFile,"[T%4i] Phase : %i Task : %8lX [%s] Type:%s\n",
+			fprintf(pFile,"[T%4i] Phase : %i Task : %p [%s] Type:%s\n",
 				count++,
 				i,
-				reinterpret_cast<uintptr_t>(pTask),
+				static_cast<void*>(pTask),
 				(pTask->m_activeStatus > 0) ? "ACTIVE" : "SLEEP ",
 				IFactory::getClassName(pTask->getClassID())
 			);
@@ -459,11 +488,11 @@ CKLBTaskMgr::dump() {
 bool
 CKLBTaskMgr::execute(u32 deltaT)
 {
-    // すべてのタスクを呼び出す前に、削除リストを初期化する。
-    m_lstRemove.begin = m_lstRemove.end = NULL;
-    
-	// フレームID更新: 16bit の値が毎フレーム変わる。
-	m_frameId = (++m_frameId) & 0xffff;
+	// Advance the frame clocks before running any task.  The active-time
+	// accumulator is reset independently when the application is suspended.
+	++m_frameId;
+	m_frameTimeAccumulator  += deltaT;
+	m_activeTimeAccumulator += deltaT;
 
     // 全タスク呼び出し
     int i;
@@ -475,10 +504,6 @@ CKLBTaskMgr::execute(u32 deltaT)
 
     for(i = 0; i < CKLBTask::P_MAX; i++) {
 
-#ifdef DEBUG_MENU
-		// デバッグモード用。デバッグモードが使うフェーズ以外すべてを停止させる。
-		if (m_bDbgPause &&(i > CKLBTask::P_DBGMENU && i < CKLBTask::P_DRAW)) continue;
-#endif
 		// ポーズ中であれば、P_PREV - P_JUDGE はスキップする。
         if (m_bPause && (i >= CKLBTask::P_PREV && i < CKLBTask::P_DRAW)) continue;
         // フリーズ中(pauseGame)はINPUT系と、それに準ずる重要タスク以外はスキップする
@@ -491,7 +516,8 @@ CKLBTaskMgr::execute(u32 deltaT)
         scriptTime = 0;
 #endif
 
-        for(pTask = m_lstTask[i].begin; pTask; pTask = pTask->m_pExeNext) {
+        for(pTask = m_lstTask[i].begin; pTask; ) {
+			CKLBTask * pNext = pTask->m_pExeNext;
             m_currentTask = pTask;
 			// taskCount++;
 
@@ -508,6 +534,7 @@ CKLBTaskMgr::execute(u32 deltaT)
 			if(pTask->m_activeStatus > 0) {
 				pTask->execute(deltaT);
 			}
+			pTask = pNext;
 
             // 終了時刻の取得
 #ifdef DEBUG_PERFORMANCE
@@ -517,6 +544,18 @@ CKLBTaskMgr::execute(u32 deltaT)
 			}
 #endif
         }
+
+		// Tasks created during the menu phase can request one additional UI
+		// completion pass in the same frame.
+		if(m_bExecuteUIAfter && i == CKLBTask::P_MENU) {
+			m_bExecuteUIAfter = false;
+			for(pTask = m_lstTask[CKLBTask::P_UIAFTER].begin; pTask; pTask = pTask->m_pExeNext) {
+				m_currentTask = pTask;
+				if(pTask->m_activeStatus > 0) {
+					pTask->execute(deltaT);
+				}
+			}
+		}
 
 		// execTime[i] = CPFInterface::getInstance().platform().nanotime() - time;
 #ifdef DEBUG_PERFORMANCE
@@ -561,4 +600,97 @@ CKLBTask::interposeTimer(CKLBTask* pTimer) {
 	
 		m_pParent	= pTimer;
 	}
+}
+
+void
+CKLBTask::unregisterTask(size_t value)
+{
+    u16 handle = static_cast<u16>(value);
+    if(!handle) {
+        return;
+    }
+
+    u16 cursor = s_freeCursor;
+    s_freeCursor++;
+    s_freeSlots[cursor] = handle;
+    if(s_freeCursor >= TASK_TRACK_CAPACITY) {
+        s_freeCursor = 0;
+    }
+
+    klb_assert(s_taskSlots[handle],
+        "TASK PROBLEM, TRY TO FREE POINTER ALREADY FREED : ClassID : %i Create Frame : %i Die Frame : %i (Current Frame : %i), freeStack : %d, usedStack : %d \n",
+        s_taskInfo[handle].classID,
+        s_taskInfo[handle].createFrame,
+        s_taskInfo[handle].dieFrame,
+        CKLBTaskMgr::getInstance().getFrameID(),
+        s_freeCursor,
+        s_allocCursor);
+    s_taskInfo[handle].dieFrame = CKLBTaskMgr::getInstance().getFrameID();
+    s_taskSlots[handle] = NULL;
+}
+
+size_t CKLBTask::registerTask(CKLBTask* task) {
+    u16 handle = s_freeSlots[s_allocCursor++];
+    if(s_allocCursor > TASK_TRACK_CAPACITY - 1) { s_allocCursor = 0; }
+
+    klb_assert(!s_taskSlots[handle],
+        "TASK PROBLEM, ALREADY ASSIGNED : Old ClassID : %i Create Frame : %i Die Frame : %i (Current Frame : %i), freeStack : %d, usedStack : %d \n",
+        s_taskInfo[handle].classID,
+        s_taskInfo[handle].createFrame,
+        s_taskInfo[handle].dieFrame,
+        CKLBTaskMgr::getInstance().getFrameID(),
+        s_freeCursor,
+        s_allocCursor);
+    klb_assertNull(
+        task,
+        "TRY TO REGISTER NULL TASK"
+    );
+
+    s_taskSlots[handle] = task;
+    s_taskInfo[handle].createFrame = CKLBTaskMgr::getInstance().getFrameID();
+    s_taskInfo[handle].classID = task->getClassID();
+    return handle;
+}
+
+size_t
+CKLBTask::getTaskTrackHandle()
+{
+    if(!this) { return 0; }
+
+    u16 handle = static_cast<u16>(m_taskTrackHandle);
+    s_taskInfo[handle].classID = getClassID();
+    return m_taskTrackHandle;
+}
+
+CKLBTask*
+CKLBTask::getFromScriptHandle(size_t value)
+{
+    u16 handle = static_cast<u16>(value);
+    if(!handle) { return NULL; }
+
+    CKLBTask* task = s_taskSlots[handle];
+    klb_assert(task,
+        "TASK PROBLEM, TRY TO USE POINTER ALREADY FREED : ClassID : %i Create Frame : %i Die Frame : %i (Current Frame : %i), freeStack : %d, usedStack : %d \n",
+        s_taskInfo[handle].classID,
+        s_taskInfo[handle].createFrame,
+        s_taskInfo[handle].dieFrame,
+        CKLBTaskMgr::getInstance().getFrameID(),
+        s_freeCursor,
+        s_allocCursor);
+    return task;
+}
+
+CKLBTask*
+CKLBTask::findFromScriptHandle(size_t value)
+{
+    u16 handle = static_cast<u16>(value);
+    if(!handle) { return NULL; }
+    return s_taskSlots[handle];
+}
+
+void
+CKLBTask::refreshTaskTrackClassID()
+{
+    u16 handle = static_cast<u16>(m_taskTrackHandle);
+    s_taskInfo[handle].classID = getClassID();
 }

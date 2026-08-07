@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,6 +30,8 @@ CKLBUITextBox::CKLBUITextBox(bool isPassword, int maxlen)
 , m_ty              (0)
 , m_textLen         (0)
 , m_textBuf         (NULL)
+, m_fontName        (NULL)
+, m_fontSize        (0.0f)
 {
 	IPlatformRequest& pForm  = CPFInterface::getInstance().platform();
 	IWidget::CONTROL control = (isPassword) ? IWidget::PASSWDBOX : IWidget::TEXTBOX;
@@ -39,8 +41,9 @@ CKLBUITextBox::CKLBUITextBox(bool isPassword, int maxlen)
 	nativeInputItem = pForm.createControl(control , 0, "", px, py, 0, 0, maxlen);
 	if(nativeInputItem) {
 		nativeInputItem->visible(false);
+	} else {
+		klb_assertAlways("EditBox allocation failed");
 	}
-	klb_assert(nativeInputItem, "EditBox allocation failed");
 }
 
 CKLBUITextBox::~CKLBUITextBox() {
@@ -52,7 +55,7 @@ CKLBUITextBox::~CKLBUITextBox() {
 		nativeInputItem = NULL;
 	}
     if(m_pFont) {
-        pForm.deleteFontSystem(m_pFont);
+        pForm.deleteFont(m_pFont);
     }
 	KLBDELETEA(m_textBuf);
 }
@@ -198,11 +201,13 @@ CKLBUITextBox::setFont(const char *fontname, float fontsize)
     if(nativeInputItem) {
         IPlatformRequest& pForm = CPFInterface::getInstance().platform();
         if(m_pFont) {
-            pForm.deleteFontSystem(m_pFont);
+            pForm.deleteFont(m_pFont);
             m_pFont = NULL;
         }
+		m_fontName = fontname;
+		m_fontSize = fontsize;
         fontsize = CKLBDrawResource::getInstance().toPhisical(fontsize);
-        m_pFont = pForm.getFontSystem(fontsize, fontname);
+        m_pFont = pForm.getFont(fontsize, fontname);
         nativeInputItem->cmd(IWidget::TX_FONT, m_pFont);
     }
 }

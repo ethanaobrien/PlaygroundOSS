@@ -18,6 +18,8 @@
 
 #include "ILuaFuncLib.h"
 
+class CKLBAssetManager;
+
 class CKLBLuaLibASSET : public ILuaFuncLib
 {
 private:
@@ -37,6 +39,34 @@ private:
 	static s32	luaGetAssetInfo		(lua_State * L);
 	static s32	luaDelExternal		(lua_State * L);
 	static s32	luaGetExternalFree	(lua_State * L);
+	static s32	luaGetAssetPathIfNotExist(lua_State * L);
+	static s32	luaGetFileList		(lua_State * L);
+	static s32	luaCreateImageTexture(lua_State * L);
+	static s32	luaGridRequestCache	(lua_State * L);
+	static s32	luaLoadImage			(lua_State * L);
+	static s32	luaSetPlaceHolder	(lua_State * L);
+	static s32	luaGridLock			(lua_State * L);
+	static s32	luaGridError			(lua_State * L);
+	static s32	luaMipmapOnce		(lua_State * L);
+	static s32	luaGridSetDieCallback(lua_State * L);
+	static s32	luaRegisterNotFound(lua_State * L);
+	static s32	luaStartDownload	(lua_State * L);
+	static s32	luaPauseDownload	(lua_State * L);
+	static s32	luaKillDownload		(lua_State * L);
+	static s32	luaBGFilterSetup		(lua_State * L);
+	static s32	luaRegisterFilter	(lua_State * L);
+	static s32	luaSetEID			(lua_State * L);
+	static s32	luaEnableTextureBorderPatch(lua_State * L);
+	static s32	luaGetNMAssetSize	(lua_State * L);
+	static s32	luaSetNMAssetSize	(lua_State * L);
+	static s32	luaSetNMAsset		(lua_State * L);
+	static s32	luaGetNMAsset		(lua_State * L);
+
+	// These subsystem operations do not yet have complete public owner types.
+	static bool setGridLocked(const void* grid, bool locked);
+	static s32 getGridError(bool clear);
+	static void setGridDieCallback(const char* callback);
+	static void pauseDownloads(bool paused);
 };
 
 

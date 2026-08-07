@@ -41,6 +41,7 @@ public:
 	void dynamicSectionColor	(u32 section, u32 color);
 
 	void setFillUV				(float u, float v);
+	virtual GEOMETRY_TYPE getGeometryType() const;
 protected:
 	#define MAX_SECTION		(10)
 	struct SECTION {

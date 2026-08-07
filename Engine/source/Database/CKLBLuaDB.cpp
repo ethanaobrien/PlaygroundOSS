@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -91,7 +91,7 @@ CKLBLuaDB::setName(const char * name)
 	KLBDELETEA(m_name);
 	m_name = NULL;
 	if(name) {
-		int len = strlen(name);
+		size_t len = strlen(name);
 		char * buf = KLBNEWA(char, len + 1);
         if(!buf) { return false; }
 		strcpy(buf, name);
@@ -177,9 +177,6 @@ CKLBLuaDB::query(CLuaState * plua, const char * query)
 	int rc = sqlite3_exec(m_db, query, CKLBLuaDB::row_callback, this, &errMsg);
 
 	if (rc != SQLITE_OK) {
-		// 一応出力コンソールにログは出しておく。
-		DEBUG_PRINT("[SQLite]%s", errMsg);
-
 		// lua.error(errMsg);	// Luaでエラーを出すとscriptが中断されるので、エラーメッセージは基本出さない
 		sqlite3_free(errMsg);
 		lua.pop(2);		// 積んでしまったテーブルをスタックから除去
@@ -202,11 +199,13 @@ CKLBLuaDB::query(const char* query)
 	int rc = sqlite3_exec(m_db, query, CKLBLuaDB::row_callback_luaFree, this, &errMsg);
 	
 	if (rc != SQLITE_OK) {
-		DEBUG_PRINT("[SQLite]%s", errMsg);
 		sqlite3_free(errMsg);
 	}
 
-	return (const char**)m_pLua;
+	// 結果配列の所有権は呼び出し側に移す。
+	const char** result = (const char**)m_pLua;
+	m_pLua = NULL;
+	return result;
 }
 
 int
@@ -278,4 +277,53 @@ CKLBLuaDB::dumpAll()
 		pDB = pDB->m_next;
 	}
 	return bResult;
+}
+
+CKLBDBHandleTable::Entry	CKLBDBHandleTable::ms_table[CKLBDBHandleTable::MAX_HANDLE];
+s32							CKLBDBHandleTable::ms_nextSerial	= 0;
+bool						CKLBDBHandleTable::ms_tableReady	= false;
+
+void
+CKLBDBHandleTable::initTable()
+{
+	for(u32 slot = 0; slot < MAX_HANDLE; slot++) {
+		ms_table[slot].m_free = true;
+	}
+	ms_tableReady = true;
+}
+
+s32
+CKLBDBHandleTable::registerDB(CKLBLuaDB * db)
+{
+	if(!ms_tableReady) {
+		initTable();
+	}
+	for(u32 slot = 0; slot < MAX_HANDLE; slot++) {
+		if(ms_table[slot].m_free) {
+			ms_table[slot].m_free	= false;
+			ms_table[slot].m_db		= db;
+			ms_table[slot].m_serial	= ms_nextSerial++;
+			return ms_table[slot].m_serial;
+		}
+	}
+	return -1;
+}
+
+void
+CKLBDBHandleTable::unregisterDB(u32 slot)
+{
+	if(slot < MAX_HANDLE) {
+		ms_table[slot].m_free = true;
+	}
+}
+
+CKLBLuaDB *
+CKLBDBHandleTable::getDB(u32 slot)
+{
+	if((slot < MAX_HANDLE) && ms_tableReady) {
+		if(!ms_table[slot].m_free) {
+			return ms_table[slot].m_db;
+		}
+	}
+	return NULL;
 }

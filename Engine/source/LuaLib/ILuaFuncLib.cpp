@@ -84,13 +84,11 @@ ILuaFuncLib::registConst()
 			lua_pop(m_L, 1);
 			// 指定されたグローバルラベルがnilではないということは、
 			// 同名で値が定義済みであるため、エラーを出す。
-			DEBUG_PRINT("[LIB REGISTRATION ERROR] %s it is redefined.\n", pConst->name);
 			continue;
 		}
 		lua_pop(m_L, 1);
 		lua_pushinteger(m_L, pConst->cmd);
 		lua_setglobal(m_L, pConst->name);
-		pfif.logging("\t\t[def] %s = %d", pConst->name, pConst->cmd);
 	}
 }
 
@@ -98,7 +96,6 @@ void
 ILuaFuncLib::addFunction(const char * luaFuncName, int (*func)(lua_State * L))
 {
 	lua_register(m_L, luaFuncName, func);
-	DEBUG_PRINT("  [func] %s", luaFuncName);
 }
 
 bool
@@ -109,8 +106,6 @@ ILuaFuncLib::registAllLibs(lua_State * L)
 
 	// オブジェクトダンプ関数を登録する
 	lua_register(L, "LuaLibDUMP", ILuaFuncLib::luaDumpObjects);
-
-	pfif.logging("<<<supported Lua functions>>>");
 
 	while(pLib) {
 		pLib->registLib(L);

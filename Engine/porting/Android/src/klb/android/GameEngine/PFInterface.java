@@ -30,6 +30,7 @@ import android.graphics.Paint;
 import android.graphics.Canvas;
 import android.graphics.Bitmap;
 import android.os.Build;
+import android.provider.Settings;
 import android.util.Log;
 import android.view.Gravity;
 import android.webkit.WebView;
@@ -678,6 +679,55 @@ public class PFInterface {
 	public static String generateDeviceIdent() {
 		return Build.MANUFACTURER + "`" + Build.MODEL + "`" + ((int)(Math.random() * 16777216));
 	}
+
+	public static int getVersionSDK() {
+		return Build.VERSION.SDK_INT;
+	}
+
+	public static String getProductName() {
+		return Build.PRODUCT;
+	}
+
+	public static String getManufacturer() {
+		return Build.MANUFACTURER;
+	}
+
+	public static String getBrand() {
+		return Build.BRAND;
+	}
+
+	public static String getDevice() {
+		return Build.DEVICE;
+	}
+
+	public static String getModel() {
+		return Build.MODEL;
+	}
+
+	public static String getBoard() {
+		return Build.BOARD;
+	}
+
+	public static String getVersionRelease() {
+		return Build.VERSION.RELEASE;
+	}
+
+	public static String getFingerPrint() {
+		return Build.FINGERPRINT;
+	}
+
+	public static String getTags() {
+		return Build.TAGS;
+	}
+
+	public static String getBasePath() {
+		return m_path_install.substring(0, m_path_install.length() - 9);
+	}
+
+	public static int getMode() {
+		return Settings.Secure.getInt(
+			getInstance().m_context.getContentResolver(), "adb_enabled", 0);
+	}
 	
 	public static void	billingInit()
 	{
@@ -794,7 +844,7 @@ public class PFInterface {
     public native void resetViewport();
     public native void onActivityPause();
     public native void onActivityResume();
-    public native void WebViewControlEvent(WebView _pWeb, int _flg);
+    public native void WebViewControlEvent(WebView _pWeb, int _flg, String _data);
 	public native void clientControlEvent(int type, int widget, String data_1, String data_2);
 	public native void clientResumeGame();
 

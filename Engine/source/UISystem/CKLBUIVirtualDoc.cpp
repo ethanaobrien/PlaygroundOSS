@@ -18,40 +18,51 @@
 #include "CKLBScriptEnv.h"
 #include "CKLBLuaEnv.h"
 #include "CKLBLanguageDatabase.h"
-;
 // Command Values
 enum {
 	UI_VDOC_CLEAR = 0x01,
 	UI_VDOC_FONT,
 	UI_VDOC_VIEWPOS,
 	UI_VDOC_DRAW,
-
 	UI_VDOC_ALIGN,
-
+	UI_VDOC_MARQUEESETUP,
+	UI_VDOC_MARQUEEACTIVATE,
+	UI_VDOC_FIT,
+	UI_VDOC_USENATIVE_FONT,
 	VD_DRAW_LINE = 0x10,
 	VD_DRAW_TEXT,
 	VD_FILL_RECT,
 	VD_DRAW_IMAG,
-
+	VD_DRAW_TEXTFX,
+	VD_DRAW_TEXT_SPACING,
 	VD_ALIGN_LEFT = 0,
 	VD_ALIGN_CENTER,
 	VD_ALIGN_RIGHT,
+	VD_FIT_NONE = 0,
+	VD_FIT_FULLHEIGHT,
 };
-
 static IFactory::DEFCMD cmd[] = {
 	{ "UI_VDOC_CLEAR",		UI_VDOC_CLEAR   },
 	{ "UI_VDOC_FONT",		UI_VDOC_FONT    },
 	{ "UI_VDOC_DRAW",		UI_VDOC_DRAW    },
 	{ "UI_VDOC_VIEWPOS",	UI_VDOC_VIEWPOS },
 	{ "UI_VDOC_ALIGN",		UI_VDOC_ALIGN   },
-
+	{ "UI_VDOC_MARQUEESETUP",	UI_VDOC_MARQUEESETUP    },
+	{ "UI_VDOC_MARQUEEACTIVATE",	UI_VDOC_MARQUEEACTIVATE },
+	{ "UI_VDOC_FIT",				UI_VDOC_FIT             },
+	{ "UI_VDOC_USENATIVE_FONT",	UI_VDOC_USENATIVE_FONT  },
 	{ "VD_DRAW_LINE",		VD_DRAW_LINE    },
 	{ "VD_DRAW_TEXT",		VD_DRAW_TEXT    },
 	{ "VD_FILL_RECT",		VD_FILL_RECT    },
 	{ "VD_DRAW_IMAG",		VD_DRAW_IMAG    },
+	{ "VD_DRAW_TEXTFX",		VD_DRAW_TEXTFX  },
+	{ "VD_DRAW_TEXT_SPACING",	VD_DRAW_TEXT_SPACING },
 
 	{ "VD_ALIGN_LEFT",		VD_ALIGN_LEFT   },
 	{ "VD_ALIGN_CENTER",	VD_ALIGN_CENTER },
+	{ "VD_ALIGN_RIGHT",		VD_ALIGN_RIGHT  },
+	{ "VD_FIT_NONE",		VD_FIT_NONE     },
+	{ "VD_FIT_FULLHEIGHT",	VD_FIT_FULLHEIGHT },
 	{ "VD_ALIGN_RIGHT",		VD_ALIGN_RIGHT  },
 
 	{ 0, 0}
@@ -77,36 +88,29 @@ CKLBLuaPropTask::PROP_V2 CKLBUIVirtualDoc::ms_propItems[] = {
 
 enum {
 	ARG_PARENT = 1,
-
 	ARG_ORDER,
 	ARG_X,
 	ARG_Y,
-
 	ARG_DOC_WIDTH,
 	ARG_DOC_HEIGHT,
-
 	ARG_VIEW_WIDTH,
 	ARG_VIEW_HEIGHT,
-
 	ARG_CMDMAX,
 	ARG_VERTICAL,
-
 	ARG_CALLBACK,
-
-	ARG_REQUIRE = ARG_VERTICAL,
-	ARG_MAXNUM = ARG_CALLBACK
+	ARG_REQUIRE = ARG_VERTICAL, ARG_MAXNUM = ARG_CALLBACK
 };
 
 CKLBUIVirtualDoc::CKLBUIVirtualDoc()
-: CKLBUITask    ()
+: CKLBUITask    (P_UIAFTER)
 , m_imgBegin    (NULL)
 , m_imgEnd      (NULL)
 , m_align       (VD_ALIGN_LEFT)
 , m_callBack    (NULL)
 , m_viewPosX    (0)
 , m_viewPosY    (0)
-, m_forceRefreshMode    (true)
-, m_counter     (0)
+, m_useNativeFont       (false)
+, m_nativeFontSize      (3)
 {
 	m_format = TexturePacker::getCurrentModeTexture();
 	setNotAlwaysActive();
@@ -212,8 +216,6 @@ CKLBUIVirtualDoc::initCore(u32 order, float x, float y,
 	REFRESH_A;
 	REFRESH_B;
 	REFRESH_C;
-	REFRESH_D;
-	REFRESH_E;
 
 	m_width         = doc_width;
 	m_height        = doc_height;
@@ -223,7 +225,7 @@ CKLBUIVirtualDoc::initCore(u32 order, float x, float y,
 	m_commandMax    = max_command_nums;
 	m_vertical	    = vertical;
 	m_callBack      = NULL;
-    if(callback) { setStrC(m_callBack, callback); }
+    if(callback) { setCallBack(callback); }
 
 	m_pDocNode = KLBNEW(CKLBNodeVirtualDocument);
     if(!m_pDocNode) { return false; }
@@ -246,81 +248,54 @@ CKLBUIVirtualDoc::initCore(u32 order, float x, float y,
 	return true;
 }
 
-void
-CKLBUIVirtualDoc::checkDocumentSize() 
-{
-	if (CHANGE_A) {
-		m_pDocNode->createDocument(m_commandMax,m_format);
-		RESET_A;
-	}
-}
-
+// Status bits defer the document updates that property setters request.
+// REFRESH_A rebuilds the command buffer and clears itself after creation.
+// REFRESH_B applies the logical document dimensions and writing direction.
+// REFRESH_C applies the viewport dimensions, position, order, and scroll mode.
+// The marquee flag advances independently until the node reports completion.
+// Touch events are dispatched only while a callback and modal access are active.
 void
 CKLBUIVirtualDoc::execute(u32 deltaT)
 {
-	bool change = false;
-	deltaT = deltaT; // avoid warning.
-
-	if(CHANGE_A) {
-		change = true;
-	}
 	checkDocumentSize();
 
 	if(CHANGE_B) {
-		m_pDocNode->setDocumentSize(m_width, m_height, m_vertical);	// virtual size, vertical
-		change = true;
+		m_pDocNode->setDocumentSize(m_width, m_height, m_vertical);
 		RESET_B;
-		forceRefresh();
 	}
 
 	if(CHANGE_C) {
+		bool doScroll = (m_viewPosX != 0) || (m_viewPosY != 0);
 		m_pDocNode->setViewPortSize(m_viewWidth, m_viewHeight,
 									0.0f, 0.0f,
-									m_order, true);			// physical size
-		m_pDocNode->setViewPortPos(m_viewPosX,m_viewPosY);
-		change = true;
+									m_order, doScroll);
+		m_pDocNode->setViewPortPos(m_viewPosX, m_viewPosY);
 		RESET_C;
-		forceRefresh();
 	}
 
-	if(CHANGE_D) {
-		change = true;
-		RESET_D;
-	}
-
-	if(m_forceRefreshMode) {
-		REFRESH_E;
-		if(change) {
-			m_counter = 1;
-		}
-
-		if(m_counter) {
-			forceRefresh();
-		}
-
-		if(m_counter > 0) {
-			m_counter--;
+	const u32 marqueeActiveFlag = 0x20;
+	if(getStatusFlag(marqueeActiveFlag) && m_pDocNode) {
+		m_pDocNode->updateMarquee(deltaT);
+		if(m_pDocNode->isMarqueeStopped()) {
+			resetStatusFlag(marqueeActiveFlag);
 		}
 	}
 
-	bool bModalEnable = m_modalStack.isEnable();
-
-	// ポインティング操作のコールバックが指定されていなければ何もしない。
-	if(m_callBack) {
-		if(bModalEnable) {
-			touchPadEvent();
-		}
-	} else {
-		if(m_counter == 0) {
-			RESET_E;
-		}
+	if(m_callBack && m_modalStack.isEnable()) {
+		touchPadEvent();
 	}
 }
 
-void 
-CKLBUIVirtualDoc::forceRefresh() 
+void
+CKLBUIVirtualDoc::forceRefresh()
 {
 	m_pDocNode->forceRefresh();
+}
+
+void
+CKLBUIVirtualDoc::setFitMode(u8 fitMode)
+{
+	m_pDocNode->setFitMode(fitMode);
 }
 
 void
@@ -350,8 +325,7 @@ CKLBUIVirtualDoc::commandUI(CLuaState& lua, int argc, int cmd)
 			u32 alpha   = lua.getInt(3);
 			u32 col     = lua.getInt(4);
 			clear(col|(alpha << 24));
-			forceRefresh();
-			CHANGE_D;
+			REFRESH_C;
 		}
 		break;
 
@@ -366,8 +340,7 @@ CKLBUIVirtualDoc::commandUI(CLuaState& lua, int argc, int cmd)
 			const char * name = lua.getString(4);
 			int font_size = lua.getInt(5);
 			setFont(idx,name,font_size);
-			forceRefresh();
-			CHANGE_D;
+			REFRESH_C;
 		}
 		break;
 	case UI_VDOC_VIEWPOS:
@@ -379,25 +352,97 @@ CKLBUIVirtualDoc::commandUI(CLuaState& lua, int argc, int cmd)
 			}
 			int x = lua.getInt(3);
 			int y = lua.getInt(4);
-			setViewPortPos(x, y);
-			forceRefresh();
-			CHANGE_D;
+			m_viewPosX = x;
+			m_viewPosY = y;
+			REFRESH_C;
 		}
 		break;
 	case UI_VDOC_ALIGN:
 		{
-			bool bResult = false;
 			if(argc >= 3 && argc <= 4) {
 				u8 align = lua.getInt(3);
 				int align_width = (argc >= 4) ? lua.getInt(4) : m_viewWidth;
 				setAlign(align, align_width);
-				forceRefresh();
-				CHANGE_D;
-				bResult = true;
 			}
 			break;
 		}
 		break;
+	// Marquee setup stores its start/end delays, normalized speed, and mode.
+	// Activation controls the visible width, looping behavior, and position.
+	// A negative requested position keeps the node's current marquee width.
+	// The task status flag records whether per-frame marquee updates are active.
+	// Fit mode is forwarded directly to the virtual-document node.
+	// Native-font mode optionally updates its size before applying both values.
+	case UI_VDOC_MARQUEESETUP:
+		{
+			if(argc != 6) {
+				lua.retBoolean(false);
+				ret = 1;
+				break;
+			}
+			int startDelay = lua.getInt(3);
+			int endDelay = lua.getInt(4);
+			float speed = (float)lua.getInt(5) / 1000.0f;
+			int mode = lua.getInt(6);
+			m_pDocNode->setMarquee((s16)startDelay, (s16)endDelay, (u8)mode,
+								   speed);
+		}
+		break;
+	case UI_VDOC_MARQUEEACTIVATE:
+		{
+			if(argc != 6) {
+				lua.retBoolean(false);
+				ret = 1;
+				break;
+			}
+			bool active = lua.getBool(3);
+			int width = lua.getInt(4);
+			bool loop = lua.getBool(5);
+			int position = lua.getInt(6);
+			float marqueePosition = m_pDocNode->getMarqueeWidth();
+			if(position != -1) {
+				marqueePosition = (float)position;
+			}
+			m_pDocNode->setMarqueeActive(active, width, loop);
+			m_pDocNode->setMarqueePos((s16)marqueePosition);
+			if(active) {
+				setStatusFlag(0x20);
+			} else {
+				resetStatusFlag(0x20);
+			}
+			lua.retBoolean(true);
+			ret = 1;
+		}
+		break;
+	case UI_VDOC_FIT:
+		{
+			if(argc <= 2) {
+				lua.retBoolean(false);
+				ret = 1;
+				break;
+			}
+			setFitMode(lua.getInt(3));
+		}
+		break;
+	case UI_VDOC_USENATIVE_FONT:
+		{
+			if(argc < 3 || argc > 4) {
+				lua.retBoolean(false);
+				ret = 1;
+				break;
+			}
+			m_useNativeFont = lua.getBool(3);
+			if(!lua.isNil(4)) {
+				m_nativeFontSize = lua.getInt(4);
+			}
+			m_pDocNode->setUseNativeFont(m_useNativeFont, m_nativeFontSize);
+		}
+		break;
+	// Drawing consumes a Lua table of command tables into one locked document.
+	// Each nested table begins with a VD_DRAW_* selector followed by operands.
+	// Text operands are resolved through the language database before rendering.
+	// Image operands retain their asset handles until the document is destroyed.
+	// Text effects carry their mode, parameters, extra value, and effect width.
 	case UI_VDOC_DRAW:
 		{
 			if(argc != 3) {
@@ -406,17 +451,17 @@ CKLBUIVirtualDoc::commandUI(CLuaState& lua, int argc, int cmd)
 				break;
 			}
 
-			checkDocumentSize();
+			m_pDocNode->createDocument(m_commandMax, m_format);
 			m_pDocNode->emptyDocument();
 			m_pDocNode->setDocumentSize(m_width, m_height,m_vertical);
 			m_pDocNode->lockDocument();
-			klb_assert(lua.isTable(3), "[UI_VirtualDoc::UI_VDOC_DRAW] BAD command table format.");
+			klb_assertNull(lua.isTable(3), "[UI_VirtualDoc::UI_VDOC_DRAW] BAD command table format.");
 			lua.retValue(3);
 			lua.retNil();
 			while(lua.tableNext()) {
 				lua.retValue(-2);	// index
 
-				klb_assert(lua.isTable(-2), "[UI_VirtualDoc::UI_VDOC_DRAW] BAD command table format.");
+				klb_assertNull(lua.isTable(-2), "[UI_VirtualDoc::UI_VDOC_DRAW] BAD command table format.");
 
 				lua.retValue(-2);	// array
 				lua.retNil();
@@ -488,21 +533,72 @@ CKLBUIVirtualDoc::commandUI(CLuaState& lua, int argc, int cmd)
 						drawImage(x0, y0, image, alpha);
 					}
 					break;
+				case VD_DRAW_TEXTFX:
+					{
+						int x0, y0, fontidx;
+						u32 col, alpha;
+						int effectParam, effectMode, effectExtra;
+						float effectWidth;
+						const char * str;
+						lua.tableNext(); x0          = lua.getInt(-1); lua.pop(1);
+						lua.tableNext(); y0          = lua.getInt(-1); lua.pop(1);
+						lua.tableNext(); str         = lua.getString(-1); lua.pop(1);
+						lua.tableNext(); alpha       = lua.getInt(-1); lua.pop(1);
+						lua.tableNext(); col         = lua.getInt(-1); lua.pop(1);
+						lua.tableNext(); fontidx     = lua.getInt(-1); lua.pop(1);
+						str = CKLBLanguageDatabase::getInstance().getString(str);
+						lua.tableNext(); effectParam = lua.getInt(-1); lua.pop(1);
+						lua.tableNext(); effectMode  = lua.getInt(-1); lua.pop(1);
+						lua.tableNext(); effectExtra = lua.getInt(-1); lua.pop(1);
+						lua.tableNext(); effectWidth = lua.getFloat(-1); lua.pop(1);
+						drawTextFx(x0, y0, str, col, alpha, fontidx,
+								   effectParam, effectMode, effectExtra, effectWidth);
+					}
+					break;
+				case VD_DRAW_TEXT_SPACING:
+					{
+						int x0, y0, fontidx, spacing;
+						u32 col, alpha;
+						const char * str;
+						lua.tableNext(); x0      = lua.getInt(-1); lua.pop(1);
+						lua.tableNext(); y0      = lua.getInt(-1); lua.pop(1);
+						lua.tableNext(); str     = lua.getString(-1); lua.pop(1);
+						lua.tableNext(); alpha   = lua.getInt(-1); lua.pop(1);
+						lua.tableNext(); col     = lua.getInt(-1); lua.pop(1);
+						lua.tableNext(); fontidx = lua.getInt(-1); lua.pop(1);
+						lua.tableNext(); spacing = lua.getInt(-1); lua.pop(1);
+						str = CKLBLanguageDatabase::getInstance().getString(str);
+						drawTextSpacing(x0, y0, str, col|(alpha << 24), fontidx, spacing);
+					}
+					break;
 				}
 				lua.pop(4);
 			}
 			lua.pop(1);
 			m_pDocNode->unlockDocument();
-			m_pDocNode->setViewPortPos(0, 0);
-			forceRefresh();
-			CHANGE_D;
+			REFRESH_C;
 		}
 		break;
 	}
 	return ret;
 }
 
+void CKLBUIVirtualDoc::onResume()
+{
+	if(m_pDocNode) {
+		m_pDocNode->freeFont();
+	}
+}
+
 // VDoc で使用する画像をロードし、使った分だけイメージのハンドルを握っておく
+// Images must be loaded with both GPU and CPU texture data available.
+// The document renderer reads the retained software pixels directly.
+// Each successful load therefore keeps its data-handler handle alive.
+// Handles are owned by the document image list until destroyImages().
+// Allocation failure releases the newly acquired handle immediately.
+// A texture already consumed without software data cannot be used here.
+// Restore the ordinary GPU-only loading policy before returning.
+// The returned image remains borrowed from its retained list entry.
 CKLBImageAsset *
 CKLBUIVirtualDoc::loadImage(const char * image)
 {
@@ -607,7 +703,6 @@ CKLBUIVirtualDoc::touchPadEvent()
 			break;
 
 		case PAD_ITEM::RELEASE:
-		case PAD_ITEM::CANCEL:
 			{
 				if(item->id != m_dragID) break;
 				int mv_x = item->x - m_dragX;

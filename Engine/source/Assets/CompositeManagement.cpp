@@ -29,6 +29,11 @@
 #include "CKLBSplineNode.h"
 #include "CKLBUIGroup.h"
 #include "CKLBLuaLibSOUND.h"
+#include "CKLBUILabel.h"
+#include "CKLBUIScale9Btn.h"
+#include "CKLBDrawTask.h"
+#include "CKLBUIShader.h"
+#include "CKLBRenderBufferTask.h"
 
 // === Scroll Bar Parameters
 #define VAR_MIN						(0)
@@ -55,6 +60,30 @@
 #define DB_VAR_ENABLE				(0)
 #define DB_VAR_CHECKED				(1)
 #define DB_VAL_COLOR				(3)
+
+static const u32 LAYOUT_SIZE_MODES[] = { 1, 1, 2, 2 };
+
+struct SCompositeLayoutRecord {
+	float x;
+	float y;
+	float width;
+	float height;
+	bool isRect;
+
+	void clearCoordinates();
+};
+
+void
+SCompositeLayoutRecord::clearCoordinates()
+{
+	x = y = width = height = 0.0f;
+}
+
+SCompositeLayoutRecord g_layoutRecords[200];
+static SCompositeLayoutRecord s_designRects[20];
+static const char* s_designRectNames[20];
+static CKLBNode* s_designRectNodes[20];
+s32 g_layoutRecordCount = 0;
 
 /*
 {
@@ -89,7 +118,8 @@ enum {
 	ASSET7				= 7,
 	ASSET8				= 8,
 	ASSET9				= 9,
-	____END_ASSET		= 10,
+	DOT_ASSET			= 10,
+	____END_ASSET		= 11,
 
 	DOWNAUDIO_ASSET		= 8,
 	UPAUDIO_ASSET		= 9,
@@ -116,6 +146,19 @@ enum {
 	VARITEM_CLASSID		= 17,
 	GROUP_CLASSID		= 18,
 	TILEDCANVAS_CLASSID	= 19,
+	FORMAT_RECT_CLASSID	= 20,
+	BUTTON_SCALE9_CLASSID	= 21,
+	SHADER_CLASSID		= 22,
+	BUFFER_CLASSID		= 23,
+};
+
+enum {
+	DOCK_NONE	= 0,
+	DOCK_LEFT	= 1,
+	DOCK_RIGHT	= 2,
+	DOCK_TOP	= 3,
+	DOCK_BOTTOM	= 4,
+	DOCK_FILL	= 5,
 };
 
 #include "../../libs/JSonParser/api/yajl_parse.h"
@@ -193,15 +236,18 @@ CKLBInnerDef::CKLBInnerDef()
 ,fontName	(NULL)
 ,color		(0xFFFFFFFF)
 ,fontSize	(15)
+,clipx		(0)
+,clipy		(0)
 ,clipw		(0)
 ,cliph		(0)
-,width		(0)
-,height		(0)
 ,id			(0)
 ,anim		(NULL)
 ,xscale		(1.0f)
 ,yscale		(1.0f)
 ,rotation	(0.0f)
+,shadowBlur	(0.0f)
+,layoutInfo	(0)
+,layoutDir	(0)
 ,value		(0)
 ,priority	(0)
 ,spline		(NULL)
@@ -209,6 +255,9 @@ CKLBInnerDef::CKLBInnerDef()
 ,visible	(true)
 ,volAudioDown	(100)
 ,volAudioUp		(100)
+,shadowDX	(0)
+,shadowDY	(0)
+,anchor		(0)
 {
 	for (u32 n = 0; n < MAX_HANDLER; n++) {
 		handler[n] = NULL;
@@ -222,6 +271,11 @@ CKLBInnerDef::CKLBInnerDef()
 	flag[1] = 0;
 	flag[2] = 1;
 	flag[3] = 1;
+
+	position[LAYOUT_X] = 0.0f;
+	position[LAYOUT_Y] = 0.0f;
+	width = 0.0f;
+	height = 0.0f;
 	
 	dbField[0] = NULL;
 	dbField[1] = NULL;
@@ -265,7 +319,7 @@ CKLBInnerDef::~CKLBInnerDef() {
 // ------------------- Plugin / Loader ------------------
 
 /*virtual*/
-CKLBAbstractAsset*	CKLBCompositeAssetPlugin::loadAsset(u8* stream, u32 streamSize) {
+CKLBAbstractAsset*	CKLBCompositeAssetPlugin::loadAsset(u8* stream, size_t streamSize) {
 	static yajl_callbacks callbacks = {  
 		CKLBCompositeAsset::read_null,  
 		CKLBCompositeAsset::read_boolean,  
@@ -289,7 +343,7 @@ CKLBAbstractAsset*	CKLBCompositeAssetPlugin::loadAsset(u8* stream, u32 streamSiz
 
 	CKLBCompositeAsset* pNewAsset = KLBNEW(CKLBCompositeAsset);
 
-	if (pNewAsset->init()) {
+	if (pNewAsset && pNewAsset->init()) {
 		/* ok.  open file.  let's read and parse */  
 		hand = yajl_alloc(&callbacks, NULL, pNewAsset);  
 		if (hand) {
@@ -313,9 +367,8 @@ CKLBAbstractAsset*	CKLBCompositeAssetPlugin::loadAsset(u8* stream, u32 streamSiz
 			}
 			yajl_free(hand);
 		}
-	} else {
-		KLBDELETE(pNewAsset);
 	}
+	KLBDELETE(pNewAsset);
 
 	return null;
 }
@@ -356,23 +409,119 @@ CKLBCompositeAssetPlugin::~CKLBCompositeAssetPlugin() {
 #define STANDARD_PARSER_MODE	(0)
 #define GENERIC_MODE			(1)
 
+static float s_deviceScale;
+
+float CKLBInnerDef::getLayoutValue(LAYOUT_VALUE value, float parentSize) const {
+	u32 mode = (layoutInfo >> (value * 2)) & 3;
+	float result;
+	switch (value) {
+	case LAYOUT_X:
+	case LAYOUT_Y:
+		result = position[value];
+		break;
+	case LAYOUT_WIDTH:
+		result = (classID == LIST_CLASSID) ? clipw : width;
+		break;
+	case LAYOUT_HEIGHT:
+		result = (classID == LIST_CLASSID) ? cliph : height;
+		break;
+	case LAYOUT_CLIP_X:
+		result = clipx;
+		break;
+	case LAYOUT_CLIP_Y:
+		result = clipy;
+		break;
+	case LAYOUT_CLIP_WIDTH:
+		result = clipw;
+		break;
+	case LAYOUT_CLIP_HEIGHT:
+		result = cliph;
+		break;
+	}
+
+	switch (mode) {
+	case 0:
+		return result;
+	case 1:
+		return result * s_deviceScale;
+	case 2:
+		return (result * parentSize) / 100.0f;
+	default:
+		return 0.0f;
+	}
+}
+
+float CKLBInnerDef::getLayoutValue(LAYOUT_VALUE value) const {
+	u32 mode = (layoutInfo >> (value * 2)) & 3;
+	float result;
+	switch (value) {
+	case LAYOUT_X:
+	case LAYOUT_Y:
+		result = position[value];
+		break;
+	case LAYOUT_WIDTH:
+		result = (classID == LIST_CLASSID) ? clipw : width;
+		break;
+	case LAYOUT_HEIGHT:
+		result = (classID == LIST_CLASSID) ? cliph : height;
+		break;
+	case LAYOUT_CLIP_X:
+		result = clipx;
+		break;
+	case LAYOUT_CLIP_Y:
+		result = clipy;
+		break;
+	case LAYOUT_CLIP_WIDTH:
+		result = clipw;
+		break;
+	case LAYOUT_CLIP_HEIGHT:
+		result = cliph;
+		break;
+	}
+
+	switch (mode) {
+	case 0:
+		return result;
+	case 1:
+		return result * s_deviceScale;
+	case 2:
+		klb_assertAlways("Should never enter here");
+	default:
+		return 0.0f;
+	}
+}
+
 CKLBCompositeAsset::CKLBCompositeAsset()
-:m_allocatedString	(NULL)
+:parserCtx			(NULL)
+,m_allocatedString	(NULL)
+,m_groupID			(0)
+,m_parserField		(0)
+,m_currArraySpline	(NULL)
+,m_pSource			(NULL)
 ,m_pCurrInnerDef	(NULL)
+,m_pCurrAnim		(NULL)
 ,m_pParent			(NULL)
-,m_parent			(0)
 ,m_root				(NULL)
 ,m_rootParent		(NULL)
-,m_recCount			(0)
-,m_bTreeMode		(true)
-,m_groupID			(0)
-,m_pSource			(NULL)
+,m_rectXYWH			(NULL)
+,m_rectName			(NULL)
+,m_recordID			((u64)-1)
+,m_designRectCount	(0)
+,m_basePriority		(0)
+,m_layoutScale		(1.0f)
 ,m_width			(-1)
 ,m_height			(-1)
+,m_formWidth			(1)
+,m_formHeight		(1)
+,m_parent			(0)
+,m_recCount			(0)
 ,mode				(STANDARD_PARSER_MODE)
+,m_bTreeMode		(true)
+,m_bDirectComposite	(false)
 {
 	m_parentStack[0] = NULL;
 	m_bLowRes = CPFInterface::getInstance().client().getPhysicalScreenHeight() < 480;
+	s_deviceScale = CPFInterface::getInstance().platform().getDeviceScale();
 }
 
 CKLBCompositeAsset::~CKLBCompositeAsset() {
@@ -402,6 +551,30 @@ CKLBCompositeAsset::~CKLBCompositeAsset() {
 	// STRINGENTRY*	assets	[MAX_ASSETS];
 }
 
+void CKLBCompositeAsset::replaceAsset(const char* name, CKLBAbstractAsset* asset) {
+	STRINGENTRY* entry = m_allocatedString;
+	while (entry) {
+		CKLBAsset* cachedAsset = entry->assetCache;
+		if (cachedAsset && cachedAsset->getFileSource() && strcmp(cachedAsset->getFileSource(), name) == 0) {
+			if (entry->assetCache->getAssetType() != ASSET_IMAGE) {
+				entry->assetCache->decrementRefCount();
+			} else {
+				((CKLBImageAsset*)entry->assetCache)->getTexture()->decrementRefCount();
+			}
+
+			entry->assetCache = (CKLBAsset*)asset;
+			if (entry->assetCache) {
+				if (entry->assetCache->getAssetType() != ASSET_IMAGE) {
+					entry->assetCache->incrementRefCount();
+				} else {
+					((CKLBImageAsset*)entry->assetCache)->getTexture()->incrementRefCount();
+				}
+			}
+		}
+		entry = entry->next;
+	}
+}
+
 bool CKLBCompositeAsset::init() {
 	m_rootParent = KLBNEW(CKLBNode);
 	return (m_rootParent != NULL);
@@ -417,6 +590,26 @@ CKLBCompositeAsset::STRINGENTRY::STRINGENTRY()
 CKLBCompositeAsset::STRINGENTRY::~STRINGENTRY() {
 	if (string)	{ KLBFREE(string); string = NULL; }
 
+	if (assetCache) {
+		if (assetCache->getAssetType() != ASSET_IMAGE) {
+			assetCache->decrementRefCount();
+		} else {
+			((CKLBImageAsset*)assetCache)->getTexture()->decrementRefCount();
+		}
+	}
+}
+
+void CKLBCompositeAsset::STRINGENTRY::incrementRefCount() {
+	if (assetCache) {
+		if (assetCache->getAssetType() != ASSET_IMAGE) {
+			assetCache->incrementRefCount();
+		} else {
+			((CKLBImageAsset*)assetCache)->getTexture()->incrementRefCount();
+		}
+	}
+}
+
+void CKLBCompositeAsset::STRINGENTRY::decrementRefCount() {
 	if (assetCache) {
 		if (assetCache->getAssetType() != ASSET_IMAGE) {
 			assetCache->decrementRefCount();
@@ -458,25 +651,31 @@ CKLBCompositeAsset::STRINGENTRY* CKLBCompositeAsset::registerString(const char* 
 	return NULL;
 }
 
-char*	CKLBCompositeAsset::allocateString(const unsigned char* string, u32 strLen, bool* err) {
-	*err = false;
-	if (strLen && string) {
-		STRINGENTRY* pNew = KLBNEW(STRINGENTRY);
-		char* pNewStr = (char*)KLBMALLOC(strLen+1);
-
-		if (pNew && pNewStr) {
-			pNew->next = m_allocatedString;
-			m_allocatedString = pNew;
-			pNew->string = pNewStr;
-			memcpy(pNewStr, string, strLen);
-			pNewStr[strLen] = 0; // C String close.
-			return pNewStr;
-		}
-		
-		*err = true;
-		if (pNew) { KLBDELETE(pNew); }
+s32 CKLBCompositeAsset::readLayoutInt(s32 value, u32 layoutShift) {
+	s32 layoutMode = ((static_cast<u32>(value) >> 24) & 0xF) - 1;
+	u32 layoutMask = 0;
+	if (static_cast<u32>(layoutMode) < 4) {
+		layoutMask = LAYOUT_SIZE_MODES[layoutMode];
 	}
-	return NULL;
+	m_pCurrInnerDef->layoutInfo |= layoutMask << layoutShift;
+	return (value << 8) >> 8;
+}
+
+void CKLBCompositeAsset::appendInnerDef(CKLBInnerDef* definition) {
+	if (!m_pParent) {
+		m_root = definition;
+	} else if (m_pParent->sub) {
+		if (m_pCurrInnerDef) {
+			m_pCurrInnerDef->next = definition;
+		} else {
+			definition->next = m_pParent->sub;
+			m_pParent->sub = definition;
+		}
+	} else {
+		definition->next = m_pParent->sub;
+		m_pParent->sub = definition;
+	}
+	m_pCurrInnerDef = definition;
 }
 
 int CKLBCompositeAsset::readNull() {
@@ -526,10 +725,10 @@ int CKLBCompositeAsset::readInt(long long integerVal)
 		m_pCurrInnerDef->priority = (u32)integerVal;	
 		break;
 	case X_FIELD:
-		m_pCurrInnerDef->x = (float)(m_bLowRes ? ((integerVal>>1)<<1) : integerVal);
+		m_pCurrInnerDef->position[CKLBInnerDef::LAYOUT_X] = (float)(m_bLowRes ? ((integerVal>>1)<<1) : integerVal);
 		break;
 	case Y_FIELD:	
-		m_pCurrInnerDef->y = (float)(m_bLowRes ? ((integerVal>>1)<<1) : integerVal);
+		m_pCurrInnerDef->position[CKLBInnerDef::LAYOUT_Y] = (float)(m_bLowRes ? ((integerVal>>1)<<1) : integerVal);
 		break;
 	case SX_FIELD:	
 		m_pCurrInnerDef->sx = (s16)integerVal;
@@ -543,8 +742,8 @@ int CKLBCompositeAsset::readInt(long long integerVal)
 	case SH_FIELD:	
 		m_pCurrInnerDef->sh = (s16)integerVal;
 		break;
-	case LAYOUT_INFO_FIELD:	
-		m_pCurrInnerDef->layoutInfo = (u32)integerVal;
+	case LAYOUT_DIR_FIELD:	
+		m_pCurrInnerDef->layoutDir = (s32)integerVal;
 		break;
 	case LW_FIELD:
 		m_pCurrInnerDef->lw = (s16)integerVal;
@@ -560,14 +759,30 @@ int CKLBCompositeAsset::readInt(long long integerVal)
 		break;
 	case WIDTH_FIELD:
 		if (m_root != m_pCurrInnerDef) {
-			m_pCurrInnerDef->width	= (s16)integerVal;
+			s32 layoutMode = ((((u32)integerVal) >> 24) & 0xF) - 1;
+			u32 layoutMask = 0;
+			if ((u32)layoutMode < 4) {
+				layoutMask = LAYOUT_SIZE_MODES[layoutMode] << 4;
+			}
+			m_pCurrInnerDef->layoutInfo |= layoutMask;
+			s32 width = (s32)integerVal;
+			width = (width << 8) >> 8;
+			m_pCurrInnerDef->width = (float)width;
 		} else {
 			m_width = (s16)integerVal;
 		}
 		break;
 	case HEIGHT_FIELD:
 		if (m_root != m_pCurrInnerDef) {
-			m_pCurrInnerDef->height	= (s16)integerVal;
+			s32 layoutMode = ((((u32)integerVal) >> 24) & 0xF) - 1;
+			u32 layoutMask = 0;
+			if ((u32)layoutMode < 4) {
+				layoutMask = LAYOUT_SIZE_MODES[layoutMode] << 6;
+			}
+			m_pCurrInnerDef->layoutInfo |= layoutMask;
+			s32 height = (s32)integerVal;
+			height = (height << 8) >> 8;
+			m_pCurrInnerDef->height = (float)height;
 		} else {
 			m_height = (s16)integerVal;
 		}
@@ -699,6 +914,7 @@ int CKLBCompositeAsset::readInt(long long integerVal)
 		m_pCurrInnerDef->flag[2]			= (u8)integerVal;
 		break;
 	case ANIMATE_FIELD:
+	case FIT_FIELD:
 		m_pCurrInnerDef->flag[1]			= (u8)integerVal;
 		break;
 	case COUNTCLIP_FIELD:
@@ -781,6 +997,10 @@ int CKLBCompositeAsset::readInt(long long integerVal)
 		}
 		break;
 	case SPLINE_ARRAY:
+		if (!m_pCurrInnerDef->spline || !m_currArraySpline ||
+			m_currArraySpline >= (m_pCurrInnerDef->spline + (m_pCurrInnerDef->splineVectorSize * m_pCurrInnerDef->splineCount))) {
+			return 0;
+		}
 		*m_currArraySpline++		= (float)integerVal;
 		break;
 	case GENERIC_FIELD:
@@ -800,6 +1020,40 @@ int CKLBCompositeAsset::readInt(long long integerVal)
 		break;
 	case VOL_AUDIO_DOWN:
 		m_pCurrInnerDef->volAudioDown		= (u8)integerVal;
+		m_pCurrInnerDef->shadowDX			= (u8)integerVal;
+		break;
+	case DOCK_FIELD:
+		m_pCurrInnerDef->flag[2]			= (u8)integerVal;
+		break;
+	case ANCHOR_FIELD:
+	case ANCHOR_X_FIELD:
+	case ANCHOR_Y_FIELD:
+		m_pCurrInnerDef->anchor |= (u8)integerVal;
+		break;
+	case MARGIN_DOWN_FIELD:
+		m_pCurrInnerDef->cliph = (s16)integerVal;
+		break;
+	case MARGIN_UP_FIELD:
+		m_pCurrInnerDef->clipy = (s16)integerVal;
+		break;
+	case MARGIN_LEFT_FIELD:
+		m_pCurrInnerDef->clipx = (s16)integerVal;
+		break;
+	case MARGIN_RIGHT_FIELD:
+		m_pCurrInnerDef->clipw = (s16)integerVal;
+		break;
+	case SHADOW_DX_FIELD:
+		m_pCurrInnerDef->shadowDX			= (u8)integerVal;
+		break;
+	case SHADOW_DY_FIELD:
+		m_pCurrInnerDef->shadowDY = (u8)integerVal;
+		break;
+	case SHADOW_COLOR_FIELD:
+		m_pCurrInnerDef->shadowColor = (u32)integerVal;
+		break;
+	case SHADOW_BLUR_FIELD:
+		m_pCurrInnerDef->shadowBlur = (float)integerVal;
+		break;
 	}
     return 1;
 }  
@@ -849,10 +1103,17 @@ int CKLBCompositeAsset::readDouble(double doubleVal)
 		m_pCurrInnerDef->rotation	= (float)doubleVal;		// reuse field
 		break;
 	case SPLINE_ARRAY:
+		if (!m_pCurrInnerDef->spline || !m_currArraySpline ||
+			m_currArraySpline >= (m_pCurrInnerDef->spline + (m_pCurrInnerDef->splineVectorSize * m_pCurrInnerDef->splineCount))) {
+			return 0;
+		}
 		*m_currArraySpline++		= (float)doubleVal;
 		break;
 	case GENERIC_FIELD:
 		m_pCurrInnerDef->propertyBag->setPropertyFloat(tmpBuff, (float)doubleVal);
+		break;
+	case SHADOW_BLUR_FIELD:
+		m_pCurrInnerDef->shadowBlur = (float)doubleVal;
 		break;
 	}
 	return 1;  
@@ -865,6 +1126,9 @@ int CKLBCompositeAsset::readString(const unsigned char * stringVal, size_t strin
 	case CLASS_FIELD:
 		if (strncmp("button", (const char*)stringVal,(sizeof("button")-1))==0) {
 			m_pCurrInnerDef->classID = BUTTON_CLASSID;
+		} else
+		if (strncmp("btnscale9", (const char*)stringVal,(sizeof("btnscale9")-1))==0) {
+			m_pCurrInnerDef->classID = BUTTON_SCALE9_CLASSID;
 		} else
 		if (strncmp("checkbox", (const char*)stringVal,(sizeof("checkbox")-1))==0) {
 			m_pCurrInnerDef->classID = CHECK_CLASSID;
@@ -919,6 +1183,15 @@ int CKLBCompositeAsset::readString(const unsigned char * stringVal, size_t strin
 		} else
 		if (strncmp("task_tiledcanvas", (const char*)stringVal, (sizeof("task_tiledcanvas")-1)) == 0) {
 			m_pCurrInnerDef->classID = TILEDCANVAS_CLASSID; 
+		} else
+		if (strncmp("format_rect", (const char*)stringVal, (sizeof("format_rect")-1)) == 0) {
+			m_pCurrInnerDef->classID = FORMAT_RECT_CLASSID;
+		} else
+		if (strncmp("task_shader", (const char*)stringVal, (sizeof("task_shader")-1)) == 0) {
+			m_pCurrInnerDef->classID = SHADER_CLASSID;
+		} else
+		if (strncmp("task_buffer", (const char*)stringVal, (sizeof("task_buffer")-1)) == 0) {
+			m_pCurrInnerDef->classID = BUFFER_CLASSID;
 		}
 			
 		break;
@@ -949,6 +1222,7 @@ int CKLBCompositeAsset::readString(const unsigned char * stringVal, size_t strin
 	case ASSET_7:
 	case ASSET_8:
 	case ASSET_9:
+	case ASSET_DOT:
 		m_pCurrInnerDef->assets[m_parserField - ASSET_FIELD] = this->registerString((const char*)stringVal, stringLen, &err);
 		break;
 	case NAME_FIELD:
@@ -999,7 +1273,7 @@ int CKLBCompositeAsset::readString(const unsigned char * stringVal, size_t strin
 		m_pCurrInnerDef->dbField[DB_VAR_CHECKED]		= this->registerString((const char*)stringVal, stringLen, &err);
 		break;
 	case GENERIC_FIELD:
-		u32 prevBuffLen = strlen(tmpBuff) + 2;
+		size_t prevBuffLen = strlen(tmpBuff) + 2;
 		memcpy(&tmpBuff[prevBuffLen], stringVal, stringLen);
 		tmpBuff[prevBuffLen + stringLen] = 0; // Close C String.
 		m_pCurrInnerDef->propertyBag->setPropertyString(tmpBuff, &tmpBuff[prevBuffLen]);
@@ -1047,6 +1321,7 @@ static const key_name_value keywords2[] = {
 
 static const key_name_value keywords3[] = {
 	// Size 3
+	{"fit",(sizeof("fit")-1),CKLBCompositeAsset::FIT_FIELD},
 	{"sub",(sizeof("sub")-1),CKLBCompositeAsset::SUB_FIELD},
 	{"tox",(sizeof("tox")-1),CKLBCompositeAsset::ANIM_TOX},
 	{"toy",(sizeof("toy")-1),CKLBCompositeAsset::ANIM_TOY},
@@ -1059,6 +1334,7 @@ static const key_name_value keywords3[] = {
 
 static const key_name_value keywords4[] = {
 	// Size 4
+	{"dock",(sizeof("dock")-1),CKLBCompositeAsset::DOCK_FIELD},
 	{"loop",(sizeof("loop")-1),CKLBCompositeAsset::ANIM_LOOP},
 	{"name",(sizeof("name")-1),CKLBCompositeAsset::NAME_FIELD},
 	{"text",(sizeof("text")-1),CKLBCompositeAsset::TEXT_FIELD},
@@ -1094,6 +1370,7 @@ static const key_name_value keywords5[] = {
 
 static const key_name_value keywords6[] = {
 	// Size 6
+	{"anchor",(sizeof("anchor")-1),CKLBCompositeAsset::ANCHOR_FIELD},
 	{"asset0",(sizeof("asset0")-1),CKLBCompositeAsset::ASSET_FIELD + 0},
 	{"asset1",(sizeof("asset1")-1),CKLBCompositeAsset::ASSET_FIELD + 1},
 	{"asset2",(sizeof("asset2")-1),CKLBCompositeAsset::ASSET_FIELD + 2},
@@ -1108,7 +1385,7 @@ static const key_name_value keywords6[] = {
 	{"enable",(sizeof("enable")-1),CKLBCompositeAsset::ENABLE_FIELD},
 	{"height",(sizeof("height")-1),CKLBCompositeAsset::HEIGHT_FIELD},
 /* ???? */
-	{"layout",(sizeof("layout")-1),CKLBCompositeAsset::LAYOUT_INFO_FIELD},
+	{"layout",(sizeof("layout")-1),CKLBCompositeAsset::LAYOUT_DIR_FIELD},
 	{"length",(sizeof("length")-1),CKLBCompositeAsset::ANIM_LENGTH},
 	{"select",(sizeof("select")-1),CKLBCompositeAsset::ASSET_PUSH_FIELD},
 	{"states",(sizeof("states")-1),CKLBCompositeAsset::STATES_FIELD},
@@ -1126,11 +1403,14 @@ static const key_name_value keywords7[] = {
 	// KEEP LIST IN ORDER !!! UPDATE USING EXCEL, NOT MANUALLY !!!!
 	// Update using EXCEL 
 	//
+	{"anchorX",(sizeof("anchorX")-1),CKLBCompositeAsset::ANCHOR_X_FIELD},
+	{"anchorY",(sizeof("anchorY")-1),CKLBCompositeAsset::ANCHOR_Y_FIELD},
 	{"animate",(sizeof("animate")-1),CKLBCompositeAsset::ANIMATE_FIELD},
 	{"centerx",(sizeof("centerx")-1),CKLBCompositeAsset::CENTERX_FIELD},
 	{"centery",(sizeof("centery")-1),CKLBCompositeAsset::CENTERY_FIELD},
 	{"checked",(sizeof("checked")-1),CKLBCompositeAsset::FLAG_0_FIELD},
 	{"clipend",(sizeof("clipend")-1),CKLBCompositeAsset::CLIPEND},
+	{"comment",(sizeof("comment")-1),CKLBCompositeAsset::COMMENT_FIELD},
 	{"default",(sizeof("default")-1),CKLBCompositeAsset::ASSET_FIELD},
 	{"disable",(sizeof("disable")-1),CKLBCompositeAsset::ASSET_DISABLED_FIELD},
 	{"onclick",(sizeof("onclick")-1),CKLBCompositeAsset::ON_CLICK},
@@ -1154,6 +1434,7 @@ static const key_name_value keywordsOther[] = {
 	{"allownavigation",(sizeof("allownavigation")-1),CKLBCompositeAsset::FLAG_0_FIELD},
 	{"animtime",(sizeof("animtime")-1),CKLBCompositeAsset::ANIM_TIME_FIELD},
 	{"arrownavigation",(sizeof("arrownavigation")-1),CKLBCompositeAsset::FLAG_0_FIELD},
+	{"assetdot",(sizeof("assetdot")-1),CKLBCompositeAsset::ASSET_DOT},
 	{"baseinvisible",(sizeof("baseinvisible")-1),CKLBCompositeAsset::BASEINVISIBLE_FIELD},
 	{"callback",(sizeof("callback")-1),CKLBCompositeAsset::CALLBACK_FIELD},
 	{"chartype",(sizeof("chartype")-1),CKLBCompositeAsset::CHARTYPE},
@@ -1174,6 +1455,10 @@ static const key_name_value keywordsOther[] = {
 	{"fromscale",(sizeof("fromscale")-1),CKLBCompositeAsset::ANIM_FROMSCALE},
 	{"fromscalex",(sizeof("fromscalex")-1),CKLBCompositeAsset::ANIM_FROMSCALE_X},
 	{"fromscaley",(sizeof("fromscaley")-1),CKLBCompositeAsset::ANIM_FROMSCALE_Y},
+	{"margindown",(sizeof("margindown")-1),CKLBCompositeAsset::MARGIN_DOWN_FIELD},
+	{"marginleft",(sizeof("marginleft")-1),CKLBCompositeAsset::MARGIN_LEFT_FIELD},
+	{"marginright",(sizeof("marginright")-1),CKLBCompositeAsset::MARGIN_RIGHT_FIELD},
+	{"marginup",(sizeof("marginup")-1),CKLBCompositeAsset::MARGIN_UP_FIELD},
 	{"maxcommandcount",(sizeof("maxcommandcount")-1),CKLBCompositeAsset::INT_2_FIELD},
 	{"maxindex",(sizeof("maxindex")-1),CKLBCompositeAsset::MAXINDEX},
 	{"maxlength",(sizeof("maxlength")-1),CKLBCompositeAsset::MAXLENGTH},
@@ -1191,6 +1476,10 @@ static const key_name_value keywordsOther[] = {
 	{"rotation",(sizeof("rotation")-1),CKLBCompositeAsset::ROTATION_FIELD},
 	{"scrollbar",(sizeof("scrollbar")-1),CKLBCompositeAsset::GENERIC_FIELD},
 	{"selectcolor",(sizeof("selectcolor")-1),CKLBCompositeAsset::SELECTCOLOR},
+	{"shadowblur",(sizeof("shadowblur")-1),CKLBCompositeAsset::SHADOW_BLUR_FIELD},
+	{"shadowcolor",(sizeof("shadowcolor")-1),CKLBCompositeAsset::SHADOW_COLOR_FIELD},
+	{"shadowdx",(sizeof("shadowdx")-1),CKLBCompositeAsset::SHADOW_DX_FIELD},
+	{"shadowdy",(sizeof("shadowdy")-1),CKLBCompositeAsset::SHADOW_DY_FIELD},
 	{"slidersize",(sizeof("slidersize")-1),CKLBCompositeAsset::SLIDERSIZE},
 	{"sounddown",(sizeof("sounddown")-1),CKLBCompositeAsset::SOUNDDOWN_FIELD},
 	{"sounddownvolume",(sizeof("sounddownvolume")-1),CKLBCompositeAsset::VOL_AUDIO_DOWN},
@@ -1270,10 +1559,12 @@ int CKLBCompositeAsset::readMapKey(const unsigned char * stringVal, size_t strin
 {
 	if (mode == GENERIC_MODE) {
 		m_parserField	= GENERIC_FIELD;
-		klb_assert(stringLen < TMP_COMPOSITE_ASSET_STR_BUFFSIZE, "Map Key name is too long");
-		memcpy(tmpBuff, stringVal, stringLen);
-		tmpBuff[stringLen] = 0;// Close C string.
-		return 1;
+		if (stringLen <= TMP_COMPOSITE_ASSET_STR_MAXLEN) {
+			memcpy(tmpBuff, stringVal, stringLen);
+			tmpBuff[stringLen] = 0;// Close C string.
+			return 1;
+		}
+		klb_assertAlways("Map Key name is too long");
 	}
 
 	//
@@ -1314,6 +1605,31 @@ int CKLBCompositeAsset::readMapKey(const unsigned char * stringVal, size_t strin
 int CKLBCompositeAsset::readStartMap(unsigned int /*size*/) {
 	if (m_bTreeMode) {
 		if (m_parserField == GENERIC_FIELD) {
+			// A property map can be the first map in a definition. In that case,
+			// create the definition before attaching the property bag to it.
+			if (!m_pCurrInnerDef) {
+				CKLBInnerDef* pNext = KLBNEW(CKLBInnerDef);
+				if (pNext) {
+					if (!m_pParent) {
+						m_root = pNext;
+					} else if (m_pParent->sub) {
+						if (m_pCurrInnerDef) {
+							m_pCurrInnerDef->next = pNext;
+						} else {
+							pNext->next = m_pParent->sub;
+							m_pParent->sub = pNext;
+						}
+					} else {
+						pNext->next = m_pParent->sub;
+						m_pParent->sub = pNext;
+					}
+					m_pCurrInnerDef = pNext;
+				}
+			}
+			if (!m_pCurrInnerDef) {
+				return 0;
+			}
+
 			m_pCurrInnerDef->propertyBag = CKLBPropertyBag::getPropertyBag();
 			if (m_pCurrInnerDef->propertyBag) {
 				mode = GENERIC_MODE;
@@ -1322,25 +1638,34 @@ int CKLBCompositeAsset::readStartMap(unsigned int /*size*/) {
 			}
 		} else {
 			CKLBInnerDef* pNext = KLBNEW(CKLBInnerDef);
+			if (!pNext) {
+				return 0;
+			}
+
 			if (!m_pParent) {
 				// root
 				m_root = pNext;
-			} else {
-				if (m_pParent->sub) {
-					// Add at the end of list.
+			} else if (m_pParent->sub) {
+				if (m_pCurrInnerDef) {
+					// Add at the end of the current child list.
 					m_pCurrInnerDef->next = pNext;
 				} else {
-					pNext->next		= m_pParent->sub; 
-					m_pParent->sub	= pNext;
+					pNext->next = m_pParent->sub;
+					m_pParent->sub = pNext;
 				}
+			} else {
+				pNext->next		= m_pParent->sub;
+				m_pParent->sub	= pNext;
 			}
 
 			m_pCurrInnerDef = pNext;
 		}
 	} else {
 		CKLBAnimInfo* pNext = KLBNEW(CKLBAnimInfo);
-		pNext->m_next = m_pCurrInnerDef->anim;
-		m_pCurrInnerDef->anim = pNext;
+		if (m_pCurrInnerDef) {
+			pNext->m_next = m_pCurrInnerDef->anim;
+			m_pCurrInnerDef->anim = pNext;
+		}
 		m_pCurrAnim = pNext;
 	}
 	return 1;
@@ -1367,9 +1692,12 @@ int CKLBCompositeAsset::readStartArray(unsigned int /*size*/)
 				return 0;
 			}
 		} else {
-			klb_assert(m_parent < MAX_STACK_DEPTH, "Reached Maximum Stack Depth for UI Form (%i)", MAX_STACK_DEPTH);
-			m_pParent					= m_pCurrInnerDef;
-			m_parentStack[++m_parent]	= m_pCurrInnerDef;
+			if (m_parent <= (MAX_STACK_DEPTH - 1)) {
+				m_pParent					= m_pCurrInnerDef;
+				m_parentStack[++m_parent]	= m_pCurrInnerDef;
+			} else {
+				klb_assertAlways("Reached Maximum Stack Depth for UI Form (%i)", MAX_STACK_DEPTH);
+			}
 		}
 	} else {
 		// Do nothing
@@ -1390,7 +1718,7 @@ int CKLBCompositeAsset::readEndArray()  {
 			m_bTreeMode = true;
 		}
 	} else {
-		if (m_parserField != SPLINE_ARRAY) {
+		if (m_parserField != SPLINE_ARRAY && m_parent) {
 			m_pCurrInnerDef = m_parentStack[m_parent--];
 			m_pParent	= m_parentStack[m_parent];
 		}
@@ -1406,6 +1734,22 @@ CKLBNode* CKLBCompositeAsset::createSubTree(u32 /*priorityBase*/) {
 
 
 CKLBNode* CKLBCompositeAsset::createSubTree(CKLBUITask* pParentTask,u32 priorityBase) {
+	m_rectXYWH = s_designRects;
+	m_rectName = s_designRectNames;
+	m_rectNode = s_designRectNodes;
+	m_designRectCount = 0;
+
+	for (s32 i = 0; i < g_layoutRecordCount; i++) {
+		g_layoutRecords[i].clearCoordinates();
+	}
+	g_layoutRecordCount = 0;
+
+	m_slotBase = 1;
+	m_slotCurrent = 0;
+	g_layoutRecords[0].isRect = true;
+	g_layoutRecords[0].width = static_cast<float>((m_formWidth != -1) ? m_formWidth : m_width);
+	g_layoutRecords[0].height = static_cast<float>((m_formHeight != -1) ? m_formHeight : m_height);
+
 	// Node have priority set into data stream.
 	if ((m_recCount == 0) && m_rootParent && m_root && createSubTreeRecursive(m_groupID, pParentTask, m_rootParent, m_root, priorityBase)) {
 		m_recCount = 0;
@@ -1613,18 +1957,26 @@ const char* CKLBCompositeAsset::addAssetPrefix(const char* prefixLessAsset) {
 	const char* assetPreFix = "asset://"; // 8 char 
 	memcpy(ptrBuff,assetPreFix,8);
 	ptrBuff += 8;
-	int len = strlen(prefixLessAsset) + 1; // include 0.
+	size_t len = strlen(prefixLessAsset) + 1; // include 0.
 	memcpy(ptrBuff,prefixLessAsset, len);
 	ptrBuff += len;
 
-	klb_assert((ptrBuff <= &tmpBuff[TMP_COMPOSITE_ASSET_STR_BUFFSIZE]), "Temp composite string buffer overflow");
+	klb_assertNull((ptrBuff <= &tmpBuff[TMP_COMPOSITE_ASSET_STR_BUFFSIZE]), "Temp composite string buffer overflow");
 	return d;
 }
 
 const char* CKLBCompositeAsset::formatI(s32 i) {
 	const char* pRes = ptrBuff;
 	sprintf(ptrBuff,"%i",i);
-	int len = strlen(ptrBuff);
+	size_t len = strlen(ptrBuff);
+	ptrBuff += len + 1;
+	return pRes;
+}
+
+const char* CKLBCompositeAsset::formatLL(s64 i) {
+	const char* pRes = ptrBuff;
+	sprintf(ptrBuff, "%lld", i);
+	size_t len = strlen(ptrBuff);
 	ptrBuff += len + 1;
 	return pRes;
 }
@@ -1640,7 +1992,7 @@ const char* CKLBCompositeAsset::formatB(bool b) {
 const char* CKLBCompositeAsset::formatF(float f) {
 	const char* pRes = ptrBuff;
 	sprintf(ptrBuff,"%f",f);
-	int len = strlen(ptrBuff);
+	size_t len = strlen(ptrBuff);
 	ptrBuff += len + 1;
 	return pRes;
 }
@@ -1654,93 +2006,145 @@ const char* CKLBCompositeAsset::addString(const char* source, u32 len) {
 }
 
 s32 CKLBCompositeAsset::filterDBInt(CKLBCompositeAsset::STRINGENTRY* input, s32 original) {
-	if (input && ((*(input->string)) == '$')) {
-		int idx = m_pSource->getFieldIndex(&input->string[1]);
-		if (idx >= 0) {
-			switch (m_pSource->getFieldType(idx)) {
-			case IDataSource::TYPE_INT:
-				return m_pSource->getAsInt(m_record, idx);
-			default:
-				klb_assertAlways("Invalid Record Field Type.");
-			}
-		} else {
-			klb_assertAlways("DB Field Name %s not found.", input);
+	s32 result = original;
+	if (input) {
+		char prefix = input->string[0];
+		if (prefix == '@') {
+			return CKLBLuaEnv::getInstance().getGlobalInt(input->string + 1);
 		}
-	} else {
-		return original;
+		if (prefix == '$') {
+			s32 index = m_pSource->getFieldIndex(input->string + 1);
+			if (index < 0) {
+				klb_assertAlways("DB Field Name %s not found.", input);
+			} else if (m_pSource->getFieldType(index) != IDataSource::TYPE_INT) {
+				klb_assertAlways("Invalid Record Field Type.");
+			} else {
+				result = m_pSource->getAsInt(index);
+			}
+		}
 	}
+	return result;
+}
 
-	return 0;
+void
+CKLBCompositeAsset::getDesignRect(u32 index, const char*& name, CKLBNode*& node,
+	float& x, float& y, float& width, float& height) const
+{
+	name   = s_designRectNames[index];
+	node   = s_designRectNodes[index];
+	x      = s_designRects[index].x;
+	y      = s_designRects[index].y;
+	width  = s_designRects[index].width;
+	height = s_designRects[index].height;
+}
+
+void
+CKLBCompositeAsset::setFormSize(u32 width, u32 height)
+{
+	m_formWidth  = width;
+	m_formHeight = height;
+}
+
+u32
+CKLBCompositeAsset::getDesignRectCount() const
+{
+	return m_designRectCount;
 }
 
 float CKLBCompositeAsset::filterDBFloat(CKLBCompositeAsset::STRINGENTRY* input, float original) {
-	if (input && ((*(input->string)) == '$')) {
-		int idx = m_pSource->getFieldIndex(&input->string[1]);
-		if (idx >= 0) {
-			switch (m_pSource->getFieldType(idx)) {
-			case IDataSource::TYPE_FLOAT:
-				return m_pSource->getAsFloat(m_record, idx);
-			default:
-				klb_assertAlways("Invalid Record Field Type.");
-			}
-		} else {
-			klb_assertAlways("DB Field Name %s not found.", input);
+	float result = original;
+	if (input) {
+		char prefix = input->string[0];
+		if (prefix == '@') {
+			return CKLBLuaEnv::getInstance().getGlobalFloat(input->string + 1);
 		}
-	} else {
-		return original;
+		if (prefix == '$') {
+			s32 index = m_pSource->getFieldIndex(input->string + 1);
+			if (index < 0) {
+				klb_assertAlways("DB Field Name %s not found.", input);
+			} else if (m_pSource->getFieldType(index) != IDataSource::TYPE_FLOAT) {
+				klb_assertAlways("Invalid Record Field Type.");
+			} else {
+				result = m_pSource->getAsFloat(index);
+			}
+		}
 	}
-	return 0.0f;
+	return result;
 }
 
 const char* CKLBCompositeAsset::filterDB(const char* input, bool* filtered) {
-	if (input && m_pSource && (input[0] == '$')) {
+	if (!input) {
+		return NULL;
+	}
+	if (m_pSource && (input[0] == '$')) {
 		if (filtered) {
 			*filtered = true;
 		}
 		input++;
-		int idx = m_pSource->getFieldIndex(input);
-		if (idx >= 0) {
-			switch (m_pSource->getFieldType(idx)) {
-			case IDataSource::TYPE_INT:
-				return formatI(m_pSource->getAsInt(m_record, idx));
-			case IDataSource::TYPE_BOOL:
-				return formatB(m_pSource->getAsBool(m_record, idx));
-			case IDataSource::TYPE_FLOAT:
-				return formatF(m_pSource->getAsBool(m_record, idx));
-			case IDataSource::TYPE_STR:
-				{
-					u32 len;
-					const char* pStr = m_pSource->getAsString(m_record, idx, len);
-					return addString(pStr, len);
-				}
-			case IDataSource::TYPE_NIL:
-			case IDataSource::TYPE_BLOB:
-				return NULL;
-			default:
-				klb_assertAlways("Invalid Record Field Type.");
+		s32 index = m_pSource->getFieldIndex(input);
+		switch (m_pSource->getFieldType(index)) {
+		case IDataSource::TYPE_INT:
+			{
+				s64 value = m_pSource->getAsInt(index);
+				const char* result = ptrBuff;
+				sprintf(ptrBuff, "%lld", value);
+				ptrBuff += strlen(ptrBuff) + 1;
+				return result;
 			}
-		} else {
-			// Use $ string to show failure.
-			input--;
+		case IDataSource::TYPE_STR:
+			{
+				u32 length;
+				const char* source = m_pSource->getAsString(index, length);
+				return addString(source, length);
+			}
+		case IDataSource::TYPE_BOOL:
+			return formatB(m_pSource->getAsBool(index));
+		case IDataSource::TYPE_FLOAT:
+			return formatF(static_cast<float>(m_pSource->getAsBool(index)));
+		case IDataSource::TYPE_NIL:
+		case IDataSource::TYPE_BLOB:
+			return NULL;
+		default:
+			klb_assertAlways("Invalid Record Field Type.");
 		}
+	}
+	if (input[0] == '@') {
+		return CKLBLuaEnv::getInstance().getGlobalString(input + 1);
 	}
 
 	return input;
 }
 
 
-void CKLBCompositeAsset::setRecord(IDataSource* pSource, IDataRecord pRecord) {
-	m_record	= pRecord;
+void CKLBCompositeAsset::setRecord(BaseRealDataProducer* pSource) {
 	m_pSource	= pSource;
 }
 
 void CKLBCompositeAsset::setupTask(CKLBInnerDef* templateDef, CKLBUITask* tsk) {
 	if (tsk) {
 		tsk->setVisible(templateDef->visible);
+		tsk->setRecordID(m_recordID);
 		if (templateDef->name) {
 			tsk->getNode()->setName(templateDef->name->string);
 		}
 	}
+}
+
+bool CKLBCompositeAsset::createTaskNode(CKLBInnerDef* /*templateDef*/, CKLBNode* parent,
+	CKLBUITask* task, CKLBNode*& node)
+{
+	CKLBNode* taskNode = NULL;
+	if (task) {
+		taskNode = KLBNEW(CKLBNode);
+		if (taskNode) {
+			taskNode->setUITask(task);
+			parent->addNode(taskNode, 0);
+		} else {
+			task->kill();
+		}
+	}
+	node = taskNode;
+	return taskNode != NULL;
 }
 
 void CKLBCompositeAsset::setupNode(CKLBInnerDef* templateDef, CKLBNode* node) {
@@ -1769,8 +2173,11 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 			if (pAsset[n] == NULL) {
 				if ((n < DOWNAUDIO_ASSET) || (templateDef->classID == SCORE_CLASSID)) {
 					const char* name = filterDB(templateDef->assets[n]->string,&filtered);
-					u16 assetID = pAssetMgr.getAssetIDFromName(name,0);
-					CKLBAbstractAsset* lAsset = pAssetMgr.getAsset(assetID);
+					CKLBAbstractAsset* lAsset = NULL;
+					u16 assetID = pAssetMgr.getAssetIDFromName(name, 0, 0, &lAsset);
+					if (!lAsset) {
+						lAsset = pAssetMgr.getAsset(assetID);
+					}
 					if (lAsset && (lAsset->getAssetType() == ASSET_TEXTURE)) {
 						// Extract Image from texture.
 						if (!filtered) {
@@ -1808,12 +2215,305 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 	}
 
 	u32 newPrio = priorityOffset + templateDef->priority;
+	resetTmpBuff();
+
+	SCompositeLayoutRecord& layout = g_layoutRecords[m_slotCurrent];
+	if (templateDef->classID == FORMAT_RECT_CLASSID) {
+		const float marginLeft   = templateDef->getLayoutValue(CKLBInnerDef::LAYOUT_CLIP_X, layout.width);
+		const float marginTop    = templateDef->getLayoutValue(CKLBInnerDef::LAYOUT_CLIP_Y, layout.height);
+		const float marginRight  = templateDef->getLayoutValue(CKLBInnerDef::LAYOUT_CLIP_WIDTH, layout.width);
+		const float marginBottom = templateDef->getLayoutValue(CKLBInnerDef::LAYOUT_CLIP_HEIGHT, layout.height);
+
+		layout.width  -= marginLeft + marginRight;
+		layout.x      += marginLeft;
+		layout.height -= marginTop + marginBottom;
+		layout.y      += marginTop;
+
+		if (templateDef->name) {
+			klb_assertNull(m_designRectCount < 20,
+				"reached limit of registerable NAMES design rect, please use Toboggan and remove name from rect you do not need.");
+			m_rectXYWH->x = layout.x;
+			m_rectXYWH->y = layout.y;
+			m_rectXYWH->width = layout.width;
+			m_rectXYWH->height = layout.height;
+			*m_rectName++ = templateDef->name->string;
+			*m_rectNode++ = parent;
+			m_rectXYWH++;
+			m_designRectCount++;
+		}
+	}
+
+	const u32 childSlotBase = m_slotBase;
+	CKLBInnerDef* child = templateDef->sub;
+	s32 flowItemCount = 0;
+	float dockedWidth = 0.0f;
+	float dockedHeight = 0.0f;
+	float contentWidth = 0.0f;
+	float contentHeight = 0.0f;
+	u32 childSlot = childSlotBase;
+
+	while (child) {
+		SCompositeLayoutRecord& childLayout = g_layoutRecords[childSlot++];
+		childLayout.isRect = child->classID == FORMAT_RECT_CLASSID;
+
+		float childWidth = 0.0f;
+		float childHeight = 0.0f;
+		bool isFlowItem = false;
+
+		if (childLayout.isRect) {
+			switch (child->flag[2]) {
+			case DOCK_LEFT:
+			case DOCK_RIGHT:
+				if (((child->layoutInfo >> 4) & 3) != 2) {
+					dockedWidth += child->getLayoutValue(CKLBInnerDef::LAYOUT_WIDTH);
+				}
+				break;
+			case DOCK_TOP:
+			case DOCK_BOTTOM:
+				if (((child->layoutInfo >> 6) & 3) != 2) {
+					dockedHeight += child->getLayoutValue(CKLBInnerDef::LAYOUT_HEIGHT);
+				}
+				break;
+			case DOCK_NONE:
+				childWidth = child->getLayoutValue(CKLBInnerDef::LAYOUT_WIDTH, layout.width);
+				childHeight = child->getLayoutValue(CKLBInnerDef::LAYOUT_HEIGHT, layout.height);
+				childLayout.width = childWidth;
+				childLayout.height = childHeight;
+
+				float childX = child->getLayoutValue(CKLBInnerDef::LAYOUT_X);
+				float childY = child->getLayoutValue(CKLBInnerDef::LAYOUT_Y);
+				if (child->anchor & 1) {
+					childX = layout.width - (childX + childWidth);
+				}
+				if (child->anchor & 2) {
+					childY = layout.height - (childY + childHeight);
+				}
+				childLayout.x = layout.x + childX;
+				childLayout.y = layout.y + childY;
+				isFlowItem = true;
+				break;
+			}
+		} else {
+			childWidth = child->getLayoutValue(CKLBInnerDef::LAYOUT_WIDTH, layout.width);
+			childHeight = child->getLayoutValue(CKLBInnerDef::LAYOUT_HEIGHT, layout.height);
+			childLayout.width = childWidth;
+			childLayout.height = childHeight;
+			isFlowItem = true;
+		}
+
+		if (isFlowItem) {
+			flowItemCount++;
+			contentWidth += childWidth;
+			contentHeight += childHeight;
+		}
+		child = child->next;
+	}
+
+	float flowAlignment = 0.5f;
+	switch (templateDef->layoutDir) {
+	case 5:
+	case 7:
+		flowItemCount++;
+		flowAlignment = 1.0f;
+		break;
+	case 6:
+	case 8:
+		break;
+	default:
+		flowItemCount--;
+		flowAlignment = 0.0f;
+		break;
+	}
+	const float inverseFlowCount = flowItemCount ? (1.0f / flowItemCount) : 0.0f;
+
+	const float borderX = CKLBDrawResource::getInstance().borderX();
+	const float borderY = CKLBDrawResource::getInstance().borderY();
+	CKLBDrawResource& draw = CKLBDrawResource::getInstance();
+
+	child = templateDef->sub;
+	childSlot = childSlotBase;
+	if (child) {
+		float runLeft = layout.x;
+		float runTop = layout.y;
+		float runRight = layout.x + layout.width;
+		float runBottom = layout.y + layout.height;
+		const float availableWidth = runRight - dockedWidth;
+		const float availableHeight = runBottom - dockedHeight;
+		const float horizontalGap = (layout.width - contentWidth) * inverseFlowCount;
+		const float verticalGap = (layout.height - contentHeight) * inverseFlowCount;
+		float flowX = flowAlignment * horizontalGap;
+		float flowY = flowAlignment * verticalGap;
+		SCompositeLayoutRecord* fillLayout = NULL;
+
+		while (child) {
+			SCompositeLayoutRecord& childLayout = g_layoutRecords[childSlot++];
+			bool docked = (child->classID == FORMAT_RECT_CLASSID);
+
+			if (docked) {
+				switch (child->flag[2]) {
+				case DOCK_LEFT:
+				case DOCK_RIGHT:
+					childLayout.width = child->getLayoutValue(CKLBInnerDef::LAYOUT_WIDTH, availableWidth);
+					childLayout.height = runBottom - layout.y;
+					childLayout.y = layout.y;
+					if (child->flag[2] == DOCK_LEFT) {
+						childLayout.x = runLeft;
+						runLeft += childLayout.width;
+					} else {
+						runRight -= childLayout.width;
+						childLayout.x = runRight;
+					}
+					break;
+
+				case DOCK_TOP:
+				case DOCK_BOTTOM:
+					childLayout.width = runRight - runLeft;
+					childLayout.height = child->getLayoutValue(CKLBInnerDef::LAYOUT_HEIGHT, availableHeight);
+					childLayout.x = runLeft;
+					if (child->flag[2] == DOCK_TOP) {
+						childLayout.y = runTop;
+						runTop += childLayout.height;
+					} else {
+						runBottom -= childLayout.height;
+						childLayout.y = runBottom;
+					}
+					break;
+
+				case DOCK_FILL:
+					if (fillLayout) {
+						klb_assertAlways("Multiple rect with FILL, should be only one");
+					}
+					fillLayout = &childLayout;
+					break;
+
+				case DOCK_NONE:
+					docked = false;
+					break;
+				}
+			}
+
+			if (!docked) {
+				float baseX = layout.isRect ? layout.x : 0.0f;
+				float baseY = layout.isRect ? layout.y : 0.0f;
+
+				if (child->classID == ANIMNODE_CLASSID) {
+					childLayout.x = baseX + child->getLayoutValue(CKLBInnerDef::LAYOUT_X);
+					childLayout.y = baseY + child->getLayoutValue(CKLBInnerDef::LAYOUT_Y);
+					childLayout.width = layout.width;
+					childLayout.height = layout.height;
+				} else if (child->anchor == 4) {
+					childLayout.x = layout.x;
+					childLayout.y = layout.y;
+					childLayout.width = layout.width;
+					childLayout.height = layout.height;
+				} else {
+					float childX = child->getLayoutValue(CKLBInnerDef::LAYOUT_X);
+					float childY = child->getLayoutValue(CKLBInnerDef::LAYOUT_Y);
+
+					float lowInsetX = (child->anchor & 8) ? borderX : 0.0f;
+					float highInsetX = lowInsetX;
+					if (child->anchor & 0x20) {
+						lowInsetX = draw.unsafeArea(0) + borderX;
+						highInsetX = draw.unsafeArea(1) + borderX;
+					}
+
+					float lowInsetY = (child->anchor & 0x10) ? borderY : 0.0f;
+					float highInsetY = lowInsetY;
+					if (child->anchor & 0x40) {
+						lowInsetY = draw.unsafeArea(2) + borderY;
+						highInsetY = draw.unsafeArea(3) + borderY;
+					}
+
+					if (child->anchor & 1) {
+						childX = highInsetX + layout.width - (childX + childLayout.width);
+					} else {
+						childX -= lowInsetX;
+					}
+					if (child->anchor & 2) {
+						childY = highInsetY + layout.height - (childY + childLayout.height);
+					} else {
+						childY -= lowInsetY;
+					}
+					childLayout.x = baseX + childX;
+					childLayout.y = baseY + childY;
+
+					if ((templateDef->classID == FORMAT_RECT_CLASSID) && templateDef->layoutDir) {
+						bool horizontalFlow = true;
+						switch (templateDef->layoutDir) {
+						case 1:
+							childLayout.x = baseX + flowX;
+							flowX += childLayout.width;
+							break;
+						case 2:
+						case 5:
+						case 6:
+							childLayout.x = baseX + flowX;
+							flowX += childLayout.width + horizontalGap;
+							break;
+						case 3:
+							childLayout.y = baseY + flowY;
+							flowY += childLayout.height;
+							horizontalFlow = false;
+							break;
+						case 4:
+						case 7:
+						case 8:
+							childLayout.y = baseY + flowY;
+							flowY += childLayout.height + verticalGap;
+							horizontalFlow = false;
+							break;
+						}
+
+						switch (templateDef->flag[0]) {
+						case 1:
+							if (horizontalFlow) {
+								childLayout.y = layout.y + layout.height - childLayout.height;
+							} else {
+								childLayout.x = layout.x;
+							}
+							break;
+						case 2:
+							if (horizontalFlow) {
+								childLayout.y = layout.y;
+							} else {
+								childLayout.x = layout.x + layout.width - childLayout.width;
+							}
+							break;
+						case 3:
+							if (horizontalFlow) {
+								childLayout.y = layout.y + (layout.height - childLayout.height) * 0.5f;
+							} else {
+								childLayout.x = layout.x + (layout.width - childLayout.width) * 0.5f;
+							}
+							break;
+						case 4:
+							if (horizontalFlow) {
+								childLayout.y = layout.y;
+								childLayout.height = layout.height;
+							} else {
+								childLayout.x = layout.x;
+								childLayout.width = layout.width;
+							}
+							break;
+						}
+					}
+				}
+			}
+
+			child = child->next;
+		}
+
+		if (fillLayout) {
+			fillLayout->width = runRight - runLeft;
+			fillLayout->height = runBottom - runTop;
+			fillLayout->x = runLeft;
+			fillLayout->y = runTop;
+		}
+	}
 
 	klb_assert(
 		   ((((s64)priorityOffset + (s64)templateDef->priority)>>32) != 0)
 		|| ((((s64)priorityOffset + (s64)templateDef->priority)>>32) != -1), "Overflow or underflow");
-
-	resetTmpBuff();
 
 	bool execNodeSetup = true;
 	if (templateDef->classID != NONE_CLASSID) {
@@ -1833,13 +2533,13 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 				}
 
 				CKLBUIWebArea* tsk = CKLBUIWebArea::create(
-					pParentTask, 
+					pParentTask,
 					parent,
 					templateDef->flag[0] ? true : false,
-					templateDef->x,
-					templateDef->y,
-					templateDef->width,
-					templateDef->height,
+					layout.x,
+					layout.y,
+					layout.width,
+					layout.height,
 					url,	// URL
 					cb		// Call back.
 				);
@@ -1871,16 +2571,19 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 					pParentTask,
 					parent,
 					newPrio, //templateDef->priority,
-					templateDef->x,
-					templateDef->y,
+					layout.x,
+					layout.y,
 					templateDef->sw,
 					templateDef->sh,
-					templateDef->width,
-					templateDef->height,
+					layout.width,
+					layout.height,
 					templateDef->radioID,			// MAX COMMAND, memory reuse !
 					templateDef->sx ? true : false,	// Vertical/Horizontal, memory reuse !
 					cb
 				);
+				if(tsk) {
+					tsk->setFitMode(templateDef->flag[1]);
+				}
 
 
 				//const char * fontName  = (templateDef->fontName) ? templateDef->fontName->string	: 0; // "default";
@@ -1914,8 +2617,8 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 					parent,
 					newPrio, //templateDef->priority,
 					templateDef->priorityClipStart,
-					templateDef->x,
-					templateDef->y,
+					layout.x,
+					layout.y,
 					tex_table,
 					templateDef->sx,
 					templateDef->sy,
@@ -1929,6 +2632,24 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 				tsk->setValue(templateDef->value);
 				tsk->setColor(filterDBInt(templateDef->dbField[DB_VAL_COLOR], templateDef->color));
 
+				if (templateDef->assets[DOT_ASSET]) {
+					CKLBImageAsset* dotImage =
+						(CKLBImageAsset*)templateDef->assets[DOT_ASSET]->assetCache;
+					SKLBRect* dotSize = dotImage->getSize();
+					s32 dotLeft = dotSize->m_iLeft;
+					s32 dotRight = dotSize->m_iRight;
+					s32 dotTop = dotSize->m_iTop;
+					s32 dotBottom = dotSize->m_iBottom;
+					const char* dotAsset =
+						addAssetPrefix(templateDef->assets[DOT_ASSET]->string);
+
+					if (templateDef->sx) {
+						tsk->setDot(dotAsset, dotRight - dotLeft, 0);
+					} else {
+						tsk->setDot(dotAsset, 0, dotBottom - dotTop);
+					}
+				}
+
 				setupTask(templateDef,tsk);
 
 				pNode = NULL;
@@ -1941,10 +2662,10 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 					pParentTask,
 					parent,
 					newPrio, // templateDef->priority,
-					templateDef->x,
-					templateDef->y,
-					templateDef->width,
-					templateDef->height,
+					layout.x,
+					layout.y,
+					layout.width,
+					layout.height,
 					templateDef->assets[0] ? addAssetPrefix(filterDB(templateDef->assets[0]->string)) : NULL,
 					templateDef->assets[1] ? addAssetPrefix(filterDB(templateDef->assets[1]->string)) : NULL,
 					templateDef->clipw,
@@ -1971,10 +2692,10 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 				}
 
 				CKLBUIScrollBar* tsk = CKLBUIScrollBar::create(pParentTask,parent,newPrio,
-					templateDef->x,
-					templateDef->y,
-					templateDef->width,
-					templateDef->height,
+					layout.x,
+					layout.y,
+					layout.width,
+					layout.height,
 					filterDBInt(templateDef->dbField[DB_VAR_MIN],   templateDef->variable[VAR_MIN]),
 					filterDBInt(templateDef->dbField[DB_VAR_MAX],   templateDef->variable[VAR_MAX]),
 					filterDBInt(templateDef->dbField[DB_VAL_VALUE], templateDef->value),			//pos
@@ -2005,17 +2726,18 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 				}
 
 				CKLBUICanvas* tsk = CKLBUICanvas::create(pParentTask,parent,newPrio,
-					templateDef->x,
-					templateDef->y,
+					layout.x,
+					layout.y,
 					templateDef->variable[VAR_MAXVERTEX],
 					templateDef->variable[VAR_MAXINDEX],
 					cb
 				);
 
 				if (templateDef->classID == TILEDCANVAS_CLASSID) {
-					tsk->setTiledRect((u32)templateDef->width, (u32)templateDef->height, templateDef->assets[0] ? addAssetPrefix(filterDB(templateDef->assets[0]->string)) : NULL, (u32)0xFF);
+					tsk->setTiledRect((u32)layout.width, (u32)layout.height, templateDef->assets[0] ? addAssetPrefix(filterDB(templateDef->assets[0]->string)) : NULL, (u32)0xFF);
 					tsk->freeze(true);
 				}
+
 				setupTask(templateDef,tsk);
 
 				pNode = NULL;
@@ -2026,10 +2748,10 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 			{
 				CKLBUIScale9* tsk = CKLBUIScale9::create(
 					pParentTask,parent,newPrio,
-					templateDef->x,
-					templateDef->y,
-					templateDef->width,
-					templateDef->height,
+					layout.x,
+					layout.y,
+					layout.width,
+					layout.height,
 					templateDef->assets[0] ? addAssetPrefix(filterDB(templateDef->assets[0]->string)) : NULL
 				);
 
@@ -2061,8 +2783,8 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 					pParentTask,
 					parent,
 					newPrio, // templateDef->priority,
-					templateDef->x,
-					templateDef->y,
+					layout.x,
+					layout.y,
 					&tapArea,
 					templateDef->assets[0] ? addAssetPrefix(filterDB(templateDef->assets[0]->string)) : NULL,
 					templateDef->assets[1] ? addAssetPrefix(filterDB(templateDef->assets[1]->string)) : NULL,
@@ -2074,7 +2796,7 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 					templateDef->flag[0]
 				);
 
-				setupTask(templateDef,tsk);
+				setupTask(templateDef, tsk);
 
 				// Do not authorize creation of sub node for now.
 				pNode = NULL;
@@ -2090,16 +2812,16 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 				}
 
 				CKLBUIList * tsk = CKLBUIList::create(
-					pParentTask, 
+					pParentTask,
 					parent,
-					priorityOffset + templateDef->priority, 
+					priorityOffset + templateDef->priority,
 					priorityOffset + templateDef->priorityClipEnd,
-					templateDef->x,
-					templateDef->y,
-					templateDef->clipw, 
+					layout.x,
+					layout.y,
+					templateDef->clipw,
 					templateDef->cliph,
 					((templateDef->sx == 1) ?
-						templateDef->height : templateDef->width), 
+						layout.height : layout.width),
 					templateDef->sx ? true : false,		// Vertical/Horizontal
 					cb,									//  
 					templateDef->flag[0] ? CKLBUIList::LIST_FLAG_BOTTOM : 0
@@ -2129,13 +2851,13 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 		case PIECHART_CLASSID:
 			{
 				CKLBUIPieChart * tsk = CKLBUIPieChart::create(
-					pParentTask, 
+					pParentTask,
 					parent,
-					newPrio, 
-					templateDef->x,
-					templateDef->y,
-					templateDef->width, 
-					templateDef->height,
+					newPrio,
+					layout.x,
+					layout.y,
+					layout.width,
+					layout.height,
 					templateDef->assets[0] ? addAssetPrefix(filterDB(templateDef->assets[0]->string)) : NULL,
 					filterDBFloat(templateDef->dbField[DB_VAR_STARTANGLE], templateDef->xscale), // Start use xscale to save memory.
 					filterDBFloat(templateDef->dbField[DB_VAR_ENDANGLE], templateDef->yscale),	 // End use yscale to save memory.
@@ -2153,13 +2875,13 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 		case VARITEM_CLASSID:
 			{
 				CKLBUIVariableItem * tsk = CKLBUIVariableItem::create(
-					pParentTask, 
+					pParentTask,
 					parent,
 					newPrio,
-					templateDef->x,
-					templateDef->y,
-					templateDef->width, 
-					templateDef->height,
+					layout.x,
+					layout.y,
+					layout.width,
+					layout.height,
 					templateDef->assets[0] ? addAssetPrefix(filterDB(templateDef->assets[0]->string)) : NULL
 					);
 
@@ -2181,9 +2903,11 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 				CKLBUIGroup * tsk = CKLBUIGroup::create(
 					pParentTask, 
 					parent,
-					/*newPrio,*/ // Guillaume :  Order is not used anymore in Group
-					templateDef->x,
-					templateDef->y);
+					newPrio,
+					layout.x,
+					layout.y,
+					layout.width,
+					layout.height);
 
 				setupTask(templateDef,tsk);
 
@@ -2199,7 +2923,7 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 					parent->addNode(pNewNode);
 					pNode = pNewNode;
 					pNewNode->setTag(templateDef);
-					pNewNode->setTranslate(templateDef->x,templateDef->y);
+					pNewNode->setTranslate(layout.x, layout.y);
 					pNewNode->setScaleRotation(templateDef->xscale, templateDef->yscale,templateDef->rotation);
 				}
 			}
@@ -2222,10 +2946,10 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 
 				CKLBUITextInput* tsk = CKLBUITextInput::create(pParentTask,parent,
 					templateDef->flag[0] ? true : false,
-					templateDef->x,
-					templateDef->y,
-					templateDef->width,
-					templateDef->height,
+					layout.x,
+					layout.y,
+					layout.width,
+					layout.height,
 					txt,
 					handler,
 					templateDef->id,
@@ -2252,33 +2976,46 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 			break;
 		case LABEL_CLASSID:
 			{
-				const char * fontname  = (templateDef->fontName) ? templateDef->fontName->string	: 0; // "default";
+				const char * fontname  = (templateDef->fontName) ? templateDef->fontName->string : 0; // "default";
 				const char * labelText = (templateDef->text)     ? templateDef->text->string		: "";
-				CKLBLabelNode * pNewNode = KLBNEWC(CKLBLabelNode,(templateDef->fontSize, fontname, filterDB(labelText)));
+				u32 color = filterDBInt(templateDef->dbField[DB_VAL_COLOR], templateDef->color);
+				CKLBUILabel* tsk = CKLBUILabel::create(
+					pParentTask,
+					parent,
+					newPrio,
+					layout.x,
+					layout.y,
+					layout.width,
+					layout.height,
+					color >> 24,
+					color & 0xFFFFFF,
+					fontname,
+					templateDef->fontSize,
+					filterDB(labelText),
+					templateDef->flag[0],
+					templateDef->shadowBlur,
+					templateDef->shadowColor,
+					static_cast<s8>(templateDef->shadowDX),
+					static_cast<s8>(templateDef->shadowDY),
+					(templateDef->shadowBlur >= 3.0f) ? 2 : 1,
+					templateDef->flag[1]
+				);
 
-				if (pNewNode) {
-					pNewNode->resetAsInternalNode();
-					parent->addNode(pNewNode);
-
-					pNewNode->setUseTextSize(false);
-					pNewNode->lock(true);
-					pNewNode->setPriority(newPrio);
-					pNewNode->setTextColor(filterDBInt(templateDef->dbField[DB_VAL_COLOR], templateDef->color));
-					pNewNode->setWidth(templateDef->width);
-					pNewNode->setHeight(templateDef->height);
-					pNewNode->setAlign(templateDef->flag[0]);
-
-					pNewNode->setTranslate(templateDef->x,templateDef->y);
-					pNewNode->setScaleRotation(templateDef->xscale, templateDef->yscale,templateDef->rotation);
-					pNewNode->lock(false);
-					pNode = pNewNode;
+				if (tsk) {
+					setupTask(templateDef, tsk);
+					pNode = tsk->getNode();
+				} else {
+					res = false;
 				}
 			}
 			break;
 		case BUTTON_CLASSID:
+		case BUTTON_SCALE9_CLASSID:
 		case CHECK_CLASSID:
 			{
-				CKLBUISelectable* pElement = KLBNEW(CKLBUISelectable);
+				CKLBUISelectable* pElement = (templateDef->classID == BUTTON_SCALE9_CLASSID)
+					? static_cast<CKLBUISelectable*>(KLBNEW(CKLBUIScale9Btn))
+					: KLBNEW(CKLBUISelectable);
 				if (pElement && pElement->init(newPrio)) {
 					pElement->setPriority(newPrio);
 					if (templateDef->classID == CHECK_CLASSID) {
@@ -2290,7 +3027,7 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 
 					parent->addNode(pElement, 0);
 					pElement->setScriptable(pParentTask);
-					pElement->setTranslate(templateDef->x,templateDef->y);	// Related to container issue.
+					pElement->setTranslate(layout.x, layout.y);	// Related to container issue.
 					pElement->setScaleRotation(templateDef->xscale, templateDef->yscale,templateDef->rotation);
 
 					pElement->setClickLeft	(templateDef->sx);
@@ -2310,9 +3047,43 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
                     pElement->setMultiplyVolume( 1, CKLBLuaLibSOUND::getFormGlobalVolume() );
 
 					pElement->setSticked(filterDBInt(templateDef->dbField[DB_VAR_CHECKED], templateDef->flag[0]) ? true : false);
-					
+
 					pElement->setEnabled(filterDBInt(templateDef->dbField[DB_VAR_ENABLE], templateDef->flag[2]) ? true : false);
 					pElement->m_groupID = groupID;
+					pElement->setRecordID(m_recordID);
+
+					if (templateDef->classID == BUTTON_SCALE9_CLASSID) {
+						CKLBUIScale9Btn* scale9Button =
+							static_cast<CKLBUIScale9Btn*>(pElement);
+						scale9Button->setTextAlign(templateDef->flag[0]);
+						scale9Button->setClickLeft(0);
+						scale9Button->setClickTop(0);
+						scale9Button->setClickWidth((s32)layout.width);
+						scale9Button->setClickHeight((s32)layout.height);
+
+						const char* fontName = templateDef->fontName
+							? templateDef->fontName->string
+							: NULL;
+						u32 textColor = filterDBInt(
+							templateDef->dbField[DB_VAL_COLOR],
+							templateDef->color);
+						scale9Button->setFont(
+							fontName,
+							templateDef->fontSize,
+							textColor);
+
+						const char* text = templateDef->text
+							? filterDB(templateDef->text->string)
+							: NULL;
+						scale9Button->setText(text);
+						scale9Button->setTextShadow(
+							templateDef->shadowColor,
+							(s8)templateDef->shadowDX,
+							(s8)templateDef->shadowDY,
+							templateDef->shadowBlur,
+							(templateDef->shadowBlur >= 3.0f) ? 1 : 2);
+						scale9Button->rebuildText();
+					}
 
 					// Lua handler function
 					if(templateDef->handler[0]) {
@@ -2333,7 +3104,7 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 					pCont->setPriority(newPrio);
 					pCont->setScaleRotation(templateDef->xscale, templateDef->yscale,templateDef->rotation);
 					parent->addNode(pCont, 0);
-					pCont->setTranslate(templateDef->x,templateDef->y);
+					pCont->setTranslate(layout.x, layout.y);
 					pCont->setAsset(pAsset[NORMAL_ASSET ],	CKLBUIElement::NORMAL_ASSET		);
 					
 					pNode = pCont->getInnerNode();
@@ -2455,6 +3226,58 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 				}
 			}
 			break;
+		case FORMAT_RECT_CLASSID:
+			// Layout rectangles do not create a node. Their children remain
+			// attached to the node which owns the rectangle.
+			pNode = parent;
+			execNodeSetup = false;
+			break;
+		case SHADER_CLASSID:
+			{
+				const char* assetName = "";
+				if (templateDef->text) {
+					assetName = filterDB(templateDef->text->string);
+				}
+				templateDef->visible = false;
+				if (assetName && !assetName[0]) {
+					assetName = NULL;
+				}
+
+				if (parent) {
+					CKLBShaderTask* task =
+						CKLBShaderTask::create(pParentTask, assetName, newPrio);
+					createTaskNode(templateDef, parent,
+						reinterpret_cast<CKLBUITask*>(task), pNode);
+					res = task != NULL;
+				} else {
+					pNode = NULL;
+					res = false;
+				}
+			}
+			break;
+		case BUFFER_CLASSID:
+			{
+				const char* assetName = "";
+				if (templateDef->text) {
+					assetName = filterDB(templateDef->text->string);
+				}
+				templateDef->visible = false;
+				if (assetName && !assetName[0]) {
+					assetName = NULL;
+				}
+
+				if (parent) {
+					CKLBRenderBufferTask* task = CKLBRenderBufferTask::create(
+						pParentTask, assetName, newPrio, templateDef->value);
+					createTaskNode(templateDef, parent,
+						reinterpret_cast<CKLBUITask*>(task), pNode);
+					res = task != NULL;
+				} else {
+					pNode = NULL;
+					res = false;
+				}
+			}
+			break;
 		}
 	} else {
 		//
@@ -2471,7 +3294,7 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 
 		// Recursively create the composite.
 		if (pNode) {
-			pNode->setTranslate(templateDef->x, templateDef->y);
+			pNode->setTranslate(layout.x, layout.y);
 			pNode->setScaleRotation(templateDef->xscale, templateDef->yscale,templateDef->rotation);
 			parent->addNode(pNode);
 		} else {
@@ -2490,12 +3313,16 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 	}
 
 	if (res && pNode) {
+		m_slotBase = childSlot;
 		CKLBInnerDef* subList = templateDef->sub;
+		u32 currentChildSlot = childSlotBase;
 		while (subList) {
+			m_slotCurrent = currentChildSlot++;
 			res &= createSubTreeRecursive(groupID, pParentTask, pNode, subList, priorityOffset);
 			subList = subList->next;
 		}
 	}
+	m_slotBase = childSlotBase;
 
 	/*
 	if (!res) {

@@ -23,6 +23,9 @@
 
 #include "CKLBUtility.h"
 
+class CKLBNetAPI;
+class ConnectionEntry;
+
 /*!
 * \class CKLBNetAPIKeyChain
 * \brief Net API Key Chain Class
@@ -31,6 +34,8 @@
 */
 class CKLBNetAPIKeyChain
 {
+	friend class CKLBNetAPI;
+	friend class ConnectionEntry;
 private:
     CKLBNetAPIKeyChain();
     virtual ~CKLBNetAPIKeyChain();
@@ -56,6 +61,16 @@ public:
 			m_region = NULL;
 		}
         return m_region;
+    }
+
+    inline const char * setBundleVersion(const char * bundleVersion) {
+        KLBDELETEA(m_bundleVersion);
+		if (bundleVersion) {
+	        m_bundleVersion = CKLBUtility::copyString(bundleVersion);
+		} else {
+			m_bundleVersion = NULL;
+		}
+        return m_bundleVersion;
     }
     
     inline const char * setClient(const char * client) {
@@ -97,13 +112,24 @@ public:
 		}
 		return m_userID;
 	}
+
+	inline const char * setLanguage(const char * language) {
+		KLBDELETEA(m_language);
+		m_language = NULL;
+		if (language) {
+			m_language = CKLBUtility::copyString(language);
+		}
+		return m_language;
+	}
     
     inline const char * getToken		() const { return m_token;	}
     inline const char * getRegion		() const { return m_region; }
+    inline const char * getBundleVersion() const { return m_bundleVersion; }
     inline const char * getClient		() const { return m_client; }
     inline const char * getConsumerKey	() const { return m_cKey;	}
     inline const char * getAppID		() const { return m_appID;	}
 	inline const char * getUserID		() const { return m_userID; }
+	inline const char * getLanguage		() const { return m_language; }
 
 	inline int genCmdNumID(char * retBuf, const char * body, time_t timeStamp, int serial) {
 		sprintf(retBuf, "%s-%s.%d.%d",
@@ -116,10 +142,19 @@ public:
 private:
     const char      *   m_token;    // Authorized Token
     const char      *   m_region;   // region
+    const char      *   m_bundleVersion;
     const char      *   m_client;   // client version
     const char      *   m_cKey;     // consumerKey
     const char      *   m_appID;    // Application ID
 	const char		*	m_userID;	// User-ID
+	const char		*	m_language;
+
+	static const size_t KEY_LENGTH = 32;
+	u8					m_payloadCipherKey[KEY_LENGTH];
+	u8					m_requestMACKey[KEY_LENGTH];
+	u8					m_sessionMACKey[KEY_LENGTH];
+	size_t				m_payloadCipherKeyLength;
+	size_t				m_macKeyLength;
 };
 
 #endif

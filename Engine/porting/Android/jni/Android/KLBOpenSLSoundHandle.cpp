@@ -21,34 +21,33 @@
 #include "KLBOpenSLAudioPlayer.h"
 #include "CAndroidRequest.h"
 
-KLBOpenSLSoundHandle::KLBOpenSLSoundHandle() :
+pthread_mutex_t s_callbackMutex = PTHREAD_MUTEX_INITIALIZER;
+
+KLBOpenSLOldSoundHandle::KLBOpenSLOldSoundHandle() :
 is_initiated(false),
 is_loop_requested(false),
 cur_mbel(-1)
 {
-	buf_fill_lock = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
 }
 
-KLBOpenSLSoundHandle::~KLBOpenSLSoundHandle()
+KLBOpenSLOldSoundHandle::~KLBOpenSLOldSoundHandle()
 {
-	// performing lock for sure (dtor could be called under playing status)
-	pthread_mutex_lock(&buf_fill_lock);
-	DEBUG_PRINT("AUDIO; destroying sound-handle");
+	m_bActive = false;
+	asset = NULL;
 	destroyOpenSLObjects();
-	is_destroyed = true;
-	pthread_mutex_unlock(&buf_fill_lock);
-	pthread_mutex_destroy(&buf_fill_lock);
 }
 
-void KLBOpenSLSoundHandle::initInternalResources() {
+void KLBOpenSLOldSoundHandle::initInternalResources() {
 	consumed_pos = 0;
 	head_bufsize = 0;
 	is_playing = false;
 	is_initiated = false;
-	is_destroyed = false;
+	m_bActive = true;
+	position_offset = 0;
+	last_position = 0;
 	state = 0;
 	volume = 1.0f;
-	m_interruptionType = KLBOpenSLEngine::eINTERRUPTION_TYPE_NONE;
+	m_interruptionType = KLBOpenSLOldEngine::eINTERRUPTION_TYPE_NONE;
 	fade_param.m_fadeCnt = 0;
 	fade_param.m_startVol = 1.0f;
 	fade_param.m_endVol = 1.0f;
@@ -61,13 +60,13 @@ void KLBOpenSLSoundHandle::initInternalResources() {
 	last_error = 0;
 }
 
-void KLBOpenSLSoundHandle::destroyOpenSLObjects() {
+void KLBOpenSLOldSoundHandle::destroyOpenSLObjects() {
 	if (bqPlayerObject != NULL)
 	{
 		if (bqPlayerPlay != NULL) {
 			stop();
 		}
-		(*bqPlayerObject)->Destroy(bqPlayerObject);
+		KLBOpenSLOldEngine::getInstance()->deferObjectDestruction(bqPlayerObject);
 		bqPlayerObject = NULL;
 		bqPlayerPlay = NULL;
 		bqPlayerBufferQueue = NULL;
@@ -75,40 +74,35 @@ void KLBOpenSLSoundHandle::destroyOpenSLObjects() {
 	}
 }
 
-void KLBOpenSLSoundHandle::play(int _msec, float _tgtVol, float _startVol)
+void KLBOpenSLOldSoundHandle::play(int _msec, float _tgtVol, float _startVol)
 {
 	SLresult result;
 	time_elapsed = 0;
 	consumed_pos = 0;
-	assert(bqPlayerPlay != NULL);
 	result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_PLAYING);
-	assert(SL_RESULT_SUCCESS == result);
 	fade_param.m_fadeRatio = (_startVol < 0.0f) ? (0.0f) : ((_startVol > 1.0f) ? 1.0f : _startVol);
+	cur_mbel = 0;
 	if( _msec > 0 ) {
 		setFadeParam(FADE_TYPE_PLAY, _tgtVol, _msec, INTER_TYPE_LINEAR, _startVol);
 	}
 	refreshVolume();
 	fillPcmBuffer(bqPlayerBufferQueue, true);
     state = IClientRequest::E_SOUND_STATE_PLAY;
-	if (KLBOpenSLEngine::getInstance()->isSoundPaused()) {
+	if (KLBOpenSLOldEngine::getInstance()->isSoundPaused()) {
 		this->pause();
-		this->setInterruptionType(KLBOpenSLEngine::eINTERRUPTION_TYPE_RESIGN_ACTIVE);
+		this->setInterruptionType(KLBOpenSLOldEngine::eINTERRUPTION_TYPE_RESIGN_ACTIVE);
 	}
 }
 
-void KLBOpenSLSoundHandle::stop(int _msec, float _tgtVol)
+void KLBOpenSLOldSoundHandle::stop(int _msec, float _tgtVol)
 {
 	SLresult result;
 	if( _msec <= 0 ) {
 		if (state == IClientRequest::E_SOUND_STATE_PLAY) {
-			DEBUG_PRINT("stop sound handle");
-			assert(bqPlayerPlay != NULL);
 			result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_STOPPED);
-			assert(SL_RESULT_SUCCESS == result);
 		}
 		if (bqPlayerBufferQueue != NULL) {
 			result = (*bqPlayerBufferQueue)->Clear(bqPlayerBufferQueue);
-			assert(SL_RESULT_SUCCESS == result);
 		}
 		time_elapsed = 0;
 		consumed_pos = 0;
@@ -118,14 +112,12 @@ void KLBOpenSLSoundHandle::stop(int _msec, float _tgtVol)
 	}
 }
 
-void KLBOpenSLSoundHandle::pause(int _msec, float _tgtVol)
+void KLBOpenSLOldSoundHandle::pause(int _msec, float _tgtVol)
 {
     if (state == IClientRequest::E_SOUND_STATE_PLAY) {
     	if( _msec <= 0 ) {
 			SLresult result;
-			assert(bqPlayerPlay != NULL);
 			result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_PAUSED);
-			assert(SL_RESULT_SUCCESS == result);
 			time_elapsed += CAndroidRequest::getInstance()->nanotime() - time_started;
 			state = IClientRequest::E_SOUND_STATE_PAUSE;
     	} else {
@@ -134,13 +126,11 @@ void KLBOpenSLSoundHandle::pause(int _msec, float _tgtVol)
 	}
 }
 
-void KLBOpenSLSoundHandle::resume(int _msec, float _tgtVol)
+void KLBOpenSLOldSoundHandle::resume(int _msec, float _tgtVol)
 {
     if (state == IClientRequest::E_SOUND_STATE_PAUSE) {
 		SLresult result;
-		assert(bqPlayerPlay != NULL);
 		result = (*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_PLAYING);
-		assert(SL_RESULT_SUCCESS == result);
 		state = IClientRequest::E_SOUND_STATE_PLAY;
 		if( _msec > 0 ) {
 			setFadeParam(FADE_TYPE_RESUME, _tgtVol, _msec, INTER_TYPE_LINEAR, 0.0f);
@@ -150,7 +140,7 @@ void KLBOpenSLSoundHandle::resume(int _msec, float _tgtVol)
 	}
 }
 
-s32 KLBOpenSLSoundHandle::tellAudio()
+s32 KLBOpenSLOldSoundHandle::tellAudio()
 {
 	s32 elapsed_sysclock_ms = 0;
 	if (isPlaying()) {
@@ -159,49 +149,90 @@ s32 KLBOpenSLSoundHandle::tellAudio()
 	else {
 		elapsed_sysclock_ms = (s32)((time_elapsed) / 1000000);
 	}
-	SLresult result;
 	SLmillisecond msec;
 	// DEBUG_PRINT("before GetPosition");
-	result = (*bqPlayerPlay)->GetPosition(bqPlayerPlay, &msec);
-	assert(SL_RESULT_SUCCESS == result);
+	(*bqPlayerPlay)->GetPosition(bqPlayerPlay, &msec);
+	last_position = msec;
 	// DEBUG_PRINT("after GetPosition");
 	s32 ts_error = msec - elapsed_sysclock_ms;
 	s32 ts_adj = (ts_error - last_error) >> 2;
 	// DEBUG_PRINT("tellAudio ts_error=%d. diff delta=%d, adj=%d", ts_error, ts_error - last_error, ts_adj);
 	last_error += ts_adj;
-	return elapsed_sysclock_ms + last_error;
+	return elapsed_sysclock_ms + position_offset + last_error;
 }
 
-void KLBOpenSLSoundHandle::closeAudio()
+void KLBOpenSLOldSoundHandle::seekAudio(s32 msec)
 {
+	if (!asset) {
+		return;
+	}
 
-}
+	const float originalVolume = volume;
+	volume = 0.0f;
+	refreshVolume();
 
-void KLBOpenSLSoundHandle::setVolume(float volume)
-{
-	KLBOpenSLSoundHandle::volume = volume;
+	if (bqPlayerBufferQueue) {
+		(*bqPlayerBufferQueue)->Clear(bqPlayerBufferQueue);
+		is_loop_requested = true;
+	}
+
+	const s64 seekMillis = msec;
+	const s64 sampleOffset = (seekMillis * pcm_sampling_rate) / 1000;
+	pthread_mutex_lock(&s_callbackMutex);
+	asset->readVorbisSamples(-1, sampleOffset);
+	pthread_mutex_unlock(&s_callbackMutex);
+
+	position_offset = msec - last_position;
+	asset->fetchNextPcmBuffer(this);
+
+	int formerSize = head_bufsize;
+	int latterSize = 0;
+	if (is_loop_requested && !asset->isSE()) {
+		latterSize = formerSize;
+		formerSize >>= 1;
+		latterSize -= formerSize;
+	}
+	(*bqPlayerBufferQueue)->Enqueue(bqPlayerBufferQueue, current_head, formerSize);
+	if (latterSize) {
+		(*bqPlayerBufferQueue)->Enqueue(
+			bqPlayerBufferQueue,
+			reinterpret_cast<u8*>(current_head) + formerSize,
+			latterSize);
+	}
+
+	if (!asset->isFullyBuffered()) {
+		KLBOpenSLOldEngine::getInstance()->registerAssetForRefilling(asset);
+	}
+	is_loop_requested = false;
+	volume = originalVolume;
 	refreshVolume();
 }
 
-void KLBOpenSLSoundHandle::refreshVolume() {
-	if (bqPlayerVol != NULL) {
-		float actual_volume = KLBOpenSLEngine::getInstance()->GetMasterVolume(this->asset->isSE()) * fade_param.m_fadeRatio * volume;
+void KLBOpenSLOldSoundHandle::closeAudio()
+{
+
+}
+
+void KLBOpenSLOldSoundHandle::setVolume(float volume)
+{
+	KLBOpenSLOldSoundHandle::volume = volume;
+	refreshVolume();
+}
+
+void KLBOpenSLOldSoundHandle::refreshVolume() {
+	if (bqPlayerVol != NULL && asset != NULL) {
+		float actual_volume = KLBOpenSLOldEngine::getInstance()->GetMasterVolume(this->asset->isSE()) * fade_param.m_fadeRatio * volume;
 		SLmillibel max_mbel = 0;
-		int res = (*bqPlayerVol)->GetMaxVolumeLevel(bqPlayerVol, &max_mbel);
-		assert(SL_RESULT_SUCCESS == res);
+		(*bqPlayerVol)->GetMaxVolumeLevel(bqPlayerVol, &max_mbel);
 		SLmillibel mbel = gain_to_attenuation(actual_volume, max_mbel);
 		if (mbel != cur_mbel) {
-			DEBUG_PRINT("AUDIO; setting new volume: %f(%x), isSE=%d, masterVolume=%f, fadeRatio=%f, volume=%f",
-				actual_volume, mbel, this->asset->isSE(),
-				KLBOpenSLEngine::getInstance()->GetMasterVolume(this->asset->isSE()), fade_param.m_fadeRatio, volume);
-			res = (*bqPlayerVol)->SetVolumeLevel(bqPlayerVol, mbel);
-			assert(SL_RESULT_SUCCESS == res);
+			(*bqPlayerVol)->SetVolumeLevel(bqPlayerVol, mbel);
 			cur_mbel = mbel;
 		}
 	}
 }
 
-void KLBOpenSLSoundHandle::updateFadeParam() {
+void KLBOpenSLOldSoundHandle::updateFadeParam() {
 	s64 nowSeq = 0;
 
 	if ((fade_param.m_bfade == false) && (fade_param.m_nowFadeType != FADE_TYPE_NONE))
@@ -241,16 +272,29 @@ void KLBOpenSLSoundHandle::updateFadeParam() {
 		{
 			fade_param.m_fadeCnt = fade_param.m_fadeMiliSec;
 			fade_param.m_bfade = false;
+			fade_param.m_fadeRatio = 1.0f;
+			volume = fade_param.m_endVol;
+			refreshVolume();
 
 			if (fade_param.m_nowFadeType == FADE_TYPE_STOP)
 			{
-				DEBUG_PRINT("[sound] fade -> stopped");
-				stop();
+				if (state == IClientRequest::E_SOUND_STATE_PLAY) {
+					(*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_STOPPED);
+				}
+				if (bqPlayerBufferQueue != NULL) {
+					(*bqPlayerBufferQueue)->Clear(bqPlayerBufferQueue);
+				}
+				time_elapsed = 0;
+				consumed_pos = 0;
+				state = IClientRequest::E_SOUND_STATE_STOP;
 			}
 			else if (fade_param.m_nowFadeType == FADE_TYPE_PAUSE)
 			{
-				DEBUG_PRINT("[sound] fade -> paused");
-				pause();
+				if (state == IClientRequest::E_SOUND_STATE_PLAY) {
+					(*bqPlayerPlay)->SetPlayState(bqPlayerPlay, SL_PLAYSTATE_PAUSED);
+					time_elapsed += CAndroidRequest::getInstance()->nanotime() - time_started;
+					state = IClientRequest::E_SOUND_STATE_PAUSE;
+				}
 			}
 			fade_param.m_nowFadeType = FADE_TYPE_NONE;
 		}
@@ -259,7 +303,7 @@ void KLBOpenSLSoundHandle::updateFadeParam() {
 	}
 }
 
-bool KLBOpenSLSoundHandle::setFadeParam(s16 _fadeType, float _tgtVol, u32 _msec, s16 _interType, float _startVolume)
+bool KLBOpenSLOldSoundHandle::setFadeParam(s16 _fadeType, float _tgtVol, u32 _msec, s16 _interType, float _startVolume)
 {
 	if (_startVolume < 0.0f) {
 		_startVolume = 0.0f;
@@ -294,7 +338,7 @@ bool KLBOpenSLSoundHandle::setFadeParam(s16 _fadeType, float _tgtVol, u32 _msec,
 		case FADE_TYPE_STOP:
 		case FADE_TYPE_PAUSE:
 		case FADE_TYPE_PLAYING:
-			fade_param.m_startVol = 1.0f;
+			fade_param.m_startVol = _startVolume;
 			break;
 	}
 	fade_param.m_fadeMiliSec = _msec;
@@ -303,17 +347,16 @@ bool KLBOpenSLSoundHandle::setFadeParam(s16 _fadeType, float _tgtVol, u32 _msec,
 	return true;
 }
 
-void KLBOpenSLSoundHandle::setPan(float pan)
+void KLBOpenSLOldSoundHandle::setPan(float pan)
 {
 
 }
 
-void KLBOpenSLSoundHandle::setSoundAsset(KLBOpenSLSoundAsset *asset) {
+void KLBOpenSLOldSoundHandle::setSoundAsset(KLBOpenSLOldSoundAsset *asset) {
 	// destroy current OpenSL related objects if nb-channel or sampling-rate is not equal to prior sample
 	if (is_initiated) {
 		if (asset->getChannels() == this->pcm_channels && asset->getPcmSamplingRate() == this->pcm_sampling_rate) {
 			// shortcut. simply change asset reference and initialize sound handle internal data
-			DEBUG_PRINT("reusing most OpenSL stuff");
 			updateAsset(asset);
 			initInternalResources();
 			is_initiated = true;
@@ -326,8 +369,7 @@ void KLBOpenSLSoundHandle::setSoundAsset(KLBOpenSLSoundAsset *asset) {
 
 	initInternalResources();
 	updateAsset(asset);
-	SLEngineItf engine = KLBOpenSLEngine::getInstance()->engineEngine;
-	SLresult result;
+	SLEngineItf engine = KLBOpenSLOldEngine::getInstance()->engineEngine;
 	SLDataLocator_AndroidSimpleBufferQueue loc_bufq = {SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, 2};
 	SLDataFormat_PCM format_pcm = {
 			SL_DATAFORMAT_PCM, this->getPcmChannels(), this->getSlSamplingRate(),
@@ -336,86 +378,75 @@ void KLBOpenSLSoundHandle::setSoundAsset(KLBOpenSLSoundAsset *asset) {
 	SLDataSource audioSrc = {&loc_bufq, &format_pcm};
 
 	// configure audio sink
-	SLDataLocator_OutputMix loc_outmix = {SL_DATALOCATOR_OUTPUTMIX, KLBOpenSLEngine::getInstance()->outputMixObject};
+	SLDataLocator_OutputMix loc_outmix = {SL_DATALOCATOR_OUTPUTMIX, KLBOpenSLOldEngine::getInstance()->outputMixObject};
 	SLDataSink audioSnk = {&loc_outmix, NULL};
 
 	// create audio player
 	const SLInterfaceID ids[2] = {SL_IID_VOLUME, SL_IID_BUFFERQUEUE};
 	const SLboolean req[2] = {SL_BOOLEAN_TRUE, SL_BOOLEAN_TRUE};
-	result = (*engine)->CreateAudioPlayer(engine, &bqPlayerObject, &audioSrc, &audioSnk, 2, ids, req);
-	assert(SL_RESULT_SUCCESS == result);
+	(*engine)->CreateAudioPlayer(engine, &bqPlayerObject, &audioSrc, &audioSnk, 2, ids, req);
 
 	// realize the player
-	result = (*bqPlayerObject)->Realize(bqPlayerObject, SL_BOOLEAN_FALSE);
-	assert(SL_RESULT_SUCCESS == result);
+	(*bqPlayerObject)->Realize(bqPlayerObject, SL_BOOLEAN_FALSE);
 
 	// get the play interface
-	result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_PLAY, &bqPlayerPlay);
-	assert(SL_RESULT_SUCCESS == result);
+	(*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_PLAY, &bqPlayerPlay);
 
 	// get the buffer queue interface
-	result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_BUFFERQUEUE,
+	(*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_BUFFERQUEUE,
 			&bqPlayerBufferQueue);
-	assert(SL_RESULT_SUCCESS == result);
 
 	// register callback on the buffer queue
-	result = (*bqPlayerBufferQueue)->RegisterCallback(bqPlayerBufferQueue, KLBOpenSLSoundHandle::bqPlayerCallback, this);
-	assert(SL_RESULT_SUCCESS == result);
+	(*bqPlayerBufferQueue)->RegisterCallback(bqPlayerBufferQueue, KLBOpenSLOldSoundHandle::bqPlayerCallback, this);
 
 	// get the volume interface
-	result = (*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_VOLUME, &bqPlayerVol);
-	assert(SL_RESULT_SUCCESS == result);
+	(*bqPlayerObject)->GetInterface(bqPlayerObject, SL_IID_VOLUME, &bqPlayerVol);
 
 	is_initiated = true;
 }
 
-void KLBOpenSLSoundHandle::bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context)
+void KLBOpenSLOldSoundHandle::bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context)
 {
-	KLBOpenSLSoundHandle* soundHandle = (KLBOpenSLSoundHandle*)context;
-	if (soundHandle != NULL) {
+	KLBOpenSLOldSoundHandle* soundHandle = (KLBOpenSLOldSoundHandle*)context;
+	pthread_mutex_lock(&s_callbackMutex);
+	if (KLBOpenSLOldEngine::getInstance()->containsSoundHandle(soundHandle)) {
 		soundHandle->fillPcmBuffer(bq, false);
 	}
+	pthread_mutex_unlock(&s_callbackMutex);
 }
 
-void KLBOpenSLSoundHandle::fillPcmBuffer(SLAndroidSimpleBufferQueueItf bqPlayerBufferQueue, bool is_starting) {
-	pthread_mutex_lock(&buf_fill_lock);
-	if (is_destroyed) {
-		DEBUG_PRINT("called after object discarded");
-		pthread_mutex_unlock(&buf_fill_lock);
+void KLBOpenSLOldSoundHandle::fillPcmBuffer(SLAndroidSimpleBufferQueueItf bqPlayerBufferQueue, bool is_starting) {
+	if (!m_bActive) {
 		return;
 	}
-	SLresult result;
+	if (!asset) {
+		return;
+	}
 	asset->fetchNextPcmBuffer(this);
 	if (head_bufsize == 0)
 	{
-		DEBUG_PRINT("AUDIO; playback finished");
 		// set the player's state to playing
 		if (!asset->isSE())
 		{
 			if (!is_loop_requested) {
-				DEBUG_PRINT("requesting loop");
 				is_loop_requested = true;
-				pthread_mutex_unlock(&buf_fill_lock);
 				return;
 			}
 			else {
-				DEBUG_PRINT("AUDIO; BGM loop detected. rebuffering");
 				asset->resetBuffer();
 				asset->readVorbisSamples(-1);
 				consumed_pos = 0;
 				asset->fetchNextPcmBuffer(this);
 			}
 		}
-		else if (repeatMode == KLBOpenSLSoundAsset::ONCE || true)
+		else if (repeatMode == KLBOpenSLOldSoundAsset::ONCE || true)
 		{
 			this->stop();
-			pthread_mutex_unlock(&buf_fill_lock);
 			return;
 		}
 		else
 		{
 			consumed_pos = 0;
-			pthread_mutex_unlock(&buf_fill_lock);
 			return;
 		}
 	}
@@ -423,17 +454,13 @@ void KLBOpenSLSoundHandle::fillPcmBuffer(SLAndroidSimpleBufferQueueItf bqPlayerB
 	// enqueue another buffer
 	int bufsize_former = head_bufsize, bufsize_latter = 0;
 	if ((is_starting || is_loop_requested) && !asset->isSE()) {
-		DEBUG_PRINT("AUDIO; separating buffer queue");
 		// separate bufqueue
 		bufsize_former >>= 1;
 		bufsize_latter = head_bufsize - bufsize_former;
 	}
-	result = (*bqPlayerBufferQueue)->Enqueue(bqPlayerBufferQueue, current_head, bufsize_former);
-	assert(SL_RESULT_SUCCESS == result);
+	(*bqPlayerBufferQueue)->Enqueue(bqPlayerBufferQueue, current_head, bufsize_former);
 	if (bufsize_latter != 0) {
-		DEBUG_PRINT("AUDIO; enqueuing second buffer");
-		result = (*bqPlayerBufferQueue)->Enqueue(bqPlayerBufferQueue, (short*)((int)current_head + bufsize_former), bufsize_latter);
-		assert(SL_RESULT_SUCCESS == result);
+		(*bqPlayerBufferQueue)->Enqueue(bqPlayerBufferQueue, (short*)((u8*)current_head + bufsize_former), bufsize_latter);
 	}
     if (is_starting) {
     	updateTimeStarted();
@@ -442,11 +469,10 @@ void KLBOpenSLSoundHandle::fillPcmBuffer(SLAndroidSimpleBufferQueueItf bqPlayerB
 	if (!asset->isFullyBuffered())
 	{
 		// DEBUG_PRINT("AUDIO; not a full buffer");
-		KLBOpenSLEngine::getInstance()->registerAssetForRefilling(asset);
+		KLBOpenSLOldEngine::getInstance()->registerAssetForRefilling(asset);
 	}
 	if (is_loop_requested) {
 		is_loop_requested = false;
 	}
-	pthread_mutex_unlock(&buf_fill_lock);
 	return;
 }

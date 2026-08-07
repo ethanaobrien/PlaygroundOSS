@@ -38,6 +38,7 @@ struct MemoryBlock;
 class  FntDebug;
 namespace FontSystem {
 	void reboot();
+	void shutdown();
 };
 
 struct FontObject {
@@ -45,14 +46,19 @@ struct FontObject {
 	friend struct CharDictionnary;
 	friend struct CharCache;
 public:
-	static bool	registerFont(const char* logicalName, const char* physicalFont, bool asDefault);
+	static bool	registerFont(const char* logicalName, const char* physicalFont, bool asDefault, bool useHinting = true);
+	static bool	registerFont(const char* logicalName, const char* fallbackName);
+	static void disableHinting();
 	static FontObject* createFont(const char* fontName, u32 size);
 	static void destroyFont(FontObject* pFont, bool force = false);
-	static void releaseFontSystem();
+	static void releaseFontSystem(bool releaseAllAliases);
 	
-	FT_GlyphSlot renderChar(u32 unicode);
-	void renderText	(s32 x, s32 y, const char* text, u8* greyBuffer, u32 colorARGB8888, u32 buffWidth, u32 buffHeight, s32 strideByte, bool use4444);
-	void getTextInfo(const char* text, STextInfo* result);
+	FT_GlyphSlot renderChar(u32 unicode, s32 scaleX, s32 scaleY, FontObject** selectedFont);
+	void renderText	(s32 x, s32 y, const char* text, u8* greyBuffer,
+					 u32 colorARGB8888, u32 buffWidth, u32 buffHeight,
+					 s32 strideByte, u32 pixelBytes,
+					 float scaleX = 1.0f, float scaleY = 1.0f);
+	void getTextInfo(const char* text, STextInfo* result, float scaleX, float scaleY);
 	float getAscent();
 
 	static void test();
@@ -67,25 +73,35 @@ private:
 
 	FontObject*	m_prev;
 	FontObject* m_next;
+	FontObject* m_fallback;
 	
 	FT_Face		m_face;
-	u32			m_lenName;
-	u32 		m_size;
 	u32			m_refCount;
 	u16			m_dicoStart;
 	FT_Bool		m_hasKerning;
+	u8			m_loadFlags;
+	u32 		m_size;
 	const char*	m_name;
+	s32			m_lenName;
 
 	struct FONTALIAS {
 		const char * logicalName;
 		const char * physicalName;
 		bool		 isDefault;
+		bool		 isSystemFont;
+		bool		 useHinting;
+		FONTALIAS*	 fallbackFont;
 	};
 
 	static FONTALIAS	g_fonts[5];
 	static u32			g_fontInstalled;
+	static u32*			s_textCodepoints;
+	static u32*			s_textFormatting;
+	static u32			s_textCapacity;
+	static bool			s_useHinting;
 
-	static const char* getFileFromFontName(const char* fontName, char* tmpBuffer);
+	static bool ensureTextCapacity(u32 required);
+	static const char* getFileFromFontName(const char* fontName, char* tmpBuffer, FONTALIAS** fallbackFont, bool* useHinting);
 };
 
 #define CHAR_CACHE_SIZE	(512)
@@ -95,7 +111,7 @@ struct CharCache {
 	friend struct CharDictionnary;
 	friend struct FontObject;
 public:
-	static CharCache* createEntry(u32 uniCode, u16* outIndex, FontObject* pFont);
+	static CharCache* createEntry(u32 uniCode, u16* outIndex, FontObject* pFont, s32 scaleX, s32 scaleY);
 	
 	static void test();
 	static void reboot() {
@@ -106,6 +122,7 @@ public:
 
 	u8* m_ptr;
 	FontObject* m_pFontObj;
+	FontObject* m_pRenderFont;
 private:
 	u32 m_unicode;
 public:
@@ -115,14 +132,15 @@ private:
 	u16	m_next;
 	u16 m_prev;
 public:
+	u16 m_scaleX;
+	u16 m_scaleY;
 	u16 m_blockIndex;
 	u16	m_blockCharIndex;
 	u16 m_tblOffset;
 	// ---- Rendering box
 	u8  m_width;
 	u8  m_height;
-	s8  m_advanceX;
-	s8  m_advanceY;
+	s16 m_advanceX;
 	// ------------------
 private:
 	CharCache();
@@ -138,7 +156,7 @@ struct CharDictionnary {
 	friend struct FontObject;
 	friend class FntDebug;
 public:
-	static CharCache* getChar(u32 uniCode, FontObject* pFont);
+	static CharCache* getChar(u32 uniCode, FontObject* pFont, s32 scaleX = 0x4000, s32 scaleY = 0x4000);
 	static void	removeDicoEntry(u16 startEntry, u32 unicode);
 	static void destroyTree(u16 entry, u16 depth);
 	static void removeEntry(u16 entry);
@@ -151,7 +169,7 @@ private:
 	CharDictionnary();
 
 	static const u32 DICO_ELEMENT_COUNT = 1000;
-	static CharCache*	findEntry(FontObject* pFont,u32 uniCode);
+	static CharCache*	findEntry(FontObject* pFont, u32 uniCode, s32 scaleX, s32 scaleY);
 	static CharCache*	createEntry(FontObject* pFont, u32 uniCode);
 	static u16			createDicoEntry();
 	static u16			removeDicoEntryRec(u16 entry, u32 depth, u32 unicode, u16 startEntry);
@@ -162,6 +180,7 @@ private:
 
 	u16			m_next;			// 2
 	u16			m_prev;			// 2
+	u16			m_childMask;
 	u16			m_idxTbl[16];	// 8 byte
 };
 

@@ -36,8 +36,8 @@ public:
 	bool readBlock(void *buffer, u32 byteSize);
 	ESTATUS getStatus();
     
-	int readU16arr(u16 *pBufferU16, int items);
-	int readU32arr(u32 *pBufferU32, int items);
+	size_t readU16arr(u16 *pBufferU16, size_t items);
+	size_t readU32arr(u32 *pBufferU32, size_t items);
     
     
 	IWriteStream *getWriteStream();

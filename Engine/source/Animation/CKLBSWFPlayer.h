@@ -26,6 +26,7 @@
 
 // Null index, null offset
 #define MAIN_MOVIE_IDX			(0xFFFE)
+#define STOPPED_MOVIE_CODE		(0xFF000000)
 
 //
 // Movie instruction type
@@ -37,6 +38,12 @@
 #define PLACE_OBJECT_CLIP		(4)
 
 #define SKIP_SHOW				(4)
+
+//
+// Render mode packed inside the layer field of a placement instruction.
+//
+#define PLACE_RENDERMODE		(4)
+#define PLACE_RENDERMODE_MASK	(3)
 
 //
 // Structure index
@@ -109,14 +116,18 @@ public:
 
 	virtual
 	void			setPriority			(u32 order);
+	virtual
+	void			replaceAsset		(const char* sourceName, CKLBAsset* replacement);
 	u16				findCodeFrame		(char* label, u16* pFrameNum);
 	void			gotoFrame			(u16 frame);
 	void			setPlay				(bool play) {
 		if (play != m_playMode) {
 			m_playMode = play;
 			if (play) {
+				m_frameIncrement	= 1;
 				m_isPlaying			= m_isPlayingBackup;
 			} else {
+				m_frameIncrement	= 0;
 				m_isPlayingBackup	= m_isPlaying;
 				m_isPlaying = STOPPED;
 			}
@@ -140,6 +151,10 @@ public:
 
 	inline
 	u16				getFrameRate		()	{ return m_msPerFrame; }
+	inline
+	u32				getFrameTotal		()	{ return m_totalFrame; }
+	inline
+	u16				getFrameCurrent		() const { return m_uiFrame; }
 	void			setFrameRate		(u16 milliSecPerFrame) {
 		if (milliSecPerFrame) {
 			setPlay(true);
@@ -157,6 +172,7 @@ protected:
 	CKLBSWFMovie*	m_flashRoot;
 
 	float			m_volume;
+	u32				m_totalFrame;
 	u32				m_renderOffset;
 	u32				m_localTime;
 	u32				m_movieStartCode;	// Movie definition index IN MOVIE DATA STREAM ( NOT INDEX OF MOVIE ITSELF IN ARRAY )
@@ -166,9 +182,9 @@ protected:
 	u16				m_bitPos;
 	u16				m_uiFrame;
 	u16				m_msPerFrame;
-	u16				m_updateFrame;
 	u8				m_isPlaying;
 	u8				m_isPlayingBackup;
+	u8				m_frameIncrement;
 	CKLBImageAsset**	m_aBitmapLoaded;
 	s32*			m_convTable;
 	const char**	m_nameTable;
@@ -179,6 +195,7 @@ protected:
 	bool			m_disableJump;
 	bool			m_playMode;
 	bool			m_supportCaching;
+	u8				m_isClipped;
 
 	virtual
 	void			animate				(u32 deltaTimeMilli);
@@ -192,12 +209,13 @@ protected:
 
 private:
 	void			freeTables			();
-	CKLBNode*		addMovie			(u16 movieID, u16 layer);
-	void			removeMovie			(CKLBNode* pNode);
+	CKLBNode*		addMovie			(u16 movieID, u16 layer, u16 maskLayer, bool maskFlag);
+	bool			removeMovie			(CKLBNode* pNode);
 	u16				findCodeFrame		(u16 frame);
 	void			rebuildSort			();
 	void			rebuildRecurse		(CKLBNode* pNode, u32* pIndex, CKLBRenderingManager& pRdr);
 	void			setFlashRoot		();
+	void			updateRenderMode	(u8 mode);
 };
 
 struct SShape;
@@ -227,8 +245,8 @@ public:
 
 	inline
 	char*		getConstantString	(u16 stringIndex) {
-		klb_assert(stringIndex < m_uiStringCount, "Invalid index");
-		klb_assert(m_aConstants, "No constant");
+		klb_assertNull(stringIndex < m_uiStringCount, "Invalid index");
+		klb_assertNull(m_aConstants, "No constant");
 		return m_aConstants[stringIndex];
 	}
 
@@ -240,10 +258,19 @@ public:
 	bool		LoadData			(u8* pData);
 	CKLBSWFAsset* 
 				findMovieAsset		(char* name);
+	virtual void	replaceAsset		(const char* name, CKLBAbstractAsset* asset);
 	void		setVolumeSE			(float volume);
 
-	CKLBNode*	addMovieA			(char* name, u16 layer, SMatrix2D* m, CKLBNode* root, const char** templateInfo, u32 pairCount);
-	CKLBNode*	addMovieB			(u16 movieID, u16 layer, SMatrix2D* m, CKLBNode* root, const char** templateInfo, u32 pairCount);
+	CKLBNode*	addMovieA			(char* name, u16 layer, u16 maskLayer, u8 maskFlag, SMatrix2D* m, CKLBNode* root, const char** templateInfo, u32 pairCount);
+	CKLBNode*	addMovieB			(u16 movieID, u16 layer, u16 maskLayer, u8 maskFlag, SMatrix2D* m, CKLBNode* root, const char** templateInfo, u32 pairCount);
+
+	inline CKLBNode* addMovieA(char* name, u16 layer, SMatrix2D* m, CKLBNode* root, const char** templateInfo, u32 pairCount) {
+		return addMovieA(name, layer, NULL_IDX, 0, m, root, templateInfo, pairCount);
+	}
+
+	inline CKLBNode* addMovieB(u16 movieID, u16 layer, SMatrix2D* m, CKLBNode* root, const char** templateInfo, u32 pairCount) {
+		return addMovieB(movieID, layer, NULL_IDX, 0, m, root, templateInfo, pairCount);
+	}
 
 	u32			getResourceList		(u32 arraySize, const char** arrayOfString);
 private:
@@ -329,7 +356,7 @@ public:
 	virtual	u8					charHeader()					{ return 'F';			}
 	virtual const char*			fileExtension()					{ return ".flsh"; }
 
-	virtual CKLBAbstractAsset*	loadAsset(u8* stream, u32 streamSize);
+	virtual CKLBAbstractAsset*	loadAsset(u8* stream, size_t streamSize);
 };
 
 

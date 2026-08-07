@@ -139,7 +139,7 @@ bool SoundAnalysis_MP3( const char* _path, sSoundAnalysisData* _analysisData )
     MP3FrameHeader frameHeader;
     sFrameHeaderInfo headerInfo;
     sFrameHeaderAverageInfo headerAverageInfo;
-    int nSize = 0;
+    size_t nSize = 0;
     s64 totalFileSize = 0;   // mp3のファイル全体サイズ
     int mp3DataSize = 0;     // mp3の音声データのサイズ
     int skipOffset = 0;      //
@@ -148,8 +148,10 @@ bool SoundAnalysis_MP3( const char* _path, sSoundAnalysisData* _analysisData )
     fp = fopen( _path, "rb" );
     if( !fp ) return false;
     
-	CDecryptBaseClass decryptor;
+	CDecryptBaseClass decryptor(0x0e);
+	u32 headerSize;
 	IPlatformRequest& pltf = CPFInterface::getInstance().platform();
+	headerSize = 0;
 	if (pltf.useEncryption()) {
 		u8 hdr[4];
 		hdr[0] = 0;
@@ -157,19 +159,19 @@ bool SoundAnalysis_MP3( const char* _path, sSoundAnalysisData* _analysisData )
 		hdr[2] = 0;
 		hdr[3] = 0;
 		fread(hdr, 1,4,fp);
-		decryptor.decryptSetup((const u8*)_path, hdr);
+		decryptor.decryptSetup((const u8*)_path, hdr, &headerSize);
+		if (headerSize >= 5) {
+			u8 extendedHeader[128];
+			fread(extendedHeader, 1, headerSize - 4, fp);
+			decryptor.finishSetup(extendedHeader, _path);
+		}
 	}
 
     // ファイル全体のサイズを取得
     fseek( fp, 0, SEEK_END );
     fgetpos( fp, (fpos_t*)&totalFileSize );
-
-	if (decryptor.m_useNew) {
-		totalFileSize -= 4;
-	    fseek( fp, 4, SEEK_SET );
-	} else {
-	    fseek( fp, 0, SEEK_SET );
-	}
+	totalFileSize -= headerSize;
+	fseek( fp, headerSize, SEEK_SET );
 
     // フレームヘッダのを検索します
     nSize = fread( header, 1, sizeof(header), fp );
@@ -186,7 +188,7 @@ bool SoundAnalysis_MP3( const char* _path, sSoundAnalysisData* _analysisData )
     {
         // ID3v1
 		decryptor.gotoOffset((u32)(totalFileSize - 128));
-        fseek( fp, (long)((totalFileSize - 128) + (decryptor.m_useNew ? 4 : 0)), SEEK_SET );
+        fseek( fp, (long)((totalFileSize - 128) + decryptor.getHeaderSize()), SEEK_SET );
         nSize = fread( header, 1, sizeof(header), fp );
         if( nSize < sizeof(header) )
         {
@@ -204,7 +206,7 @@ bool SoundAnalysis_MP3( const char* _path, sSoundAnalysisData* _analysisData )
         }
         
 		decryptor.gotoOffset(skipOffset);
-        fseek( fp, skipOffset + (decryptor.m_useNew ? 4 : 0), SEEK_SET );
+        fseek( fp, skipOffset + decryptor.getHeaderSize(), SEEK_SET );
         nSize = fread( &frameHeader, 1, sizeof(frameHeader), fp );
 
 		decryptor.decryptBlck(&frameHeader, nSize);
@@ -229,7 +231,7 @@ bool SoundAnalysis_MP3( const char* _path, sSoundAnalysisData* _analysisData )
         
         // フレームヘッダ読み込み
 		decryptor.gotoOffset(skipOffset);
-        fseek( fp, skipOffset + (decryptor.m_useNew ? 4 : 0), SEEK_SET );
+        fseek( fp, skipOffset + decryptor.getHeaderSize(), SEEK_SET );
         nSize = fread( &frameHeader, 1, sizeof(frameHeader), fp );
         if( nSize < sizeof(frameHeader) )
         {
@@ -368,7 +370,7 @@ bool AverageFrameHeader(CDecryptBaseClass& decryptor, FILE* _fp, s32 _skip, sFra
     s32 ofs = _skip;
     MP3FrameHeader frameHeader;
     sFrameHeaderInfo headerInfo;
-    s32 nSize = 0;
+    size_t nSize = 0;
     
     eBITRATE_TYPE bitRateType = eBITRATE_TYPE_CBR;    // ビットレートタイプ(とりあえずCBRを初期値)
     s16 bitRate = -1;
@@ -391,7 +393,7 @@ bool AverageFrameHeader(CDecryptBaseClass& decryptor, FILE* _fp, s32 _skip, sFra
     {
         // 読み飛ばし位置に移動してから４byte読み込み
 		decryptor.gotoOffset(ofs);
-        fseek( _fp, ofs + (decryptor.m_useNew ? 4 : 0), SEEK_SET );
+        fseek( _fp, ofs + decryptor.getHeaderSize(), SEEK_SET );
         nSize = fread( &frameHeader, 1, sizeof(frameHeader), _fp );
         decryptor.decryptBlck(&frameHeader, nSize);
 

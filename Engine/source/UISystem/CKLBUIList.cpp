@@ -22,6 +22,7 @@
 #include "CKLBLuaEnv.h"
 #include "CKLBScriptEnv.h"
 #include "CKLBFormGroup.h"
+#include "CKLBDataTask.h"
 
 #include "CKLBUIScrollBar.h"
 #include "IMgrEntry.h"
@@ -53,6 +54,7 @@ enum {
 	UI_LIST_SET_POSITION,	// スクロール位置合わせ
 	UI_LIST_SET_INITIAL,	// 初期スクロール位置の設定
 	UI_LIST_SET_DRAGRECT,	// Set scroll draggable area
+	UI_LIST_SET_DRAGRECT_EVENTCLIP,
 	UI_LIST_SET_ITEM_POS,	// スクロール位置をアイテム位置に合わせる
 	UI_LIST_GET_POSITION,	// スクロール位置
 
@@ -82,6 +84,16 @@ enum {
 	UI_LIST_GET_ITEMCOUNT,	// Get Count List Item.
 	UI_LIST_GET_ITEMFORM,	// Return a form object if exist for a given item.
 	UI_LIST_SET_DRAGMINDISTANCE, //
+	UI_LIST_EVENT_CLIPRECT,
+	UI_LIST_SET_TEMPLATE,
+	UI_LIST_GET_DYNAMICIDSTRING,
+	UI_LIST_SET_DYNAMICMARGIN,
+	UI_LIST_HIDE_SCROLLBAR,
+	UI_LIST_SHOW_SCROLLBAR,
+	UI_LIST_SET_DRAG_CALLBACK,
+	UI_LIST_IS_ACTIVE_ITEM,
+	UI_LIST_SET_ITEM_UPDATE_CALLBACK,
+	UI_LIST_BAR_ENABLE_SHOW_UPDATE,
 };
 // コントロール用値
 enum {
@@ -125,6 +137,7 @@ static IFactory::DEFCMD cmd[] = {
 	{ "UI_LIST_SET_POSITION",			UI_LIST_SET_POSITION },
 	{ "UI_LIST_SET_INITIAL",			UI_LIST_SET_INITIAL },
 	{ "UI_LIST_SET_DRAGRECT",			UI_LIST_SET_DRAGRECT },
+	{ "UI_LIST_SET_DRAGRECT_EVENTCLIP",	UI_LIST_SET_DRAGRECT_EVENTCLIP },
 
 	{ "UI_LIST_SET_ITEM_POS",			UI_LIST_SET_ITEM_POS },
 	{ "UI_LIST_GET_POSITION",			UI_LIST_GET_POSITION },
@@ -161,6 +174,16 @@ static IFactory::DEFCMD cmd[] = {
 	{ "UI_LIST_GET_ITEMFORM",			UI_LIST_GET_ITEMFORM },
 
 	{ "UI_LIST_SET_DRAGMINDISTANCE",	UI_LIST_SET_DRAGMINDISTANCE },
+	{ "UI_LIST_EVENT_CLIPRECT",			UI_LIST_EVENT_CLIPRECT },
+	{ "UI_LIST_SET_TEMPLATE",			UI_LIST_SET_TEMPLATE },
+	{ "UI_LIST_GET_DYNAMICIDSTRING",	UI_LIST_GET_DYNAMICIDSTRING },
+	{ "UI_LIST_SET_DYNAMICMARGIN",		UI_LIST_SET_DYNAMICMARGIN },
+	{ "UI_LIST_HIDE_SCROLLBAR",			UI_LIST_HIDE_SCROLLBAR },
+	{ "UI_LIST_SHOW_SCROLLBAR",			UI_LIST_SHOW_SCROLLBAR },
+	{ "UI_LIST_SET_DRAG_CALLBACK",		UI_LIST_SET_DRAG_CALLBACK },
+	{ "UI_LIST_IS_ACTIVE_ITEM",			UI_LIST_IS_ACTIVE_ITEM },
+	{ "UI_LIST_SET_ITEM_UPDATE_CALLBACK", UI_LIST_SET_ITEM_UPDATE_CALLBACK },
+	{ "UI_LIST_BAR_ENABLE_SHOW_UPDATE",	UI_LIST_BAR_ENABLE_SHOW_UPDATE },
 
 	{ "LIST_VIEW_TOP",					LIST_VIEW_TOP },
 	{ "LIST_VIEW_CENTER",				LIST_VIEW_CENTER },
@@ -221,7 +244,8 @@ enum {
 
 CKLBListDrag::CKLBListDrag(CKLBUIList * parent, const char * funcname)
 : CKLBDragCallbackIF(funcname)
-, m_pParent         (parent) 
+, m_pParent         (parent)
+, m_eventClip       (false)
 {
 }
 
@@ -229,20 +253,38 @@ CKLBListDrag::~CKLBListDrag()
 {
 }
 
-void
+s32
 CKLBListDrag::callback(PAD_ITEM::TYPE type, int tap_x, int tap_y, int mv_x, int mv_y)
 {
-	m_pParent->m_scrBar.setCtrlStatus((type != PAD_ITEM::RELEASE) || (type != PAD_ITEM::CANCEL));
-	execCallback((void *)m_pParent, type, tap_x, tap_y, mv_x, mv_y); 
+	CKLBUIList * parent = m_pParent;
+	s32 dragArea[4];
+	s32 x;
+	s32 y;
+	parent->getDragArea(dragArea, x, y);
+	x = tap_x + mv_x - x;
+	y = tap_y + mv_y - y;
+
+	s32 outsideClip = 0;
+	if(m_eventClip) {
+		outsideClip = ((x >= dragArea[0]) & (x < dragArea[1])
+			& (y >= dragArea[2]) & (y < dragArea[3])) ^ 1;
+	}
+
+	m_pParent->m_scrBar.setCtrlStatus(type != PAD_ITEM::RELEASE);
+	execCallback((void *)m_pParent, type, tap_x, tap_y, mv_x, mv_y);
+	return outsideClip;
 }
 
 
 
 CKLBUIList::CKLBUIList()
-: CKLBUITask            (CKLBTask::P_UIAFTER)
+: CKLBUITask            (CKLBTask::P_MENU)
+, m_eventClipRect       (false)
 , m_clipHandle          (NULL)
 , m_listLength          (0)
-, m_modalStack          (false)
+, m_dynamicMarginTop    (0)
+, m_dynamicMarginBottom (0)
+, m_modalStack          ()
 , m_layoutTable         (NULL)
 , m_layoutTableXY       (NULL)
 , m_layoutTableScale    (NULL)
@@ -256,11 +298,17 @@ CKLBUIList::CKLBUIList()
 , m_dragCallback        (NULL)
 , m_limitCallback       (NULL)
 , m_dynamicCallback     (NULL)
+, m_itemUpdateCallback  (NULL)
+, m_templateAsset       (NULL)
+, m_templateString      (NULL)
 , m_limitCalled         (false)
 , m_limitAreaSize       (0)
 , m_pCtrlNode           (NULL)
 , m_pGroupName          (NULL)
+, m_pDynamicCurrentItem (NULL)
+, m_deferredDragRelease (false)
 , m_defaultPrePos       (-1)
+, m_forceScrollBarEnable(false)
 , m_bTaped              (false)
 , m_bLoop               (false)
 , m_itemMode            (LIST_ITEM_NORMAL)
@@ -274,6 +322,58 @@ CKLBUIList::CKLBUIList()
 	m_scrBar = this;
 	m_formIF = this;
 	m_newScriptModel = true;
+	m_dataSourceSubscription.configure(dataSourceUpdateCallback, this);
+}
+
+void
+CKLBUIList::dataSourceUpdateCallback(void* context, s64 afterRecordID, s64 firstRecordID, u32 recordCount)
+{
+	static_cast<CKLBUIList*>(context)->dataSourceUpdate(afterRecordID, firstRecordID, recordCount);
+}
+
+void
+CKLBUIList::dataSourceUpdate(s64 afterRecordID, s64 firstRecordID, u32 recordCount)
+{
+	BaseRealDataProducer* source = m_dataSourceSubscription.m_notifier->getDataSource();
+	LISTITEM* posItem = NULL;
+	int itemPos = 0;
+
+	if(afterRecordID == BaseRealDataProducer::APPEND_RECORD_ID) {
+		posItem = m_lstBegin;
+	} else if(afterRecordID != BaseRealDataProducer::INVALID_RECORD_ID) {
+		posItem = getItemByID(afterRecordID);
+	}
+	if(posItem) {
+		itemPos = posItem->pos;
+	}
+
+	CKLBCompositeAsset* templateAsset = m_templateAsset;
+	klb_assert(templateAsset, "Template Asset is not binded");
+	int step = m_vertical ? templateAsset->get_height() : templateAsset->get_width();
+	if(firstRecordID != BaseRealDataProducer::INVALID_RECORD_ID) {
+		int keyFieldIndex = source->getKeyFieldIndex();
+		bool result = true;
+		int addLen = 0;
+
+		do {
+			s64 itemID = firstRecordID;
+			if(keyFieldIndex >= 0) {
+				itemID = source->getAsInt(keyFieldIndex);
+			}
+			result = result && itemInsert(posItem, step, NULL, 0, itemID, templateAsset, source);
+			addLen += step;
+			firstRecordID = source->moveNextRecord();
+			if(firstRecordID == BaseRealDataProducer::INVALID_RECORD_ID) {
+				break;
+			}
+
+		} while(--recordCount);
+
+		if(-m_scrollPos >= itemPos) {
+			m_scrollPos -= addLen;
+		}
+		m_itemUpdate = true;
+	}
 }
 
 CKLBUIList::~CKLBUIList() 
@@ -360,8 +460,8 @@ CKLBUIList::initCore(u32 base_order, u32 max_order,
 		return false;
 	}
 
-	klb_assert((((s32)base_order) >= 0), "Order Problem");
-	klb_assert((((s32)max_order ) >= 0), "Order Problem");
+	klb_assertNull((((s32)base_order) >= 0), "Order Problem");
+	klb_assertNull((((s32)max_order ) >= 0), "Order Problem");
 
 	m_basePriority	= base_order;
 	m_endPriority	= max_order;
@@ -370,6 +470,8 @@ CKLBUIList::initCore(u32 base_order, u32 max_order,
 	m_clipY			= y;
 	m_clipWidth		= (int)clip_width;
 	m_clipHeight	= (int)clip_height;
+	if(m_clipWidth  < 0) { m_clipWidth  = 0; }
+	if(m_clipHeight < 0) { m_clipHeight = 0; }
 
 	m_leftDrag		= 0;
 	m_rightDrag		= m_clipWidth;
@@ -462,7 +564,7 @@ CKLBUIList::setItemMode(int mode, const char * dynamicCallback)
 	bool bResult = false;
 
 	// 既にアイテムが登録されており、異なるモードが設定されたらassertionで落とす
-	klb_assert(!m_lstBegin && !m_lstEnd, "The list items are already registered. ");
+	klb_assertNull(!m_lstBegin && !m_lstEnd, "The list items are already registered. ");
 
 	m_itemMode = mode;	// アイテム保持モードを設定する
 
@@ -499,6 +601,21 @@ CKLBUIList::setItemMode(int mode, const char * dynamicCallback)
 	return bResult;
 }
 
+s64
+getLuaItemId(CLuaState& lua, int index)
+{
+	u64 id = (u64)-1LL;
+	if(index <= lua.numArgs()) {
+		if(lua.isString(index)) {
+			const char * string = lua.getString(index);
+			return CKLBUtility::stringNum(string);
+		} else {
+			id = (u64)lua.getDouble(5);
+		}
+	}
+	return (s64)id;
+}
+
 int
 CKLBUIList::cmdItemAdd(CLuaState& lua, int argc)
 {
@@ -506,7 +623,7 @@ CKLBUIList::cmdItemAdd(CLuaState& lua, int argc)
 	if(argc >= 3 && argc <= 5) {
 		int step = (m_vertical) ? m_stepY : m_stepX;
 		if(argc >= 4) step = lua.getInt(4);
-		int id = (argc >= 5) ? lua.getInt(5) : -1;
+		s64 id = getLuaItemId(lua, 5);
 		bResult = itemInsertUniversal(0, step, lua, 3, id);	// 最後に追加するのでNULLを指定
 	}
 	lua.retBoolean(bResult);
@@ -521,23 +638,28 @@ CKLBUIList::cmdItemAdd(const char* assetName)
 }
 
 bool
-CKLBUIList::cmdItemAdd(const char* assetName, int step, int id)
+CKLBUIList::cmdItemAdd(const char* assetName, int step, s64 id)
 {
 	return itemAddInsert(NULL, assetName, step, id);
 }
 
 bool
-CKLBUIList::itemAddInsert(LISTITEM * posItem, const char* assetName, int step, int id) 
+CKLBUIList::itemAddInsert(LISTITEM * posItem, const char* assetName, int step, s64 id)
 {
-	if(!assetName) { return false; }
-
-	u32 size;
-	const char* json = toJSON(assetName, size);
-
-	itemInsert(posItem, step, json, size, id);
-	KLBDELETEA(json);
-
-	return true;
+	bool result = false;
+	if(assetName) {
+		size_t size;
+		const char* json = toJSON(assetName, size);
+		const size_t jsonSize = size;
+		if(json) {
+			itemInsert(posItem, step, json, jsonSize, id);
+			KLBDELETEA(json);
+		} else {
+			itemInsert(posItem, step, json, jsonSize, id, m_templateAsset);
+		}
+		result = true;
+	}
+	return result;
 }
 
 int
@@ -546,7 +668,7 @@ CKLBUIList::cmdItemInsert(CLuaState& lua, int argc)
 	bool bResult = false;
 	if(argc >= 4 && argc <= 5) {
 		int idx = lua.getInt(4);
-		int id = (argc >= 5) ? lua.getInt(5) : -1;
+		s64 id = getLuaItemId(lua, 5);
 		int step = (m_vertical) ? m_stepY : m_stepX;
 		LISTITEM * posItem = getItemByIndex(idx);
 		// Safe against NULL posItem
@@ -567,7 +689,7 @@ CKLBUIList::cmdItemInsert(const char* assetName, int idx)
 }
 
 bool
-CKLBUIList::cmdItemInsert(const char* assetName, int idx, int step, int id)
+CKLBUIList::cmdItemInsert(const char* assetName, int idx, int step, s64 id)
 {
 	LISTITEM * posItem = getItemByIndex(idx);
 	return itemAddInsert(posItem, assetName, step, id);
@@ -755,9 +877,19 @@ CKLBUIList::cmdSetItemMode(int mode, const char* dynamicCallback)
 	return bResult;
 }
 
+void
+CKLBUIList::bindDataTask(CKLBDataTask* dataTask)
+{
+	m_dataSourceSubscription.setNotifier(true, dataTask);
+	itemCleanUp();
+
+	BaseRealDataProducer* source = dataTask->getDataSource();
+	s64 firstRecordID = source->selectRecord(BaseRealDataProducer::APPEND_RECORD_ID);
+	dataSourceUpdate(BaseRealDataProducer::INVALID_RECORD_ID, firstRecordID, 999999999);
+}
 
 bool
-CKLBUIList::cmdAddRecords(int insIdx, const char* tpform, u32 sizeTemplate, const char* dbrecs, u32 sizeDBRec, int step)
+CKLBUIList::cmdAddRecords(int insIdx, const char* tpform, size_t sizeTemplate, const char* dbrecs, size_t sizeDBRec, int step)
 {
 	u32 handle          = 0;
 	LISTITEM * posItem  = getItemByIndex(insIdx);
@@ -771,22 +903,23 @@ CKLBUIList::cmdAddRecords(int insIdx, const char* tpform, u32 sizeTemplate, cons
 	}
 	if(!step) { step = (m_vertical) ? pAsset->get_height() : pAsset->get_width(); }
 
-	IDataSource * pSource = JSonDB::openDB((const u8 *)dbrecs, sizeDBRec);
-	pSource->moveTo(0);	// 先頭にジャンプ
+	BaseRealDataProducer * pSource = NULL; // The shipped legacy command no longer constructs a JSON producer.
+	s64 recordID = pSource->selectRecord(BaseRealDataProducer::APPEND_RECORD_ID);
 
-	bool bResult = true;
 	int addLen = 0;
-	do {
+	u8 bResult = true;
+	while(recordID != BaseRealDataProducer::INVALID_RECORD_ID) {
 		addLen += step;
-		bResult = bResult && itemInsert(posItem, step, tpform, sizeTemplate,-1, pAsset, pSource);
-	} while (pSource->moveNext() != MOVE_EOF);
+		bResult = bResult && itemInsert(posItem, step, tpform, sizeTemplate, pSource->getCurrentRecordID(), pAsset, pSource);
+		recordID = pSource->moveNextRecord();
+	}
 
-	KLBDELETE(pSource);
+	BaseRealDataProducer::release(pSource);
 	if(-m_scrollPos >= itemPos) {
 		m_scrollPos -= addLen;
 	}
 
-	return bResult;
+	return bResult != false;
 }
 
 int
@@ -824,7 +957,7 @@ CKLBUIList::cmdGetPosition()
 }
 
 void
-CKLBUIList::cmdSetItemID(int index, int id)
+CKLBUIList::cmdSetItemID(int index, s64 id)
 {
 	LISTITEM * posItem = getItemByIndex(index);
 	if (posItem) {
@@ -833,7 +966,7 @@ CKLBUIList::cmdSetItemID(int index, int id)
 }
 
 int
-CKLBUIList::cmdSearchID(int id)
+CKLBUIList::cmdSearchID(s64 id)
 {
 	return get_item_index_by_id(id);
 }
@@ -912,7 +1045,7 @@ CKLBUIList::cmdGetLimit()
 bool
 CKLBUIList::cmdExistNode(int index, const char* name)
 {
-	if(m_itemMode == LIST_ITEM_DYNAMIC) { CKLBScriptEnv::getInstance().error("[UI_List] could not update node on DYNAMIC item mode."); }
+	if(m_itemMode == LIST_ITEM_DYNAMIC) { CKLBScriptEnv::getInstance().errMsg("[UI_List] could not update node on DYNAMIC item mode."); }
 	LISTITEM * posItem = getItemByIndex(index);
 	if (posItem) {
 		CKLBNode * pParent = posItem->form;
@@ -935,7 +1068,9 @@ CKLBUIList::cmdUpdateNode(CLuaState& lua, int argc)
 	LISTITEM * posItem = getItemByIndex(index);
 	if (posItem) {
 		if(m_itemMode == LIST_ITEM_DYNAMIC && !posItem->form) {
-			CKLBScriptEnv::getInstance().error("[UI_List] could not update node on DYNAMIC item mode.");
+			CKLBScriptEnv::getInstance().errMsg("[UI_List] could not update node on DYNAMIC item mode.");
+			lua.retBoolean(true);
+			return 1;
 		}
 		CKLBNode * pParent = posItem->form;
 		return m_formIF.updateNode(lua, argc, 5, pParent, 4, subcmd, posItem, index);
@@ -964,7 +1099,7 @@ CKLBUIList::cmdAnimationItem(int idx, const char* name, bool blend)
 {
 	// idx の値から、アイテムのnodeを取得する
 	LISTITEM * item = getItemByIndex(idx);
-	if (item) {
+	if (item && item->form) {
 		return m_animpack.kickAnim(item->form, name, blend, idx);
 	} else {
 		return false;
@@ -1067,7 +1202,7 @@ CKLBUIList::cmdGetItemForm(CLuaState& lua, int argc)
 					if (pNode) {
 						CKLBUITask* pTask = pNode->getUITask();
 						if (pTask->getClassID() == CLS_KLBUIFORM) {
-							ptr = pTask;
+							ptr = reinterpret_cast<void*>(pTask->getTaskTrackHandle());
 						}
 					}
 				}
@@ -1113,10 +1248,12 @@ CKLBUIList::setPosition(int pos)
         if(pos < 0)                             { pos = 0;                         }
 	}
 
-	m_scrollPos = -pos;
+	if(m_scrollPos != -pos) {
+		m_scrollPos = -pos;
 
-	// itemRealloc();
-	m_posUpdate = true;
+		// itemRealloc();
+		m_posUpdate = true;
+	}
 	return -m_scrollPos;
 }
 
@@ -1139,7 +1276,7 @@ CKLBUIList::useScrollBar(u32 order, bool side, int lineWeight,
 	}
 	pos = -m_scrollPos;
 	int limit       = (int)(m_listLength - m_clipSize);
-	int slider_size = m_clipSize * m_clipSize / limit;
+	int slider_size = limit ? (m_clipSize * m_clipSize / limit) : 0;
 	//CLuaState& lua = CKLBLuaEnv::getInstance().getState();
 	bool bResult    = m_scrBar.init(getNode(),
                                     order, (float)x, (float)y, (float)width, (float)height,
@@ -1236,7 +1373,7 @@ CKLBUIList::commandUI(CLuaState& lua, int argc, int cmd)
 	case UI_LIST_SET_ITEM_ID:
 		if(argc == 4) {
 			int index	= lua.getInt(3);
-			int id		= lua.getInt(4);
+			s64 id		= getLuaItemId(lua, 4);
 			cmdSetItemID(index,id);
 			result = true;
 		}
@@ -1244,7 +1381,7 @@ CKLBUIList::commandUI(CLuaState& lua, int argc, int cmd)
 		break;
 	case UI_LIST_SEARCH_ID:
 		if(argc == 3) {
-			int id = lua.getInt(3);
+			s64 id = getLuaItemId(lua, 3);
 			int idx = cmdSearchID(id);
 			if(idx < 0) {
 				lua.retNil();
@@ -1296,8 +1433,8 @@ CKLBUIList::commandUI(CLuaState& lua, int argc, int cmd)
 	case UI_LIST_ADD_RECORDS:
 		if(argc >= 5 && argc <= 6) {
 			int insIdx = lua.getInt(3);				// 挿入位置index
-			u32 sizeTemplate;
-			u32 sizeDBRec;
+			size_t sizeTemplate;
+			size_t sizeDBRec;
 			const char * tpform = toJSON(lua, 4, sizeTemplate);	// テンプレートフォーム
 			const char * dbrecs = toJSON(lua, 5, sizeDBRec);	// DBデータ群
 			int step = (argc >= 6) ? lua.getInt(6) : 0;
@@ -1488,7 +1625,7 @@ CKLBUIList::commandUI(CLuaState& lua, int argc, int cmd)
 				}
 			}
 
-			cmdSelectScrMgr(name, params, ac);
+			result = cmdSelectScrMgr(name, params, ac);
 
 			KLBDELETEA(params);
 		}
@@ -1527,8 +1664,93 @@ CKLBUIList::commandUI(CLuaState& lua, int argc, int cmd)
 		break;
 	case UI_LIST_GET_ITEMCOUNT:			ret = cmdGetItemCount(lua,argc);		break;
 	case UI_LIST_GET_ITEMFORM:			ret = cmdGetItemForm(lua,argc);			break;
+	case UI_LIST_SET_DRAGRECT_EVENTCLIP:
+		if(argc == 3) {
+			bool eventClip = lua.getBool(3);
+			if(m_dragCallback) {
+				m_dragCallback->setEventClip(eventClip);
+			}
+		}
+		break;
+	case UI_LIST_EVENT_CLIPRECT:
+		if(argc >= 3) {
+			m_eventClipRect = lua.getBool(3);
+		}
+		break;
+	case UI_LIST_SET_TEMPLATE:
+		{
+			const char * assetName = lua.getString(3);
+			result = setTemplate(assetName);
+		}
+		lua.retBool(result);
+		break;
+	case UI_LIST_GET_DYNAMICIDSTRING:
+		if(m_pDynamicCurrentItem) {
+			char id[64];
+			CKLBUtility::numStringS64(id, m_pDynamicCurrentItem->id);
+			lua.retString(id);
+		} else {
+			lua.retString("");
+		}
+		break;
+	case UI_LIST_SET_DYNAMICMARGIN:
+		ret = cmdSetDynamicMargin(lua, argc);
+		break;
+	case UI_LIST_HIDE_SCROLLBAR:
+		m_scrBar.setVisible(false);
+		lua.retBool(true);
+		break;
+	case UI_LIST_SHOW_SCROLLBAR:
+		m_scrBar.setVisible(true);
+		lua.retBool(true);
+		break;
+	case UI_LIST_SET_DRAG_CALLBACK:
+		if(argc == 3 && !lua.isNil(3)) {
+			const char * callback = lua.getString(3);
+			if(callback) {
+				m_dragCallback = KLBNEWC(CKLBListDrag, (this, callback));
+			}
+		}
+		break;
+	case UI_LIST_IS_ACTIVE_ITEM:
+		if(argc == 3) {
+			LISTITEM * item = getItemByIndex(lua.getInt(3));
+			result = item && item->form && item->form->isVisible();
+		}
+		lua.retBool(result);
+		break;
+	case UI_LIST_SET_ITEM_UPDATE_CALLBACK:
+		if(argc == 3) {
+			if(!lua.isNil(3)) {
+				const char * callback = lua.getString(3);
+				if(callback) {
+					m_itemUpdateCallback = CKLBUtility::copyString(callback);
+					break;
+				}
+			}
+			m_itemUpdateCallback = NULL;
+		}
+		break;
+	case UI_LIST_BAR_ENABLE_SHOW_UPDATE:
+		if(argc == 3) {
+			m_scrBar.setShowUpdate(lua.getBool(3));
+		}
+		break;
 	}
 	return ret;
+}
+
+int
+CKLBUIList::cmdSetDynamicMargin(CLuaState& lua, int argc)
+{
+	if(argc == 4) {
+		m_dynamicMarginTop = -lua.getInt(3);
+		m_dynamicMarginBottom = lua.getInt(4);
+		m_itemUpdate = true;
+		m_posUpdate = true;
+	}
+	lua.retBool(argc == 4);
+	return 1;
 }
 
 void
@@ -1587,78 +1809,89 @@ CKLBUIList::execute(u32 deltaT)
 	}
 	
 	// 削除予約されたアイテムがあれば真っ先に処理する。
-	itemCleanUp();
+	itemCleanUp(true);
 
 	m_bModalEnable = m_modalStack.isEnable();
 	updateEnable();
-	m_scrBar.setEnable(m_bModalEnable);
+	m_scrBar.setEnable((m_bModalEnable | m_forceScrollBarEnable) & m_touchenable);
 
 	m_scrBar.execute(deltaT);
 	setPosition(m_scrBar.getPosition());
 	if((m_scrBar.isScrolling()) || (m_force)) {
 		// Disable list item click / events...
 		if((m_enableEvents) || (m_force)) {
-			m_enableEvents	= false;
 			m_force			= false;
 
 			LISTITEM*	parse = m_lstBegin;
 			while(parse) {
-				parse->ctrl.bWorking = true;
-				// Do not : fGrp.setWorking(&parse->ctrl, true);
+				parse->ctrl.bEnableEvents = false;
 				parse = parse->next;
 			}
 		}
+		m_enableEvents = false;
 	} else {
 		// Enable list item click / events...
 		if((!m_enableEvents) || (m_force)) {
-			m_enableEvents = true;
 			m_force			= false;
 
 			LISTITEM*	parse = m_lstBegin;
 			while(parse) {
-				parse->ctrl.bWorking = false;
-				// Do not : fGrp.setWorking(&parse->ctrl, false);
+				parse->ctrl.bEnableEvents = true;
 				parse = parse->next;
 			}
 		}
+		m_enableEvents = true;
 	}
 
 	bool visible = getVisible();
 	if(visible) { itemRealloc(); }
 
 	m_animpack.watchFinishedAnim(this);
-	if(m_bModalEnable && m_touchenable && visible && m_pUINode->isVisible()) { touchpadEvent(); }
+	bool deferredDragRelease = false;
+	if(m_bModalEnable && m_touchenable && visible && m_pUINode->isVisible()) {
+		touchpadEvent();
+		deferredDragRelease = true;
+	} else {
+		if(m_deferredDragRelease) {
+			if(m_dragID != -1) {
+				if(m_dragCallback) {
+					m_dragCallback->callback(PAD_ITEM::RELEASE, m_dragCurX, m_dragCurY, 0, 0);
+				} else {
+					defaultScroll(this, PAD_ITEM::RELEASE, m_dragCurX, m_dragCurY,
+								  0, 0, m_dragCurX, m_dragCurY);
+				}
+				m_dragID = -1;
+			}
+		}
+	}
+	m_deferredDragRelease = deferredDragRelease;
 }
 
 void
 CKLBUIList::dieUI()
 {
+	m_dataSourceSubscription.setNotifier(false, NULL);
 	m_modalStack.remove();
 
 	// 削除予約リストにアイテムが残っていれば、先に破棄する。
 	// 子タスクのkillは行わずともよい。
-	itemCleanUp(false);
-
-	LISTITEM * pItem = m_lstBegin;
-	LISTITEM * next;
-
-	// 現在抱えているリストアイテムの破棄
-	while(pItem) {
-		next = pItem->next;
-		// dieUIが呼ばれるころにはすべての子タスクが削除済みなので、
-		// kill()処理を行わずdelete する。
-		delete_item(pItem, false);
-		pItem = next;
-	}
+	itemCleanUp();
 
 	// スクロールコントロールノードの破棄
 	KLBDELETE(m_pCtrlNode);
 
 	KLBDELETE(m_dragCallback);
 	KLBDELETEA(m_dynamicCallback);
+	KLBDELETEA(m_itemUpdateCallback);
 
 	KLBDELETEA(m_limitCallback);	// 2012.11.27  解放漏れがあったので修正
 	KLBDELETEA(m_pGroupName);		// 2012.11.27  解放漏れがあったので修正
+	KLBDELETEA(m_templateString);
+
+	if(m_templateAsset) {
+		m_templateAsset->decrementRefCount();
+		m_templateAsset = NULL;
+	}
 
 	if(m_clipHandle) {
 		CKLBUISystem::unregisterClip(m_clipHandle);
@@ -1667,16 +1900,14 @@ CKLBUIList::dieUI()
 
 
 bool
-CKLBUIList::load_itemform(CKLBUIList::LISTITEM * pItem, const char * json, u32 jsonLength, CKLBCompositeAsset * pOrgAsset, IDataSource * pSource)
+CKLBUIList::load_itemform(CKLBUIList::LISTITEM * pItem, const char * json, size_t jsonLength, CKLBCompositeAsset * pOrgAsset, BaseRealDataProducer * pSource)
 {
 	// 既に form がロードされている場合は何もしない
 	if(pItem->form && pItem->handle) return true;
 
-	u32 handle = 0;
+	u32 handle = _NULLHANDLER;
 
 	// グループ化情報を初期化
-	pItem->ctrl.pGrpPrev    = NULL;
-	pItem->ctrl.pGrpNext    = NULL;
 	pItem->ctrl.pGroup      = NULL;
 
 	pItem->ctrl.pBegin      = NULL;
@@ -1700,7 +1931,8 @@ CKLBUIList::load_itemform(CKLBUIList::LISTITEM * pItem, const char * json, u32 j
 	}
 
 	// アイテムによって生成されたコントロールノードの記録を取る。
-	CKLBUISystem::setFormList(&pItem->ctrl);
+	SFormCtrlList* pFormCtrl = &pItem->ctrl;
+	CKLBUISystem::setFormList(pFormCtrl);
 
 	// compositeを生成する際、起動されたタスクの記録をとっておく。
 	CKLBTaskMgr& mgr = CKLBTaskMgr::getInstance();
@@ -1708,7 +1940,16 @@ CKLBUIList::load_itemform(CKLBUIList::LISTITEM * pItem, const char * json, u32 j
 
 	// DEBUG_PRINT(" LIST:ctrl: %p", &pItem->ctrl);
 
-	if(pSource) pAsset->setRecord(pSource, pSource->getRecord());
+	if(pSource) {
+		pAsset->setRecord(pSource);
+		if(pItem->id != -1) {
+			pSource->selectRecord(pItem->id);
+		}
+	}
+	pAsset->setFormSize(m_vertical ? m_clipWidth : (u32)-1,
+		m_vertical ? (u32)-1 : m_clipHeight);
+	pAsset->setRecordID(pItem->id);
+	pAsset->setDirectComposite(true);
 	CKLBNode * pNode = pAsset->createSubTree(this,m_basePriority);
 	pNode->setVisible(false);	// 生成直後は invisible にしておく
 
@@ -1716,16 +1957,18 @@ CKLBUIList::load_itemform(CKLBUIList::LISTITEM * pItem, const char * json, u32 j
 	mgr.setRegistedTaskList(NULL);
 
 	// コントロールノード記録終了
-	CKLBUISystem::setFormList(NULL);
+	CKLBUISystem::resetFormList();
 
 	// グループ名が指定されていたら、自動的にグループに所属させる。
 	if(m_pGroupName) {
 		CKLBFormGroup& fGrp = CKLBFormGroup::getInstance();
-		fGrp.addForm(&(pItem->ctrl), m_pGroupName);
+		fGrp.addForm(pFormCtrl, m_pGroupName);
 	}
 
 	if(!pNode && !pOrgAsset) {
-		CKLBDataHandler::releaseHandle(handle);
+		if(handle != _NULLHANDLER) {
+			CKLBDataHandler::releaseHandle(handle);
+		}
 		return false;
 	}
 	m_pCtrlNode->addNode(pNode);
@@ -1736,11 +1979,16 @@ CKLBUIList::load_itemform(CKLBUIList::LISTITEM * pItem, const char * json, u32 j
 	pItem->form   = pNode;
 	pItem->handle = handle;
 
-	CKLBTouchEventUIMgr::getInstance().registForm(&pItem->ctrl);
+	CKLBTouchEventUIMgr::getInstance().registForm(pFormCtrl);
 
 	// アイテムの再生が終わったので、コールバックが指定されていたら呼び出す。
 	
+	m_pDynamicCurrentItem = pItem;
 	CKLBScriptEnv::getInstance().call_eventUIListDynamic(m_dynamicCallback,this, pItem->index, pItem->id);
+	if(m_dynamicCallback && m_itemMode == LIST_ITEM_DYNAMIC) {
+		CKLBTaskMgr::getInstance().requestUIAfterExecution();
+	}
+	m_pDynamicCurrentItem = NULL;
 
 	return true;
 }
@@ -1776,7 +2024,7 @@ CKLBUIList::unload_itemform(CKLBUIList::LISTITEM * pItem, bool kill_child)
 	pItem->taskList.killTaskList(kill_child);
 
 	// node と handle を処理する
-	CKLBUtility::deleteNode(pItem->form, pItem->handle);
+	CKLBUtility::deleteNode(pItem->form, (pItem->handle == _NULLHANDLER) ? 0 : pItem->handle);
 
 	// フォームのコントロールリストを破棄
 	// AFTER pItem->form destruction.
@@ -1789,7 +2037,7 @@ CKLBUIList::unload_itemform(CKLBUIList::LISTITEM * pItem, bool kill_child)
 }
 
 CKLBUIList::LISTITEM *
-CKLBUIList::create_item(const char * json, u32 size, int id, CKLBCompositeAsset * pOrgAsset, IDataSource * pSource)
+CKLBUIList::create_item(const char * json, size_t size, s64 id, CKLBCompositeAsset * pOrgAsset, BaseRealDataProducer * pSource)
 {
 	//u32 handle = 0;
 
@@ -1814,7 +2062,7 @@ CKLBUIList::create_item(const char * json, u32 size, int id, CKLBCompositeAsset 
 		break;
 	case LIST_ITEM_DYNAMIC:
 		{
-			pItem->jsonp    = CKLBUtility::copyMem(json, size);
+			pItem->jsonp    = json ? CKLBUtility::copyMem(json, size) : NULL;
 			pItem->jsonlen  = size;
 			pItem->handle   = 0;
 			pItem->form     = NULL;
@@ -1841,7 +2089,7 @@ CKLBUIList::delete_item(LISTITEM * pItem, bool kill_child)
 }
 
 int
-CKLBUIList::get_item_index_by_id(int id)
+CKLBUIList::get_item_index_by_id(s64 id)
 {
 	LISTITEM * pItem;
 	int idx = 0;
@@ -1853,7 +2101,7 @@ CKLBUIList::get_item_index_by_id(int id)
 }
 
 CKLBUIList::LISTITEM *
-CKLBUIList::getItemByID(int id)
+CKLBUIList::getItemByID(s64 id)
 {
 	LISTITEM * pItem;
 	for(pItem = m_lstBegin; pItem; pItem = pItem->next) {
@@ -1874,11 +2122,13 @@ CKLBUIList::getItemByIndex(int index)
 	return NULL;
 }
 bool
-CKLBUIList::itemInsertUniversal(LISTITEM * posItem, int step, CLuaState& lua, int index, int id)
+CKLBUIList::itemInsertUniversal(LISTITEM * posItem, int step, CLuaState& lua, int index, s64 id)
 {
-	u32 size;
+	size_t size;
 	const char * json = toJSON(lua, index, size);	// 対応している型ならすべてJSON文字列になる。
-	bool bResult = itemInsert(posItem, step, json, size, id);
+	const size_t jsonSize = size;
+	CKLBCompositeAsset * asset = json ? NULL : m_templateAsset;
+	bool bResult = itemInsert(posItem, step, json, jsonSize, id, asset);
 	KLBDELETEA(json);
 
 	return bResult;
@@ -1889,32 +2139,14 @@ CKLBUIList::itemInsertUniversal(LISTITEM * posItem, int step, CLuaState& lua, in
 // JSON-assetパス、JSON文字列、Luaテーブルに対応。
 //
 const char *
-CKLBUIList::toJSON(CLuaState& lua, int index, u32& size)
+CKLBUIList::toJSON(CLuaState& lua, int index, size_t& size)
 {
 	if(lua.isString(index)) {
-		// 文字列である場合、先頭が "asset://" "file://" であれば asset file、それ以外なたJSON string
-		// と判断して処理する。
-		const char * param  = lua.getString(index);
-		const char * string = NULL;
-		if(!strncmp(param, "asset://", 8) || !strncmp(param, "file://", 7)) {
-			IPlatformRequest& pltf = CPFInterface::getInstance().platform();
-			IReadStream * pStream = pltf.openReadStream(param, pltf.useEncryption());
-			if(!pStream || pStream->getStatus() != IReadStream::NORMAL) {
-				delete pStream;
-				return NULL;
-			}
-			int ssize = pStream->getSize();
-			char * buf = KLBNEWA(char, ssize + 1);
-			pStream->readBlock(buf, ssize);
-			delete pStream;
-			buf[ssize] = 0;
-			string = (const char *)buf;
-			size = ssize;
-		} else {
-			size = strlen(param);
-			string = CKLBUtility::copyString(param);
-		}
-		return string;
+		return toJSON(lua.getString(index), size);
+	}
+	if(lua.isNil(index)) {
+		size = 0;
+		return NULL;
 	}
 	// 文字列ではない場合、Luaテーブルとして処理する
 	lua.retValue(index);
@@ -1924,38 +2156,68 @@ CKLBUIList::toJSON(CLuaState& lua, int index, u32& size)
 	return json;
 }
 
-/*static*/
 const char *
-CKLBUIList::toJSON(const char* param, u32& size)
+CKLBUIList::toJSON(const char* param, size_t& size)
 {
 	// 文字列である場合、先頭が "asset://" "file://" であれば asset file、それ以外なたJSON string
 	// と判断して処理する。
-	const char * string = NULL;
 	if(!strncmp(param, "asset://", 8) || !strncmp(param, "file://", 7)) {
-		IPlatformRequest& pltf = CPFInterface::getInstance().platform();
-		IReadStream * pStream = pltf.openReadStream(param, pltf.useEncryption());
-		if(!pStream || pStream->getStatus() != IReadStream::NORMAL) {
-			delete pStream;
+		if(m_templateString) {
+			if(!strcmp(param, m_templateString)) {
+				size = 0;
+				return NULL;
+			}
+		} else {
+			setTemplate(param);
+			size = 0;
 			return NULL;
 		}
-		int ssize = pStream->getSize();
-		char * buf = KLBNEWA(char, ssize + 1);
-		pStream->readBlock(buf, ssize);
-		delete pStream;
-		buf[ssize] = 0;
-		string = (const char *)buf;
-		size = ssize;
+		IPlatformRequest& pltf = CPFInterface::getInstance().platform();
+		IReadStream* pStream = pltf.openReadStream(param, pltf.useEncryption(), 14);
+		const char* string = NULL;
+		if(!pStream || pStream->getStatus() != IReadStream::NORMAL) {
+			delete pStream;
+		} else {
+			int ssize = pStream->getSize();
+			char * buf = KLBNEWA(char, ssize + 1);
+			pStream->readBlock(buf, ssize);
+			delete pStream;
+			buf[ssize] = 0;
+			string = (const char *)buf;
+			size = ssize;
+		}
+		return string;
 	} else {
 		size = strlen(param);
-		string = CKLBUtility::copyString(param);
+		return CKLBUtility::copyString(param);
 	}
-	return string;
+}
+
+bool
+CKLBUIList::setTemplate(const char* assetName)
+{
+	if(m_templateAsset) {
+		m_templateAsset->decrementRefCount();
+	}
+
+	CKLBAssetManager& assetManager = CKLBAssetManager::getInstance();
+	m_templateAsset = static_cast<CKLBCompositeAsset*>(
+		assetManager.loadAssetByFileName(assetName, assetManager.getPlugin('P'))
+	);
+
+	KLBDELETEA(m_templateString);
+	m_templateString = CKLBUtility::copyString(assetName);
+
+	if(m_templateAsset) {
+		m_templateAsset->incrementRefCount();
+	}
+	return m_templateString && m_templateAsset;
 }
 
 // JSONから生成したcompositをリストの項目として追加する
 bool
-CKLBUIList::itemInsert(LISTITEM * posItem, int step, const char * json, u32 size, int id, 
-						CKLBCompositeAsset * pAsset, IDataSource * pSource)
+CKLBUIList::itemInsert(LISTITEM * posItem, int step, const char * json, size_t size, s64 id, 
+						CKLBCompositeAsset * pAsset, BaseRealDataProducer * pSource)
 {
 	// ノードを作る
 
@@ -2026,6 +2288,19 @@ CKLBUIList::itemDelete(LISTITEM * posItem)
 	m_itemUpdate = true;
 	// itemRealloc();
 	m_itemCnt--;
+}
+
+void
+CKLBUIList::itemCleanUp()
+{
+	itemCleanUp(false);
+
+	LISTITEM * pItem = m_lstBegin;
+	while(pItem) {
+		LISTITEM * pNext = pItem->next;
+		delete_item(pItem, false);
+		pItem = pNext;
+	}
 }
 
 void
@@ -2161,6 +2436,7 @@ CKLBUIList::itemRealloc()
 	}
 
 	if(posUpdate) {
+		int limitArea = (m_limitAreaSize > 0) ? m_limitAreaSize : m_clipSize;
 		if(m_chklimit && !m_bLoop) {
 			// クリッピング処理ありかつループなし
 			if(m_scrollPos + m_listLength < m_clipSize) m_scrollPos = m_clipSize - m_listLength;
@@ -2173,7 +2449,7 @@ CKLBUIList::itemRealloc()
 						this, LIST_SCROVER_TOP, m_itemCnt, m_listLength, -m_scrollPos);
 				}
 			}
-			if(m_scrollPos + m_listLength <= m_clipSize) {
+			if(m_scrollPos + m_listLength <= m_clipSize + limitArea) {
 				call = true;
 				if(!m_limitCalled) {
 					CKLBScriptEnv::getInstance().call_eventUIList(m_limitCallback,
@@ -2192,7 +2468,6 @@ CKLBUIList::itemRealloc()
 			//
 			bool call = false;
 			int pos = -m_scrollPos;	// 表示用の m_scrollPos は符号が反転しているため。
-			int limitArea = (m_limitAreaSize > 0) ? m_limitAreaSize : m_clipSize;
 
 			// スクロール結果、画面下端が最後の「ページ(= 画面と同サイズの領域)」にかかったら、
 			// 下端オーバーコールバックを呼ぶ(設定されている場合)
@@ -2259,6 +2534,10 @@ CKLBUIList::itemRealloc()
 			m_scrBar.setSliderSize(m_clipSize);
 		}
 	}
+
+	if(m_itemUpdateCallback) {
+		CKLBScriptEnv::getInstance().call_eventUIListUpdate(m_itemUpdateCallback);
+	}
 }
 
 void
@@ -2297,9 +2576,10 @@ CKLBUIList::setStraightPosition()
 				// このアイテムが画面内に入っていれば、アイテムツリーを生成
 				// 入っていなければアイテムツリーを破棄
 				int pos = pItem->pos + m_scrollPos;
-				if((pos + pItem->step) > 0 && pos < m_clipSize) {
+				if((pos + pItem->step) > m_dynamicMarginTop && pos < m_clipSize + m_dynamicMarginBottom) {
 					// アイテムがクリップ領域内にある
-					load_itemform(pItem, pItem->jsonp, pItem->jsonlen);
+					load_itemform(pItem, pItem->jsonp, pItem->jsonlen,
+						pItem->jsonp ? NULL : m_templateAsset, NULL);
 					x = (m_vertical)  ? 0 : pItem->pos;
 					y = (!m_vertical) ? 0 : pItem->pos;
 					pItem->form->setTranslate((float)x, (float)y);
@@ -2321,6 +2601,13 @@ CKLBUIList::setStraightPosition()
 	}
 
 	m_pCtrlNode->setTranslate(m_ctrlX, m_ctrlY);
+}
+
+// 目標位置へのスクロール方向
+s32
+CKLBUIList::scrollDirection(s32 from, s32 to)
+{
+	return (from < to) ? 1 : (from > to) ? -1 : 0;
 }
 
 void
@@ -2368,7 +2655,8 @@ CKLBUIList::setSplinePosition()
 			CKLBNode* pNode = NULL;
 			// アイテムがクリップ領域内にある
 			if(isDynamic) {
-				if(load_itemform(pItem, pItem->jsonp, pItem->jsonlen)) {
+				if(load_itemform(pItem, pItem->jsonp, pItem->jsonlen,
+					pItem->jsonp ? NULL : m_templateAsset, NULL)) {
 					pNode = pItem->form;
 				}
 			} else {
@@ -2502,23 +2790,40 @@ CKLBUIList::resetClip(u32 orderBegin, u32 orderEnd, s16 clipX, s16 clipY, s16 cl
 	return true;
 }
 
+// ドラッグ判定領域をノードのスケールを反映した実座標系に変換する
+void
+CKLBUIList::getDragArea(s32* area, s32& originX, s32& originY)
+{
+	float nodeX;
+	float nodeY;
+	CKLBUtility::getNodePosition(m_pRootNode, &nodeX, &nodeY);
+	originX = (s32)nodeX;
+	originY = (s32)nodeY;
+
+	float scaleX = m_pUINode->getScaleX();
+	float scaleY = m_pUINode->getScaleY();
+	s32 left     = m_leftDrag;
+	s32 right    = m_rightDrag;
+	s32 top      = m_topDrag;
+	s32 bottom   = m_bottomDrag;
+	area[0] = (s32)(left   * scaleX);
+	area[1] = (s32)(right  * scaleX);
+	area[2] = (s32)(top    * scaleY);
+	area[3] = (s32)(bottom * scaleY);
+}
+
 void
 CKLBUIList::touchpadEvent()
 {
 	CKLBTouchPadQueue& tpq = CKLBTouchPadQueue::getInstance();
-	float fx, fy;
-	CKLBUtility::getNodePosition(getNode(), &fx, &fy);
 	int x, y, rx, ry;
-	x = (int)fx;
-	y = (int)fy;
-	
-	float scaleX = getScaleX();
-	float scaleY = getScaleY();
+	s32 dragArea[4];
+	getDragArea(dragArea, x, y);
 
-	int left   = (int)(m_leftDrag   * scaleX);
-	int right  = (int)(m_rightDrag  * scaleX);
-	int top    = (int)(m_topDrag    * scaleY);
-	int bottom = (int)(m_bottomDrag * scaleY);
+	int left   = dragArea[0];
+	int right  = dragArea[1];
+	int top    = dragArea[2];
+	int bottom = dragArea[3];
 
 	const PAD_ITEM * item;
 	tpq.startItem();
@@ -2541,7 +2846,8 @@ CKLBUIList::touchpadEvent()
 				if(m_dragCallback) {
 					m_dragCallback->callback(item->type, item->x, item->y, 0, 0);
 				} else {
-					defaultScroll(this, item->type, item->x, item->y, 0, 0);
+					defaultScroll(this, item->type, item->x, item->y,
+								  0, 0, item->x, item->y);
 				}
 			}
 			break;
@@ -2551,18 +2857,27 @@ CKLBUIList::touchpadEvent()
 				if(item->id != m_dragID) break;
 				int mv_x = item->x - m_dragX;
 				int mv_y = item->y - m_dragY;
+				m_dragCurX = item->x;
+				m_dragCurY = item->y;
 				tpq.useItem(item, this);
+				if(m_eventClipRect) {
+					rx = item->x - x;
+					ry = item->y - y;
+					if((rx < left) || (rx >= right) || (ry < top) || (ry >= bottom)) {
+						m_dragID = -1;
+					}
+				}
 				if(m_dragCallback) {
 					// DEBUG_PRINT("  EVENT: %p (drag)", this);
 					m_dragCallback->callback(item->type, m_dragX, m_dragY, mv_x, mv_y);
 				} else {
-					defaultScroll(this, item->type, m_dragX, m_dragY, mv_x, mv_y);
+					defaultScroll(this, item->type, m_dragX, m_dragY,
+								  mv_x, mv_y, item->x, item->y);
 				}
 			}
 			break;
 
 		case PAD_ITEM::RELEASE:
-		case PAD_ITEM::CANCEL:
 			{
 				if(item->id != m_dragID) break;
 				int mv_x = item->x - m_dragX;
@@ -2572,21 +2887,27 @@ CKLBUIList::touchpadEvent()
 					m_dragCallback->callback(item->type, m_dragX, m_dragY, mv_x, mv_y);
 					// DEBUG_PRINT("  EVENT: %p (release)", this);
 				} else {
-					defaultScroll(this, item->type, m_dragX, m_dragY, mv_x, mv_y);
+					defaultScroll(this, item->type, m_dragX, m_dragY,
+								  mv_x, mv_y, item->x, item->y);
 				}
 				m_dragID = -1;
 			}
+			break;
+
+		case PAD_ITEM::CANCEL:
 			break;
 		}
 	}
 }
 
 // デフォルトでドラッグ操作に追従させてスクロールさせる場合
-void
-CKLBUIList::defaultScroll(void * pData, PAD_ITEM::TYPE type, int dragX, int dragY, int mvX, int mvY)
+s32
+CKLBUIList::defaultScroll(void * pData, PAD_ITEM::TYPE type, int dragX, int dragY,
+						  int mvX, int mvY, int x, int y)
 {
 	CKLBUIList * pList = (CKLBUIList *)pData;
-	if(!pList->m_defScroll) return;	// デフォルトスクロールが禁止なら処理しない。
+	if(!pList->m_defScroll) return false;	// デフォルトスクロールが禁止なら処理しない。
+	pList->m_scrBar.setScrollEnable(true);
 	switch(type)
 	{
 	case PAD_ITEM::TAP:
@@ -2597,6 +2918,7 @@ CKLBUIList::defaultScroll(void * pData, PAD_ITEM::TYPE type, int dragX, int drag
 			pList->m_dragY          = dragY;
 			pList->m_bTaped         = true;
 			pList->m_scrBar.setCtrlStatus(true);
+			pList->m_scrBar.setScrollPhysicsInit(pList->m_vertical ? y : x);
 		}
 		break;
 	case PAD_ITEM::DRAG:
@@ -2605,39 +2927,42 @@ CKLBUIList::defaultScroll(void * pData, PAD_ITEM::TYPE type, int dragX, int drag
 				if(!pList->m_bTaped) {
 					pList->m_defaultPrePos  = -pList->m_scrollPos;
 					pList->m_defaultDragPos = -pList->m_scrollPos;
+					pList->m_dragX          = dragX;
+					pList->m_dragY          = dragY;
 					pList->m_bTaped = true;
 					pList->m_scrBar.setCtrlStatus(true);
 				}
 				s32 pos = pList->m_defaultPrePos;
-				if(pList->m_vertical) {
-					pos -= mvY;
-				} else {
-					pos -= mvX;
+				pos -= pList->m_vertical ? mvY : mvX;
+				int dir = scrollDirection(pList->m_defaultDragPos, pos);
+				pList->m_scrBar.setScrollPhysicsTarget(pList->m_vertical ? y : x);
+				if(dir) {
+					pList->m_defaultDragPos = pos;	// 前回のpos指定からどちらにドラッグしたかで変わるため。
+					pList->m_scrBar.setPosition(pos, dir);
+					pos = pList->m_scrBar.getPosition();
+					pList->setPosition(pos);
 				}
-				int dir = (pos > pList->m_defaultDragPos) ? 1 : -1;
-				pList->m_defaultDragPos = pos;	// 前回のpos指定からどちらにドラッグしたかで変わるため。
-				pList->m_scrBar.setPosition(pos, dir);
-				pos = pList->m_scrBar.getPosition();
-				pList->setPosition(pos);
 			}
 		}
 		break;
 	case PAD_ITEM::RELEASE:
-	case PAD_ITEM::CANCEL:
 		{
 			s32 pos = pList->m_defaultPrePos;
-			if(pList->m_vertical) {
-				pos -= mvY;
-			} else {
-				pos -= mvX;
+			pos -= pList->m_vertical ? mvY : mvX;
+			pList->m_scrBar.onScrollDragEnd(pList->m_vertical ? y : x);
+			int dir = scrollDirection(pList->m_defaultDragPos, pos);
+			if(dir) {
+				pList->m_scrBar.setPosition(pos, dir);
+				pos = pList->m_scrBar.getPosition();
+				pList->setPosition(pos);
 			}
-			int dir = (pos > pList->m_defaultDragPos) ? 1 : -1;
-			pList->m_scrBar.setPosition(pos, dir);
-			pos = pList->m_scrBar.getPosition();
-			pList->setPosition(pos);
-			pList->m_bTaped = false;
 			pList->m_scrBar.setCtrlStatus(false);
+			pList->m_bTaped = false;
 		}
 		break;
+	case PAD_ITEM::CANCEL:
+		break;
 	}
+	pList->m_scrBar.setScrollEnable(false);
+	return false;
 }

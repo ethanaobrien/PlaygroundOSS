@@ -19,26 +19,31 @@
 #include "CJNI.h"
 #include "CAndroidPathConv.h"
 #include "CPFInterface.h"
+#include "CKLBGameApplication.h"
+#include "CKLBUtility.h"
 #include "PackageDefine.h"
 
-CAndroidPathConv::CAndroidPathConv() : m_build(false), m_external(0), m_install(0) {}
-CAndroidPathConv::~CAndroidPathConv() {
+bool KLBCreateDirectories(const char * path);
+
+CKLBPathConv CKLBPathConv::m_instance;
+
+CKLBPathConv::CKLBPathConv() : m_build(false), m_external(0), m_install(0) {}
+CKLBPathConv::~CKLBPathConv() {
     delete [] m_external;
     delete [] m_install;
 }
 
-CAndroidPathConv&
-CAndroidPathConv::getInstance()
+CKLBPathConv&
+CKLBPathConv::getInstance()
 {
-    static CAndroidPathConv instance;
-    return instance;
+    return m_instance;
 }
 
 const char *
-CAndroidPathConv::makePath(const char * path, const char * suffix, const char * base)
+CKLBPathConv::makePath(const char * path, const char * suffix, const char * base)
 {
-    int extlen = (suffix) ? strlen(suffix) : 0;
-    int len = strlen(path) + strlen(base) + extlen + 2;
+    size_t extlen = (suffix) ? strlen(suffix) : 0;
+    size_t len = strlen(path) + strlen(base) + extlen + 2;
     char * buf = new char [ len ];
     strcpy(buf, base);
     //strcat(buf, "/");
@@ -49,8 +54,9 @@ CAndroidPathConv::makePath(const char * path, const char * suffix, const char * 
 }
 
 bool
-CAndroidPathConv::checkExists(const char * path)
+CKLBPathConv::checkExists(const char * path)
 {
+    if (!path) return false;
     bool bResult = true;
     struct stat st;
     int iRes = stat(path, &st);
@@ -58,10 +64,20 @@ CAndroidPathConv::checkExists(const char * path)
     return bResult;
 }
 
+void
+CKLBPathConv::ensureExternalDirectory()
+{
+	if (!checkExists(m_external)) {
+		KLBCreateDirectories(m_external);
+	}
+}
+
 const char *
-CAndroidPathConv::fullpath(const char * url, const char * suffix, bool* isReadOnly)
+CKLBPathConv::fullpath(const char * url, const char * suffix, bool* isReadOnly)
 {
     build();
+	size_t urlLength = strlen(url);
+	const char * assetDirPrefix = static_cast<CKLBGameApplication&>(CPFInterface::getInstance().client()).getAssetDirPrefix();
 
 	// Default
 	if( isReadOnly ) *isReadOnly = true;
@@ -69,33 +85,84 @@ CAndroidPathConv::fullpath(const char * url, const char * suffix, bool* isReadOn
     // assets が指定されている場合、まずは external から探し、
     // 見つからなければ install から探す。どちらもなければ 0 を返す。
     if (!strncmp(url, "asset://", 8)) {
-        const char * path;
-        path = makePath(url + 8, suffix, m_external);
-        if(checkExists(path))
-		{
-			if( isReadOnly ) { *isReadOnly = false; }
-			return path;
-		}
-        delete [] path;
+		const char * installPath = makePath(url + 8, suffix, m_install);
+		const char * externalPath = makePath(url + 8, suffix, m_external);
 
-        path = makePath(url + 8, suffix, m_install);
-        if(checkExists(path)) return path;
-        delete [] path;
-        return 0;
+		if (!checkExists(installPath)) {
+			delete [] installPath;
+			if (checkExists(externalPath)) return externalPath;
+			delete [] externalPath;
+			return 0;
+		}
+
+		if (!checkExists(externalPath)) {
+			delete [] externalPath;
+			return installPath;
+		}
+
+		int externalVersion = 0;
+		int installVersion = 0;
+		if (CPFInterface::getInstance().platform().useEncryption()) {
+			u8 header[6];
+			installVersion = -1;
+			externalVersion = -1;
+
+			FILE * file = fopen(installPath, "rb");
+			if (file) {
+				fread(header, 1, sizeof(header), file);
+				fclose(file);
+				installVersion = (header[4] << 8) | header[5];
+			}
+
+			file = fopen(externalPath, "rb");
+			if (file) {
+				fread(header, 1, sizeof(header), file);
+				fclose(file);
+				externalVersion = (header[4] << 8) | header[5];
+			}
+		}
+
+		if ((installVersion & externalVersion) == -1) {
+			delete [] installPath;
+			delete [] externalPath;
+			return 0;
+		}
+
+		if (externalVersion >= installVersion) {
+			delete [] installPath;
+			if (isReadOnly) *isReadOnly = false;
+			return externalPath;
+		}
+
+		delete [] externalPath;
+		return installPath;
     }
 
-	const char* path = url;
+	const char * path = url;
 	if( !strncmp(url, "external/", 9) )
 	{
 		if( isReadOnly ) { *isReadOnly = false; }
-		return makePath(url + 9, suffix, m_external);
+		path = makePath(url + 9, suffix, m_external);
+		size_t logicalPathLength = urlLength - 9;
+		if (CKLBUtility::hasAssetDirPrefix(path, assetDirPrefix, logicalPathLength)) return path;
+
+		const char * prefixedPath = CKLBUtility::insertAssetDirPrefix(path, assetDirPrefix, logicalPathLength);
+		if (prefixedPath && checkExists(prefixedPath)) {
+			delete [] path;
+			return prefixedPath;
+		}
+		delete [] prefixedPath;
+		return path;
+    }
+    if (!strncmp(url, "install/", 8)) {
+		path = makePath(url + 8, suffix, m_install);
+		return checkExists(path) ? path : 0;
 	}
-    if (!strncmp(url, "install/", 8)) return makePath(url + 8, suffix, m_install);
     return 0;
 }
 
 void
-CAndroidPathConv::create_external()
+CKLBPathConv::create_external()
 {
     // Java 側で生成した、file://external に相当するpathを初回のみ取得し、以後保持する。
 	jclass cls_pfif = CJNI::getJNIEnv()->FindClass(JNI_LOAD_PATH);
@@ -112,7 +179,7 @@ CAndroidPathConv::create_external()
 }
 
 void
-CAndroidPathConv::create_install()
+CKLBPathConv::create_install()
 {
     // Java 側で生成した、file://install に相当するpathを初回のみ取得し、以後保持する。
 	jclass cls_pfif = CJNI::getJNIEnv()->FindClass(JNI_LOAD_PATH);
@@ -129,12 +196,10 @@ CAndroidPathConv::create_install()
 }
 
 void
-CAndroidPathConv::build()
+CKLBPathConv::build()
 {
     if(m_build) return;
-    CPFInterface::getInstance().platform().logging("build base path.");
     create_install();
     create_external();
-    CPFInterface::getInstance().platform().logging("install: %s, external: %s", m_install, m_external);
     m_build = true;
 }

@@ -22,10 +22,14 @@
 
 #include "lua.hpp"
 #include "CPFInterface.h"
+#include "CKLBTask.h"
 class CLuaState
 {
 	friend class CKLBScriptEnv;
 	friend class CKLBLuaEnv;
+	// The asset decryption scheme initializers invoke the Lua asset filter
+	// callback through retcall; see CDecryptBaseClass::initializeUserKeyed.
+	friend class CDecryptBaseClass;
 public:
     CLuaState(lua_State * L);
     virtual ~CLuaState();
@@ -87,6 +91,11 @@ public:
         ret = lua_tonumber(m_L, pos);
         return (double)ret;
     }
+    inline double getDoubleUnchecked(int pos) {
+		// Probe Lua's numeric conversion path, but leave failure handling to the caller.
+		(void)lua_isnumber(m_L, pos);
+        return (double)lua_tonumber(m_L, pos);
+    }
     inline const char * getString(int pos) {
         if(!lua_isstring(m_L, pos)) {
             // 文字列ではない
@@ -96,6 +105,14 @@ public:
         const char * ret = lua_tostring(m_L, pos);
         return ret;
     }
+    inline const char * getString(int pos, size_t* length) {
+        if(!lua_isstring(m_L, pos)) {
+            // 文字列ではない
+            errorMsg("string", pos);
+            return 0;
+        }
+        return lua_tolstring(m_L, pos, length);
+    }
     inline const void * getPointer(int pos) {
         if(!lua_islightuserdata(m_L, pos)) {
             // ポインタとは解釈できない
@@ -104,6 +121,26 @@ public:
         }
         const void * ret = lua_topointer(m_L, pos);
         return ret;
+    }
+    inline const void * getScriptPtr(int pos) {
+        size_t handle = 0;
+        if(lua_islightuserdata(m_L, pos)) {
+            handle = reinterpret_cast<size_t>(lua_topointer(m_L, pos));
+        } else {
+            errorMsg("internal object", pos);
+        }
+        return CKLBTask::getFromScriptHandle(handle);
+    }
+    // スクリプトハンドルの参照先が既に破棄されている可能性がある場合に使う。
+    // getScriptPtr と違い、空きスロットを指すハンドルでも表明を発生させない。
+    inline const void * findScriptPtr(int pos) {
+        size_t handle = 0;
+        if(lua_islightuserdata(m_L, pos)) {
+            handle = reinterpret_cast<size_t>(lua_topointer(m_L, pos));
+        } else {
+            errorMsg("internal object", pos);
+        }
+        return CKLBTask::findFromScriptHandle(handle);
     }
     inline const char * getTable(int pos) {
         if(!lua_istable(m_L, pos)) {
@@ -123,7 +160,12 @@ public:
     inline void retFloat	(float val)			{ lua_pushnumber(m_L, (lua_Number)val);		}
     inline void retDouble	(double val)		{ lua_pushnumber(m_L, (lua_Number)val);		}
     inline void retString	(const char * val)	{ lua_pushstring(m_L, val);					}
+    inline void retString	(const char * val, size_t length) { lua_pushlstring(m_L, val, length); }
     inline void retPointer	(void * ptr)		{ lua_pushlightuserdata(m_L, ptr);			}
+	inline void retScriptPtr(CKLBTask* task) {
+		size_t handle = task ? task->getTaskTrackHandle() : 0;
+		retPointer(reinterpret_cast<void*>(handle));
+	}
     inline void retGlobal	(const char * val)	{ lua_getglobal(m_L, val);					}
 
 	inline void retValue	(int pos)			{ lua_pushvalue(m_L, pos);					}
@@ -136,6 +178,8 @@ public:
 	inline void setGlobal	(const char * name) { lua_setglobal(m_L, name);					}
 	inline void getGlobal	(const char * name) { lua_getglobal(m_L, name);					}
 	inline int  getType		(int pos = -1)		{ return lua_type(m_L, pos);				}
+	inline bool getBoolUnchecked(int pos)      { return lua_toboolean(m_L, pos) ? true : false; }
+	void errorMsg	(const char * type_name, int argnum);
 
     // 現在実行されている行番号とファイル名を得る
 	const char * getScriptName();
@@ -162,7 +206,6 @@ protected:
 	virtual bool call				(int args,   const char * func, int nresults = 0);
 private:
 	int error		(const char * fmt, ...); // Only from CKLBScriptEnv
-    void errorMsg	(const char * type_name, int argnum);
     
     lua_State       *   m_L;
 };

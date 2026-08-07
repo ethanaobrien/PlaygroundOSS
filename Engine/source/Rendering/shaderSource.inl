@@ -250,7 +250,6 @@
 		"varying lowp vec4 col_var;\n"
 		"varying mediump vec2 uv_var;\n"
 		"uniform lowp sampler2D texture;\n"
-		"uniform lowp sampler2D table;\n"
 		"uniform mediump float power;\n"
 		"void main()\n"
 		"{\n"

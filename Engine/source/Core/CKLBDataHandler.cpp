@@ -15,6 +15,7 @@
 */
 #include "CKLBDataHandler.h"
 #include "CKLBAsset.h"
+#include "TextureManagement.h"
 
 #include "CKLBTask.h"
 #include "mem.h"
@@ -71,12 +72,12 @@ CKLBDataHandler::release() {
 	if (next)		{ KLBDELETEA(next);      next       = NULL; }
 	if (prev)		{ KLBDELETEA(prev);      prev       = NULL; }
 
-	klb_assert(m_usedList == 0, "still allocated handle");
-	klb_assert(g_dataSet  == NULL, "still allocated data set %i", g_dataSet->m_userID);
+	klb_assertNull(m_usedList == 0, "still allocated handle");
+	klb_assertNull(g_dataSet  == NULL, "still allocated data set %i", g_dataSet->m_userID);
 
 }
 
-u16 
+u16
 CKLBDataHandler::allocateHandle() {
 	u16 handle = m_freeList;
 	klb_assert(handle, "No free handle available !!!");
@@ -84,7 +85,7 @@ CKLBDataHandler::allocateHandle() {
 		m_freeList = next[m_freeList];
 
 		if (m_usedList) {
-			klb_assert(m_usedList < s_maxHandler, "Invalid Index");
+			klb_assertNull(m_usedList < s_maxHandler, "Invalid Index");
 			prev[m_usedList] = handle;
 		}
 
@@ -95,21 +96,60 @@ CKLBDataHandler::allocateHandle() {
 	return handle;
 }
 
-void 
+void
+CKLBDataHandler::replacePointer(CKLBAbstractAsset* previous, CKLBAbstractAsset* replacement)
+{
+	for (u16 handle = m_usedList; handle; handle = next[handle]) {
+		if (tempArray[handle] == previous) {
+			replacement->incrementRefCount();
+			previous->decrementRefCount();
+			tempArray[handle] = replacement;
+		}
+	}
+}
+
+void
+CKLBDataHandler::replaceTexture(CKLBAbstractAsset* replacement)
+{
+	for (u16 handle = m_usedList; handle; handle = next[handle]) {
+		CKLBAbstractAsset* registered = tempArray[handle];
+		if (registered
+		 && registered->getAssetType() == ASSET_TEXTURE
+		 && tempArray[handle]->getFileSource()
+		 && strcmp(tempArray[handle]->getFileSource(), replacement->getFileSource()) == 0
+		 && static_cast<CKLBTextureAsset*>(registered)->m_pParentTexture) {
+			replacement->incrementRefCount();
+			registered->decrementRefCount();
+			tempArray[handle] = replacement;
+		}
+	}
+}
+
+void CKLBDataHandler::broadcastToHandlers(const char* name, void* data) {
+	CKLBAbstractAsset* replacementAsset = static_cast<CKLBAbstractAsset*>(data);
+	for (u16 handle = m_usedList; handle; handle = next[handle]) {
+		CKLBAbstractAsset* registeredAsset = tempArray[handle];
+		if (registeredAsset) {
+			registeredAsset->replaceAsset(name, replacementAsset);
+		}
+	}
+}
+
+void
 CKLBDataHandler::releaseHandle(u16 handle) {
 	if (handle) {
-		klb_assert(handle < s_maxHandler, "Invalid Index");
+		klb_assertNull(handle < s_maxHandler, "Invalid Index");
 
 		//
 		// Remove from active list.
 		//
 		if (next[handle]) {
-			klb_assert(next[handle] < s_maxHandler, "Invalid Index");
+			klb_assertNull(next[handle] < s_maxHandler, "Invalid Index");
 			prev[next[handle]]	= prev[handle];
 		}
 
 		if (prev[handle]) {
-			klb_assert(prev[handle] < s_maxHandler, "Invalid Index");
+			klb_assertNull(prev[handle] < s_maxHandler, "Invalid Index");
 			next[prev[handle]]	= next[handle];
 		} else {
 			m_usedList			= next[handle];
@@ -127,7 +167,7 @@ CKLBDataHandler::releaseHandle(u16 handle) {
 		prev[handle] = 0;
 		m_freeList	 = handle;
 		if (m_freeList) {
-			klb_assert(m_freeList < s_maxHandler, "Invalid Index");
+			klb_assertNull(m_freeList < s_maxHandler, "Invalid Index");
 			prev[m_freeList] = handle;
 		}
 	}
@@ -137,7 +177,7 @@ u16
 CKLBDataHandler::allocateHandle(void* ptr) {
 	u16 handle = allocateHandle();
 	if (handle) {
-		klb_assert(handle < s_maxHandler, "Invalid Index");
+		klb_assertNull(handle < s_maxHandler, "Invalid Index");
 
 		tempArray[handle] = (CKLBAbstractAsset*)ptr;
 		if (ptr) {
@@ -150,7 +190,7 @@ CKLBDataHandler::allocateHandle(void* ptr) {
 void 
 CKLBDataHandler::setPointer(u16 handle, void* ptr) {
 	if (handle) {
-		klb_assert(handle < s_maxHandler, "Invalid Index");
+		klb_assertNull(handle < s_maxHandler, "Invalid Index");
 
 		if (tempArray[handle]) {
 			tempArray[handle]->decrementRefCount();
@@ -166,11 +206,11 @@ CKLBDataHandler::setPointer(u16 handle, void* ptr) {
 
 void* 
 CKLBDataHandler::getPointer(u16 handle) {
-	klb_assert(handle < s_maxHandler, "Invalid Index");
+	klb_assertNull(handle < s_maxHandler, "Invalid Index");
 	return tempArray[handle];
 }
 
-void 
+void
 CKLBDataHandler::dumpDataSet() {
 	CKLBDataSet* pSet = g_dataSet;
 	FILE* pFile = CPFInterface::getInstance().client().getShellOutput();
@@ -264,7 +304,7 @@ CKLBDataSet::~CKLBDataSet() {
 	}
 	m_listHandle = NULL;
 
-	klb_assert(!m_listTask, "List Task should be empty.");
+	klb_assertNull(!m_listTask, "List Task should be empty.");
 	TaskWrapper* pTask = m_listTask;
 	while (pTask) {
 		TaskWrapper* pNTask = pTask->m_pNext;
@@ -297,7 +337,7 @@ CKLBDataSet::allocateHandle(void* ptr, char* /*name*/) {
 			}
 //		}
 	} else {
-		klb_assertNull(0,"can not store null pointer");
+		klb_assert(0,"can not store null pointer");
 	}
 	return handle;
 }

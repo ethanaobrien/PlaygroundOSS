@@ -64,7 +64,6 @@ CSockReadStream::sock_connect(const char *hostname, int port)
         struct hostent *host;
         host = gethostbyname(hostname);
         if(!host) {
-        	DEBUG_PRINT("CSockReadStream::gethostbyname() failed.");
         	return -1;
         }
         dstAddr.sin_addr.s_addr = *(unsigned int *)host->h_addr_list[0];
@@ -72,12 +71,10 @@ CSockReadStream::sock_connect(const char *hostname, int port)
     dstSocket = socket(AF_INET, SOCK_STREAM, 0);
 
     if(dstSocket < 0) {
-    	DEBUG_PRINT("bad socket.(%d) errno=%d", dstSocket, errno);
     	return -1;
     }
 
     if(0 > connect(dstSocket, (struct sockaddr *)&dstAddr, sizeof(dstAddr))) {
-    	DEBUG_PRINT("could not connect()");
     	close(dstSocket);
     	return -1;
     }
@@ -110,7 +107,6 @@ CSockReadStream::setStatus()
                 close(m_fd);
                 m_fd = 0;
             }
-            DEBUG_PRINT("errno = ETIMEDOUT");
             break;
     }
     return false;   // 必ず false を返す
@@ -218,7 +214,6 @@ CSockReadStream::openStream(const char * sockName)
     if(!strHost || !strPort) {
     	// 与えられた名称の書式が不正
     	pStream->m_eStat = NOT_FOUND;
-    	DEBUG_PRINT("CSockReadStream::bad url.");
     	if( strPort )
     	{
     		delete [] strPort;
@@ -239,7 +234,6 @@ CSockReadStream::openStream(const char * sockName)
     	if(strPort[i] < '0' || strPort[i] > '9') {
 	 	    // 数字以外が含まれている場合は接続先指定として不正
     		pStream->m_eStat = NOT_FOUND;
-        	DEBUG_PRINT("CSockReadStream::bad port.");
             if( strPort )
             {
                 delete [] strPort;
@@ -263,7 +257,6 @@ CSockReadStream::openStream(const char * sockName)
     if(fd < 0) {
     	// 接続に失敗した場合
         pStream->m_eStat = NOT_FOUND;
-        DEBUG_PRINT("CSockReadStream::connection failed.:[%s][%d]", strHost, port);
     	if( strPort )
     	{
     		delete [] strPort;
@@ -381,8 +374,8 @@ CSockReadStream::getWriteStream()
 }
 
 
-int
-CSockReadStream::readU16arr(u16 *pBufferU16, int items)
+size_t
+CSockReadStream::readU16arr(u16 *pBufferU16, size_t items)
 {
     // リングバッファに指定サイズを要求するので、全て取得できるか、全く取れないかのどちらかになる。
     if(!requestData((unsigned char *)pBufferU16, items * sizeof(u16))) return 0;
@@ -392,8 +385,8 @@ CSockReadStream::readU16arr(u16 *pBufferU16, int items)
     return items;
 }
 
-int
-CSockReadStream::readU32arr(u32 *pBufferU32, int items)
+size_t
+CSockReadStream::readU32arr(u32 *pBufferU32, size_t items)
 {
     // リングバッファに指定サイズを要求するので、全て取得できるか、全く取れないかのどちらかになる。
     if(!requestData((unsigned char *)pBufferU32, items * sizeof(u32))) return 0;

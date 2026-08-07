@@ -186,6 +186,9 @@ private:
 
     static int luaSoundSetMultiProcessType	(lua_State * L);
     static int luaSoundPauseOnInterruption  (lua_State * L);
+	static int luaSoundSetLoop		(lua_State * L);
+	static int luaSoundKeepSessions	(lua_State * L);
+	static int luaSoundDecompressBGM(lua_State * L);
     
     static bool checkSoundExist	(SOUND * pSnd);
 private:

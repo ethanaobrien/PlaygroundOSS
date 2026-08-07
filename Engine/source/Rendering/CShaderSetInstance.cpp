@@ -65,6 +65,7 @@ void CShaderInstance::setUniformTexture(SHADER type, s32 uniformID, CTextureUsag
 		pArray->pTexture = pTextureUsage;
 		break;
 	default:
+		klb_assertAlways("Wrong Uniform type setup");
 		break;
 	}
 }
@@ -72,7 +73,7 @@ void CShaderInstance::setUniformTexture(SHADER type, s32 uniformID, CTextureUsag
 void CShaderInstance::setUniformI(SHADER type, s32 uniformID, GLint* values  ) {
 	SInternalParam* pArray;
 
-	// TODO assert shader type
+	klb_assertNull(uniformID != 0xFFFF, "Uniform name not found.");
 
 	if (type == VERTEX_SHADER) {
 		pArray = this->paramArrayUniformVertexShader;
@@ -88,9 +89,12 @@ void CShaderInstance::setUniformI(SHADER type, s32 uniformID, GLint* values  ) {
 
 	switch (pArray->dType) {
 	case VEC1I:
+		klb_assert(m_pShaderSet->locationArray[uniformID] != -1,
+			"Try to setup a shader uniform parameter not found after shader linking.(See log for shader)");
 		pArray->values[0].i = *values;
 		break;
 	default:
+		klb_assertAlways("Wrong Uniform type setup");
 		break;
 	}
 }
@@ -98,6 +102,7 @@ void CShaderInstance::setUniformI(SHADER type, s32 uniformID, GLint* values  ) {
 void CShaderInstance::setUniformF(SHADER type, s32 uniformID, GLfloat* values) {
 	
 	// TODO Assert shader type, null pointer
+	klb_assertNull(uniformID != 0xFFFF, "Uniform name not found.");
 
 	SInternalParam* pArray;
 

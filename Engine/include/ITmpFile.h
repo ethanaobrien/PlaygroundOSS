@@ -26,6 +26,7 @@ public:
 
 	// writing
 	virtual size_t writeTmp(void * ptr, size_t size) = 0;
+	virtual int closeTmp() = 0;
 };
 
 #endif // ITmpFile_h

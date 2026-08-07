@@ -23,6 +23,7 @@ class CKLBLuaPropTask;
 typedef void (CKLBLuaPropTask::*setBoolT)		(bool);
 typedef void (CKLBLuaPropTask::*setIntT)		(s32);
 typedef void (CKLBLuaPropTask::*setUintT)		(u32);
+typedef void (CKLBLuaPropTask::*setInt64T)		(s64);
 typedef void (CKLBLuaPropTask::*setFloatT)		(float);
 typedef void (CKLBLuaPropTask::*setStrT)		(const char*);
 typedef void (CKLBLuaPropTask::*setPtrT)		(void*);
@@ -31,6 +32,7 @@ typedef void (CKLBLuaPropTask::*setGenIntT)		(u32, s32);
 typedef bool (CKLBLuaPropTask::*getBoolT)		(void);
 typedef s32  (CKLBLuaPropTask::*getIntT)		(void);
 typedef u32  (CKLBLuaPropTask::*getUintT)		(void);
+typedef s64  (CKLBLuaPropTask::*getInt64T)		(void);
 typedef float (CKLBLuaPropTask::*getFloatT)		(void);
 typedef const char* (CKLBLuaPropTask::*getStrT)	(void);
 typedef void* (CKLBLuaPropTask::*getPtrT)		(void);
@@ -49,7 +51,9 @@ typedef enum {
 	INTEGER,
 	UINTEGER = INTEGER,
 	NUMERIC,
-	STRING,
+	INTEGER64,
+	// Value 5 is unused by the shipped property dispatch ABI.
+	STRING = 6,
 	POINTER,
 	DYNAMIC_INT,
 
@@ -111,6 +115,7 @@ public:
 			setBoolT	b;
 			setIntT		i;
 			setUintT	ui;
+			setInt64T	i64;
 			setFloatT	f;
 			setStrT		s;
 			setPtrT		p;
@@ -120,6 +125,7 @@ public:
 			getBoolT	b;
 			getIntT		i;
 			getUintT	ui;
+			getInt64T	i64;
 			getFloatT	f;
 			getStrT		s;
 			getPtrT		p;
@@ -160,33 +166,33 @@ public:
 
 	// 型を取得する
 	inline PROPTYPE getType(int idx) {
-		klb_assert(!m_newScriptModel, "Old Scripting model only");
+		klb_assertNull(!m_newScriptModel, "Old Scripting model only");
 		return m_arrProp[idx].type; 
 	}
 
 	// 値を取得する
 	inline bool isNil(int idx) { 
-		klb_assert(!m_newScriptModel, "Old Scripting model only");
+		klb_assertNull(!m_newScriptModel, "Old Scripting model only");
 		return ((m_arrProp[idx].type & TYPE_MASK)== NIL); 
 	}
 	inline bool getBool(int idx) { 
-		klb_assert(!m_newScriptModel, "Old Scripting model only");
+		klb_assertNull(!m_newScriptModel, "Old Scripting model only");
 		return ((m_arrProp[idx].type & TYPE_MASK)== BOOLEANT) ? m_arrProp[idx].value.b : false; 
 	}
 	inline int  getInt(int idx) {
-		klb_assert(!m_newScriptModel, "Old Scripting model only");
+		klb_assertNull(!m_newScriptModel, "Old Scripting model only");
 		return ((m_arrProp[idx].type & TYPE_MASK)== INTEGER)
 			? m_arrProp[idx].value.i
 			: (((m_arrProp[idx].type & TYPE_MASK) == NUMERIC) ? (int)m_arrProp[idx].value.n : 0);
 	}
 	inline float getNum(int idx) {
-		klb_assert(!m_newScriptModel, "Old Scripting model only");
+		klb_assertNull(!m_newScriptModel, "Old Scripting model only");
 		return ((m_arrProp[idx].type & TYPE_MASK) == NUMERIC)
 			? m_arrProp[idx].value.n
 			: (((m_arrProp[idx].type & TYPE_MASK) == INTEGER) ? (float)m_arrProp[idx].value.i : 0.0f);
 	}
 	inline const char * getStr(int idx) {
-		klb_assert(!m_newScriptModel, "Old Scripting model only");
+		klb_assertNull(!m_newScriptModel, "Old Scripting model only");
 		return ((m_arrProp[idx].type & TYPE_MASK)== STRING) ? m_arrProp[idx].value.s : 0; 
 	}
 

@@ -324,6 +324,8 @@ private:
 	CFrame();
 	~CFrame();
 
+	GLuint			frameBuffID;
+	bool			isDefaultFrame;
 	CFrame*			next;
 	CImageBuffer*	pColBufferBuf;
 	CTexture*		pColBufferTex;
@@ -335,7 +337,6 @@ private:
 	GLuint	depthBuff;
 	GLuint	stencilBuff;
 
-	GLuint	frameBuffID;
 };
 
 // #############################################################################
@@ -350,6 +351,7 @@ class CTextureUsage {
 	friend class CTextureBase;
 	friend class CTexture;
 	friend class CKLBOGLWrapper;
+	friend class CKLBParticleAssetPlugin;
 public:
 	enum SAMPLING {
 		NEAREST = 0,
@@ -371,6 +373,15 @@ public:
 	void			setSampling			(SAMPLING minmode, SAMPLING magmode);
 	void 			setWrapping			(WRAPPING U_mode, WRAPPING V_mode);
 
+	// Returns true when the owner must release this usage's texture.
+	inline bool		releaseReference	() {
+		if (referenceCount == 1) {
+			return true;
+		}
+		referenceCount--;
+		return false;
+	}
+
 	// Lots of people need to find a texture based on usage ptr, put as public for now.
 	CTextureBase*		pTexture;
 private:
@@ -378,7 +389,8 @@ private:
 	GLenum	maxSampling;
 	GLenum	uMode;
 	GLenum	vMode;
-	bool	samplingSetupDone;
+	u8		referenceCount;
+	u8		samplingSetupDone;
 
 	CKLBOGLWrapper*	pMgr;
 	CTextureUsage*		pNext;
@@ -454,7 +466,13 @@ class CTexture : public CTextureBase {
 	friend class CFrame;
 public:
 	void			makeEmptyShell			();
+	inline void bindExternalTexture(GLenum target, GLuint name) {
+		textureTarget = target;
+		texture = name;
+		activeTexture = name;
+	}
 	GLuint			activeTexture;	
+	GLenum			textureTarget;
 private:
 	GLuint			getWorkingTexture() {
 		if (pMaster->isDoubleBuffered) {
@@ -471,7 +489,9 @@ private:
 	bool			isDoubleBuffered;
 	bool			isMipmapped;
 	bool			isCompressed;
+	bool			isShell;
 	bool			is3D;
+	bool			isNoFilter;
 	s32				frame;
 
 	// Open GL side
@@ -541,7 +561,7 @@ public:
 		ONLY_COLOR,
 		ONLY_TEXTURE,
 		TEXTURE_MUL_COLOR,
-		ES2_BRIGHTNESS,
+		ES2_BRIGHTNESS = 0x8001,
 		ES2_COLORIZE,
 		ES2_SATURATE,
 		ES2_RAMP,
@@ -553,6 +573,7 @@ public:
 		NO_ALPHA,
 		ALPHA,
 		ADDITIVE,
+		SUBTRACTIVE,
 		ADDITIVE_ALPHA
 	};
 
@@ -699,7 +720,9 @@ public:
 		TEX_OPT_DOUBLEBUFFERED_BIT	= 0x1,
 		TEX_OPT_MIPMAP_BIT			= 0x2,
 		TEX_OPT_COMPRESSED_BIT		= 0x4,
-		TEX_OPT_3D					= 0x8
+		TEX_OPT_3D					= 0x8,
+		TEX_OPT_NOFILTER_BIT		= 0x10,
+		TEX_OPT_SHELL_BIT			= 0x20
 	};
 
 	enum TEX_CHANNEL {
@@ -707,7 +730,26 @@ public:
 		RGB				= 3,
 		RGBA			= 4,
 		LUMINANCE		= 0,
-		LUMINANCE_ALPHA	= 2
+		LUMINANCE_ALPHA	= 2,
+		DEPTH			= 5
+	};
+
+	struct TextureCreateInfo {
+		TextureCreateInfo()
+		: data(NULL)
+		, dataLength(0)
+		, option(TEX_NONE)
+		, mipmapCount(1)
+		{}
+
+		s32			width;
+		s32			height;
+		GLenum			pixelFormat;
+		TEX_CHANNEL		channelCount;
+		void*			data;
+		s32			dataLength;
+		TEX_OPTION		option;
+		u8			mipmapCount;
 	};
 
 	enum SHADER_TYPE {
@@ -723,12 +765,14 @@ public:
 
 	s32				getFrame()			{ return frame; }
 	void			endFrame();
+	void			onResume();
 
 	// ------------------------------------------------------------------------
 	// Rendering.
 	//
 
 	void			resetSampler		(s32 sampler);
+	void			resetSamplers		();
 	void			applyState(SRenderState* pState);
 	void			draw(
 								GLenum				mode,
@@ -760,14 +804,18 @@ public:
 	bool			support3DTexture	();
 
 	CFrame*			createFrame			();
+	CFrame*			getDefaultFrame		();
 	void			releaseFrame		(CFrame* pFrame);
 
 	bool			copyScreenRGB888	(u32 srcx, u32 srcy, u32 width,u32 height,u8* buffer);
+	void			screenshot			(const char* path);
 
 	CTexture*		createTexture		(s32 width, s32 height, GLenum pixelFormat, TEX_CHANNEL channelCount,void* data, s32 dataLength = 0, TEX_OPTION option = TEX_NONE, s32 depth = 0, CTexture* reload = NULL);
+	CTexture*		createTexture		(const TextureCreateInfo& info, CTexture* reload = NULL);
 	void			releaseTexture		(CTexture* texture);
 	
 	// Shaders.
+	const char*		getShaderSource		(SRenderState::RENDER_MODE, SHADER_TYPE type);
 	CShader*		createShader		(SRenderState::RENDER_MODE, SHADER_TYPE type, const SParam* listParam);
 	CShader*		createShader		(const char* source, SHADER_TYPE type, const SParam* listParam);
 	void			releaseShader		(CShader* pShader);
@@ -775,6 +823,7 @@ public:
 	// Rendering Shader.
 	CShaderSet*		createShaderSet		(CShader* pVertexShader, CShader* pPixelShader);
 	void			releaseShaderSet	(CShaderSet* pFullShader);
+	void			resetShader			();
 
 	CBuffer*		createVertexBuffer	(s32 vertexCount, const SVertexEntry* listComponent, void* usingOutsideBuffer = NULL);
 	void			releaseVertexBuffer	(CBuffer* pBuffer);
@@ -793,10 +842,17 @@ private:
 
 	const char*		patch				(const char* shader, const char* glslTransform);
 
+	GLenum			textureTargets[10];
+	bool			textureTargetEnabled[10];
+	u32				textureTargetCount;
 	GLuint			arrayBufferID;
 	void			_glBindBuffer		(GLuint id);
+	void			enableTextureTarget	(CTexture* pTexture);
+	void			disableTextureTargets();
+	void			readScreenPixels	(u8** pixels, u32* width, u32* height);
 
-	USampler		samplerUnit[4];
+	CFrame			defaultFrame;
+	USampler		samplerUnit[8];
 	s32				frame;
 
 	GLfloat			displayMatrix2D[16];

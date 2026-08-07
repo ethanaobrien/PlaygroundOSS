@@ -63,7 +63,7 @@ CKLBNodeAnimationAsset* CKLBNodeAnimationAsset::load(u8* stream, u32 /*streamSiz
 	return this;
 }
 
-CKLBAbstractAsset* KLBBlendAnimationAssetPlugin::loadAsset(u8* stream, u32 streamSize) {
+CKLBAbstractAsset* KLBBlendAnimationAssetPlugin::loadAsset(u8* stream, size_t streamSize) {
 	CKLBNodeAnimationAsset* pNewAsset = KLBNEW(CKLBNodeAnimationAsset);
 	if (pNewAsset) {
 		if (pNewAsset->load(stream, streamSize)) {

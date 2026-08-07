@@ -37,6 +37,7 @@ public:
 		FORM_NODE_VISIBLE,		// 表示/非表示指定
 		FORM_NODE_ORDER,		// プライオリティ
 		FORM_NODE_GET_ORDER,	// プライオリティ取得
+		FORM_NODE_GET_TRANS,	// 位置取得
 		FORM_NODE_TASK,			// 対応するUIタスク取得
 
 
@@ -44,6 +45,7 @@ public:
 		FORM_UIE_SET_ENABLED,	// 有効/無効
 		FORM_UIE_GET_ENABLED,	
 		FORM_UIE_SET_ASSET,		// assetを変更
+		FORM_UIE_GET_ASSET_NAME,	// asset名を取得
 
 		// CKLBUISelectable 対象コマンド
 		FORM_UIS_SET_CLICK,			// クリック反応領域を再設定
@@ -67,6 +69,9 @@ public:
 		// CKLBLabelNode 対象コマンド
 		FORM_LBL_SET_TEXT,		// ラベルのテキスト変更
 		FORM_LBL_GET_TEXT,		// ラベルのテキスト取得
+		FORM_LBL_SET_COLOR,		// ラベルの色変更
+		FORM_LBL_SET_TEXTELLIPSIS,	// ラベルの省略記号付きテキスト変更
+		FORM_LBL_SET_FIT,		// ラベルのマーキー(自動スクロール)設定
 	};
 
 	CKLBFormIF(CKLBTask * pOwner = 0);
@@ -76,13 +81,13 @@ public:
 	int  updateNode         (CLuaState& lua, int argc, int base, CKLBNode * pParent, int nodeIndex, int subcmd, void * item = NULL, int index = 0);
 	void removeAssetByHandle(void * item);
 private:
-	bool updateStandardNode (CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
-	bool updateUIElement    (CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
-	bool updateUISelectable (CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
-	bool updateUIContainer  (CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
-	bool updateUITextEdit   (CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
-	bool updateUIWebView    (CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
-	bool updateLabelNode    (CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
+	bool updateStandardNode (u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
+	bool updateUIElement    (u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
+	bool updateUISelectable (u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
+	bool updateUIContainer  (u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
+	bool updateUITextEdit   (u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
+	bool updateUIWebView    (u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
+	bool updateLabelNode    (u32 * pClassID, CLuaState& lua, int argc, int base, int subcmd, CKLBNode * pNode, int& ret, void * item, int index);
 private:
 	CKLBAsset * updateAsset (CLuaState& lua, CKLBUIElement * pElement, const char * name, CKLBUIElement::ASSET_TYPE mode, void * item);
 

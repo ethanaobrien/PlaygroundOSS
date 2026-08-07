@@ -184,8 +184,10 @@ CKLBSprite3D::CKLBSprite3D()
 
 		// Create shader vertex & pixel
 		SRenderState::RENDER_MODE mode = SRenderState::TEXTURE_MUL_COLOR;
-		s_pVShader		= pOGLMgr.createShader(mode, CKLBOGLWrapper::VERTEX_SHADER, paramsVert);
-		s_pPShader		= pOGLMgr.createShader(mode, CKLBOGLWrapper::PIXEL_SHADER, paramsShader);
+		const char* vertexSource = pOGLMgr.getShaderSource(mode, CKLBOGLWrapper::VERTEX_SHADER);
+		s_pVShader		= pOGLMgr.createShader(vertexSource, CKLBOGLWrapper::VERTEX_SHADER, paramsVert);
+		const char* pixelSource  = pOGLMgr.getShaderSource(mode, CKLBOGLWrapper::PIXEL_SHADER);
+		s_pPShader		= pOGLMgr.createShader(pixelSource, CKLBOGLWrapper::PIXEL_SHADER, paramsShader);
 
 		// Map the shader together.
 		s_pShaderSet	= pOGLMgr.createShaderSet(s_pVShader, s_pPShader);

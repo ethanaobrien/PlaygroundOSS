@@ -93,7 +93,7 @@ CKLBLifeCtrlTask::commandScript(CLuaState& lua)
 				ret = 1;
 				break;
 			}
-			CKLBTask * pTask = (CKLBTask *)lua.getPointer(3);
+			CKLBTask * pTask = (CKLBTask *)lua.getScriptPtr(3);
 			child(pTask);	// 自身の子として登録
 		}
 		break;

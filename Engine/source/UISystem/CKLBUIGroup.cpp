@@ -23,6 +23,8 @@ enum {
 	UI_GROUP_GET_ANIM_NODE,
 	UI_GROUP_SKIP_ANIM,
 	UI_GROUP_IS_ANIM,
+	UI_GROUP_GET_ORDER,
+	UI_GROUP_GET_SIZE,
 };
 static IFactory::DEFCMD cmd[] = {
 	{ "UI_GROUP_ANIM_CALLBACK", UI_GROUP_ANIM_CALLBACK },
@@ -31,6 +33,8 @@ static IFactory::DEFCMD cmd[] = {
 
 	{ "UI_GROUP_IS_ANIM",		UI_GROUP_IS_ANIM },
 	{ "UI_GROUP_SKIP_ANIM",		UI_GROUP_SKIP_ANIM },
+	{ "UI_GROUP_GET_ORDER",		UI_GROUP_GET_ORDER },
+	{ "UI_GROUP_GET_SIZE",		UI_GROUP_GET_SIZE },
 
 	{0, 0}
 };
@@ -49,13 +53,15 @@ enum {
 	ARG_ORDER,	// TODO :Useless property
 	ARG_X,
 	ARG_Y,
+	ARG_WIDTH,
+	ARG_HEIGHT,
 
 	ARG_REQUIRE = ARG_Y,
-	ARG_NUMS    = ARG_Y
+	ARG_NUMS    = ARG_HEIGHT
 };
 
 CKLBUIGroup::CKLBUIGroup()
-: CKLBUITask() 
+: CKLBUITask(P_UIAFTER)
 {
 	m_newScriptModel = true;
 }
@@ -71,10 +77,10 @@ CKLBUIGroup::getClassID()
 }
 
 CKLBUIGroup*
-CKLBUIGroup::create(CKLBUITask* pParent, CKLBNode* pNode, float x, float y) {
+CKLBUIGroup::create(CKLBUITask* pParent, CKLBNode* pNode, u32 order, float x, float y, float width, float height) {
 	CKLBUIGroup* pTask = KLBNEW(CKLBUIGroup);
     if(!pTask) { return NULL; }
-	if(!pTask->init(pParent, pNode, x, y)) {
+	if(!pTask->init(pParent, pNode, order, x, y, width, height)) {
 		KLBDELETE(pTask);
 		return NULL;
 	}
@@ -82,11 +88,11 @@ CKLBUIGroup::create(CKLBUITask* pParent, CKLBNode* pNode, float x, float y) {
 }
 
 bool
-CKLBUIGroup::init(CKLBUITask* pParent, CKLBNode* pNode, float x, float y) {
+CKLBUIGroup::init(CKLBUITask* pParent, CKLBNode* pNode, u32 order, float x, float y, float width, float height) {
 	if(!setupNode()) return false;
 
 	// ユーザ定義初期化を呼び、初期化に失敗したら終了。
-	bool bResult = initCore(x, y);
+	bool bResult = initCore(order, x, y, width, height);
 
 	// 初期化処理終了後の登録。失敗時の処理も適切に行う。
 	bResult = registUI(pParent, bResult);
@@ -98,13 +104,16 @@ CKLBUIGroup::init(CKLBUITask* pParent, CKLBNode* pNode, float x, float y) {
 }
 
 bool
-CKLBUIGroup::initCore(float x, float y)
+CKLBUIGroup::initCore(u32 order, float x, float y, float width, float height)
 {
 	if (!setupPropertyList((const char**)ms_propItems,SizeOfArray(ms_propItems))) {
 		return false;
 	}
 
 	setInitPos(x, y);
+	m_order  = order;
+	m_width  = width;
+	m_height = height;
 	return true;
 }
 
@@ -114,11 +123,22 @@ CKLBUIGroup::initUI(CLuaState& lua)
 	int argc = lua.numArgs();
 	if(argc < ARG_REQUIRE || argc > ARG_NUMS) return false;
 
-	float x = lua.getFloat(ARG_X);
-	float y = lua.getFloat(ARG_Y);
+	u32   order = lua.getInt(ARG_ORDER);
+	float x     = lua.getFloat(ARG_X);
+	float y     = lua.getFloat(ARG_Y);
+
+	float width;
+	float height;
+	if(argc >= ARG_WIDTH) {
+		width  = lua.getFloat(ARG_WIDTH);
+		height = lua.getFloat(ARG_HEIGHT);
+	} else {
+		width  = 100.0f;
+		height = 100.0f;
+	}
 
 	// getNode()->setTranslate(getNum(PR_X), getNum(PR_Y));
-	return initCore(x,y);
+	return initCore(order, x, y, width, height);
 }
 
 void
@@ -174,9 +194,8 @@ CKLBUIGroup::commandUI(CLuaState& lua, int argc, int cmd)
 	case UI_GROUP_IS_ANIM:
 		{
 			bool result = false;
-			if(argc >= 2 && argc <= 3) {
-				const char * name = NULL;
-				if(argc >= 3 && !lua.isNil(3)) name = lua.getString(3);
+			if(argc >= 3 && (argc == 2 || argc == 3) && !lua.isNil(3)) {
+				const char * name = lua.getString(3);
 				result = isAnim(name);
 			}
 			lua.retBoolean(result);
@@ -193,6 +212,32 @@ CKLBUIGroup::commandUI(CLuaState& lua, int argc, int cmd)
 			}
 			lua.retBoolean(result);
 			ret = 1;
+		}
+		break;
+	case UI_GROUP_GET_ORDER:
+		{
+			if(argc == 2) {
+				int order = getOrder();
+				lua.retInt(order);
+				ret = 1;
+			} else {
+				lua.retBoolean(false);
+				ret = 1;
+			}
+		}
+		break;
+	case UI_GROUP_GET_SIZE:
+		{
+			if(argc == 2) {
+				float width = m_width;
+				float height = m_height;
+				lua.retFloat(width);
+				lua.retFloat(height);
+				ret = 2;
+			} else {
+				lua.retBoolean(false);
+				ret = 1;
+			}
 		}
 		break;
 	}

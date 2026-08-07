@@ -27,26 +27,38 @@
 #include "CAndroidTmpFile.h"
 #include "CPFInterface.h"
 
-CAndroidTmpFile::CAndroidTmpFile(const char * path) : m_fullpath(0)
+bool KLBCreateDirectories(const char * path);
+
+CAndroidTmpFile::CAndroidTmpFile(const char * path) : m_fullpath(0), m_closed(false)
 {
-    m_fullpath = CAndroidPathConv::getInstance().fullpath(path);
+    m_fullpath = CKLBPathConv::getInstance().fullpath(path);
     // 平成24年11月27日(火)
     // ファイルが存在しない場合に該当ファイルが生成されない事への対応と
     // 権限の付与を行いました。
-    m_fd = open(m_fullpath, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
-    CPFInterface::getInstance().platform().excludePathFromBackup(m_fullpath);
+    if(KLBCreateDirectories(m_fullpath)) {
+        m_fd = open(m_fullpath, O_WRONLY | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR);
+        CPFInterface::getInstance().platform().excludePathFromBackup(m_fullpath);
+    }
 }
 
 CAndroidTmpFile::~CAndroidTmpFile()
 {
-    if(m_fd > 0) {
-        close(m_fd);
-    }
+    closeTmp();
     delete [] m_fullpath;
 }
 
 size_t
 CAndroidTmpFile::writeTmp(void *ptr, size_t size)
 {
-    return write(m_fd, ptr, size);
+    return (m_fd > 0) ? write(m_fd, ptr, size) : 0;
+}
+
+int
+CAndroidTmpFile::closeTmp()
+{
+    if(!m_closed && m_fd > 0) {
+        m_closed = true;
+        return close(m_fd);
+    }
+    return -1;
 }

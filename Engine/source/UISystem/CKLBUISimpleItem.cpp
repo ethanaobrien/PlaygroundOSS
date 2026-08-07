@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,14 +15,17 @@
 */
 #include "CKLBUISimpleItem.h"
 #include "CKLBUtility.h"
+#include "CKLBRendering.h"
 
 // Command Values
 enum {
 	UI_SIMPLE_ = 0,
+	UI_SIMPLEITEM_SET_MASK,
 };
 
 static IFactory::DEFCMD cmd[] = {
 	{ "UI_SIMPLE_", UI_SIMPLE_ },
+	{ "UI_SIMPLEITEM_SET_MASK", UI_SIMPLEITEM_SET_MASK },
 	{0, 0}
 };
 static CKLBTaskFactory<CKLBUISimpleItem> factory("UI_SimpleItem", CLS_KLBUISIMPLEITEM, cmd);
@@ -48,9 +51,11 @@ enum {
 };
 
 CKLBUISimpleItem::CKLBUISimpleItem() 
-: CKLBUITask()
+: CKLBUITask(P_UIAFTER)
 , m_pNode   (NULL)
 , m_asset   (NULL) 
+, m_maskHandle(0)
+, m_pMaskTex(NULL)
 {
 	setNotAlwaysActive();
 	m_newScriptModel = true;
@@ -138,4 +143,50 @@ void
 CKLBUISimpleItem::dieUI()
 {
 	CKLBUtility::deleteNode(m_pNode, m_handle);
+	if(m_pMaskTex && m_maskHandle) {
+		CKLBDataHandler::releaseHandle(m_maskHandle);
+	}
+}
+
+bool
+CKLBUISimpleItem::setMaskAsset(const char* asset)
+{
+	if(m_pMaskTex && m_maskHandle) {
+		CKLBDataHandler::releaseHandle(m_maskHandle);
+	}
+
+	u32 handle = 0;
+	CKLBImageAsset* pTex = NULL;
+	if(asset) {
+		pTex = (CKLBImageAsset*)CKLBUtility::loadAssetScript(asset, &handle);
+		if(!pTex) {
+			return false;
+		}
+	}
+
+	CKLBSprite* pSprite = (CKLBSprite*)m_pNode->getRender(0);
+	if(pSprite) {
+		pSprite->setMask(pTex);
+	}
+
+	m_pMaskTex = pTex;
+	m_maskHandle = handle;
+	return true;
+}
+
+int
+CKLBUISimpleItem::commandUI(CLuaState& lua, int argc, int cmd)
+{
+	if(cmd == UI_SIMPLEITEM_SET_MASK) {
+		bool result = false;
+		if(argc == 3) {
+			const char* asset = lua.isNil(3) ? NULL : lua.getString(3);
+			result = setMaskAsset(asset);
+		}
+		lua.retBool(result);
+		return 1;
+	}
+
+	lua.retBool(false);
+	return 1;
 }

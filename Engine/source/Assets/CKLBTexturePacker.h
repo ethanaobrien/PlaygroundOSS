@@ -24,7 +24,8 @@
 
 class TexturePackerOnce;
 
-typedef void (*compact)(void* ctx, u16 surfaceID, u16 newSurfaceID);
+typedef void (*SurfaceCompactionCallback)(void* owner, u32 surfaceID, u32 newSurfaceID);
+typedef void (*SurfaceOwnerReleaseCallback)(void* owner);
 
 #define FORMAT_8888		(4)
 #define FORMAT_4444		(2)
@@ -38,6 +39,20 @@ class TexturePacker {
 	friend class TexturePackerOnce;
 	friend class CKLBLuaLibPackerControl;
 public:
+	struct SurfaceHandle {
+		SurfaceHandle(u16 value) : value(value) {}
+		operator u16() const { return value; }
+		SurfaceHandle& operator|=(u16 marker) {
+			value |= marker;
+			return *this;
+		}
+
+		u16 value;
+	};
+
+	TexturePacker();
+	~TexturePacker();
+
 	inline
 	static u8 getCurrentModeTexture() {
 		return s_currentTextureMode;
@@ -45,25 +60,35 @@ public:
 
 	inline
 	static TexturePacker& getInstance() {
-		static TexturePacker instance;
-		return instance;
+		extern TexturePacker g_texturePackerInstances[2];
+		return g_texturePackerInstances[0];
+	}
+	static TexturePacker& getInstance(u32 index) {
+		extern TexturePacker g_texturePackerInstances[2];
+		return g_texturePackerInstances[index];
 	}
 
-	bool init				(u16 width,			u16 height, u16 format);
+	bool init				(u16 width,			u16 height, u16 format, bool allocateDefault = true);
+	static bool initAll		(u16 width,			u16 height, u16 format, bool allocateSecondary);
 	void release			();
-	void dump				(bool detail);
-	void refreshTextures	();
-	void unloadSurface		();
-	void reloadSurfaces		();
+	void releaseOwners		();
+	static void releaseAll		();
+	static void dump			(bool detail);
+	static void refreshTextures	();
+	static void unloadSurface		();
+	static void reloadSurfaces		();
 
-	u16  allocateSurface	(CKLBSprite* spr,	u16 w,		u16 h	, void* ptrOwner, compact cbCompaction);
-	u16	 reallocateSurface	(u16 surface,		u16 w,		u16 h	);
-	void releaseSurface		(u16 surface);
-	void getSurfaceInfo		(u16 surface,		u32*& pixel, float& u0, float& v0, float& u1, float& v1, float& stepU, float& stepV);
+	SurfaceHandle
+	     allocateSurface	(u16 w,		u16 h,		void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner);
+	SurfaceHandle
+	     reallocateSurface	(SurfaceHandle surface,	u16 w,		u16 h,	void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner);
+	void releaseSurface		(SurfaceHandle surface);
+	void setSurfaceOwner	(SurfaceHandle surface, void* owner);
+	void getSurfaceInfo		(SurfaceHandle surface,	u32*& pixel, float& u0, float& v0, float& u1, float& v1, float& stepU, float& stepV);
 	CTextureUsage*
-		 getTextureUsage	(u16 surface);
+		 getTextureUsage	(SurfaceHandle surface);
 	u16	 getSurfaceStride	()	{ return m_width;			}
-	void updateTexture		(u16 surface);
+	void updateTexture		(SurfaceHandle surface);
 	void setFormat			(u16 format);
 
 #ifdef DEBUG_TEXTURE_PACKER
@@ -72,25 +97,39 @@ public:
 #endif
 
 private:
-	u16	 useOtherAlloc		(CKLBSprite* spr,	u16 w,		u16 h	, void* ptrOwner,compact cbCompaction);
+	void refreshInstanceTextures();
+	void dumpInstance		(bool detail);
+	void unloadInstance		();
+	void reloadInstance		();
+	void resetPendingSurfaces();
+	void addPendingSurface	(SurfaceHandle surface);
+	bool notInPendingSurfaces(SurfaceHandle surface) const;
+	SurfaceHandle
+		 useOtherAlloc		(u16 w,		u16 h,		void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner);
 	TexturePackerOnce*
 		 allocateAllocator	(u16 w, u16 h);
 	bool notInIgnoreList	(TexturePackerOnce* pack);
 	void removeIgnoreList	(TexturePackerOnce* pack);
 	void addIgnoreList		(TexturePackerOnce* pack);
 
-	// Maximum 4 bit on 16 bit index.
-	#define MAX_TEXTURES	(16)
-	u16					m_currFormat;
+	// Surface handles use eleven bits for the surface and five for the texture.
+	#define SURFACE_INDEX_BITS	(11)
+	#define SURFACE_INDEX_MASK	((1U << SURFACE_INDEX_BITS) - 1U)
+	#define TEXTURE_INDEX_MASK	((u16)~SURFACE_INDEX_MASK)
+	#define MAX_TEXTURES		(32)
 	u16					m_width;
 	u16					m_height;
-	u16					m_update;
+	u16					m_currFormat;
 	// Mode 8888, 4444, 8
 	TexturePackerOnce*	m_lastUsedPacker	[5];
 	TexturePackerOnce*	m_allocatedPacker	[MAX_TEXTURES];
 
 	TexturePackerOnce*	ignore				[MAX_TEXTURES];
 	u8					ignoreCount;
+
+	// Released global surface handles awaiting deferred processing.
+	u16					m_pendingSurfaces	[1024];
+	s32					m_pendingSurfaceCount;
 
 	static
 	u8					s_currentTextureMode;

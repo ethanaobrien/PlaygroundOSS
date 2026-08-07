@@ -18,26 +18,39 @@
 #include <string.h>
 #include "AudioAsset.h"
 #include "CKLBTouchEventUI.h"
+#include "CKLBDrawTask.h"
 
 // Init Touch System.
 SFormCtrlList* CKLBUISystem::s_formList = NULL;
+SFormCtrlList* CKLBUISystem::s_formListStack[FORM_LIST_STACK_CAPACITY];
+u16 CKLBUISystem::s_formListStackDepth = 0;
 SClipRecord*   CKLBUISystem::s_clip_array[UI_SYS_MAXCLIP_ARRAY];
 u16 CKLBUISystem::s_clip_arraySize = 0;
 
 CKLBUISelectable* 
-CKLBUISystem::hitTest(float screenX, float screenY) 
+CKLBUISystem::hitTest(s32 screenX, s32 screenY, bool checkScreen)
 {
-	CKLBUISelectable*   result      = NULL;
+	CKLBDrawResource& draw = CKLBDrawResource::getInstance();
+	if(checkScreen) {
+		if(screenX < 0 || screenY < 0 || screenX > draw.width() || screenY > draw.height()) {
+			return NULL;
+		}
+	}
+
 	SFormCtrlList*      pFormParse  = CKLBTouchEventUIMgr::getInstance().m_pFormBegin;
+	CKLBUISelectable*   result      = NULL;
+	float touchX = (float)screenX;
+	float touchY = (float)screenY;
+	SClipRecord** clips = s_clip_array;
 	u32 priorityResult = 0;
 
-	while (pFormParse) {
+	while(pFormParse) {
 		// Possible optimization here using form "state" information.
 		// if (pFormParse->bEnable) { pFormParse = pFormParse->nextForm; continue; }
 
 		CKLBUISelectable* elem      = pFormParse->pBegin;
 		while (elem) {
-			if (elem->isEnabled()) {		// Visible AND Enabled test.
+			if (elem->m_bEnabled && elem->m_bUpperEnabled && elem->isVisible()) {
 				STouchSurface* list = &elem->m_touchSurface;
 
 				if (list->isUpToDate == false) {
@@ -66,15 +79,15 @@ CKLBUISystem::hitTest(float screenX, float screenY)
 				//	If so, clip afterTransformCoordinates
 				int n = 0;
 				while (n < s_clip_arraySize) {
-					if ((list->touchSurfacePriorityEquiv >= s_clip_array[n]->pClipStartState->getOrder()) &&
-						(list->touchSurfacePriorityEquiv <  s_clip_array[n]->pClipEndState->getOrder())) {
+					if ((list->touchSurfacePriorityEquiv >= clips[n]->pClipStartState->getOrder()) &&
+						(list->touchSurfacePriorityEquiv <  clips[n]->pClipEndState->getOrder())) {
 						//
 						// Perform clipping
 						//
 
 						// Convert H,W -> X,Y
 						float clip[4];
-						float* src = s_clip_array[n]->pClipStartState->getPostScissor();
+						float* src = clips[n]->pClipStartState->getPostScissor();
 
 						clip[0] = src[0];
 						clip[1] = src[1];
@@ -96,8 +109,8 @@ CKLBUISystem::hitTest(float screenX, float screenY)
 					n++;
 				}
 
-				if (    (screenX >= list->afterTransform[0]) && (screenY >= list->afterTransform[1])
-					&&  (screenX <= list->afterTransform[2]) && (screenY <= list->afterTransform[3]))
+				if (    (touchX >= list->afterTransform[0]) && (touchY >= list->afterTransform[1])
+					&&  (touchX <= list->afterTransform[2]) && (touchY <= list->afterTransform[3]))
 				{
 					if (list->touchSurfacePriorityEquiv >= priorityResult) {
 						priorityResult = list->touchSurfacePriorityEquiv;
@@ -109,27 +122,26 @@ CKLBUISystem::hitTest(float screenX, float screenY)
 			elem = elem->m_pNextSelectable;
 		}
 
-		pFormParse = pFormParse->next;
+			pFormParse = pFormParse->next;
 	}
-	printf("CLICK %p\n", result);
 	return result;
 }
 
 bool 
 CKLBUISystem::checkRange(CKLBRenderState* startClip, CKLBRenderState* endClip) 
 {
-	klb_assert(startClip->getOrder() < endClip->getOrder(), "Wrong clipping order (start >= end)");
+	klb_assertNull(((s32)startClip->getOrder()) < ((s32)endClip->getOrder()), "Wrong clipping order for (list) clipping range, clipping range 'start clip' must be less than 'end clip')");
 
 	int n = 0;
 	while (n < s_clip_arraySize) {
 		CKLBRenderState* pStateS = s_clip_array[n]->pClipStartState;
 		CKLBRenderState* pStateE = s_clip_array[n]->pClipEndState;
 
-		if ((startClip->getOrder() >= pStateS->getOrder()) && (startClip->getOrder() <= pStateE->getOrder())) {
+		if (((s32)startClip->getOrder() >= (s32)pStateS->getOrder()) && ((s32)startClip->getOrder() <= (s32)pStateE->getOrder())) {
 			return false;
 		}
 
-		if ((endClip->getOrder() >= pStateS->getOrder()) && (endClip->getOrder() <= pStateE->getOrder())) {
+		if (((s32)endClip->getOrder() >= (s32)pStateS->getOrder()) && ((s32)endClip->getOrder() <= (s32)pStateE->getOrder())) {
 			return false;
 		}
 
@@ -141,15 +153,18 @@ CKLBUISystem::checkRange(CKLBRenderState* startClip, CKLBRenderState* endClip)
 void* 
 CKLBUISystem::registerClip(CKLBRenderState* startClip, CKLBRenderState* endClip) 
 {
-	klb_assert(s_clip_arraySize < UI_SYS_MAXCLIP_ARRAY, "Reached max UI clipping stack");
+	klb_assertNull(checkRange(startClip, endClip), "Overlapping clipping range with already registered clipping ranges");
 
-	klb_assert(checkRange(startClip, endClip), "Overlapping clipping range");
+	if (s_clip_arraySize < UI_SYS_MAXCLIP_ARRAY) {
+		SClipRecord * pRec = KLBNEW(SClipRecord);
+		pRec->pClipStartState = startClip;
+		pRec->pClipEndState = endClip;
+		s_clip_array[s_clip_arraySize++] = pRec; 
+		return (void *)pRec;
+	}
 
-	SClipRecord * pRec = KLBNEW(SClipRecord);
-	pRec->pClipStartState = startClip;
-	pRec->pClipEndState = endClip;
-	s_clip_array[s_clip_arraySize++] = pRec; 
-	return (void *)pRec;
+	klb_assertAlways("Reached max UI clipping stack");
+	return NULL;
 }
 
 void 
@@ -182,8 +197,8 @@ CKLBUISystem::unregisterClip(void* handle)
 CKLBUISelectable* 
 CKLBUISystem::createTouchSurface(CKLBUISelectable* pSource, u32 priority) 
 {
-	klb_assert(s_formList, "Always have form assigned");
-	klb_assert(pSource->m_pNextSelectable == NULL, "Must be null");
+	klb_assertNull(s_formList, "Always have form assigned");
+	klb_assertNull(pSource->m_pNextSelectable == NULL, "Must be null");
 
 	STouchSurface*	pNew    = &pSource->m_touchSurface;
 	pNew->isUpToDate        = false;
@@ -197,8 +212,6 @@ CKLBUISystem::createTouchSurface(CKLBUISelectable* pSource, u32 priority)
 	pNew->transform                 = &pSource->m_composedMatrix;
 	pNew->touchSurfacePriorityEquiv	= priority;
 
-	printf("FORM Add Ctrl : %p\n", pSource);
-
 	pSource->m_pNextSelectable = s_formList->pBegin;
 	s_formList->pBegin = pSource;
 	
@@ -209,7 +222,7 @@ void
 CKLBUISystem::releaseTouchSurface(CKLBUISelectable* pSurface) 
 {
 	SFormCtrlList* pFormParse		= CKLBTouchEventUIMgr::getInstance().m_pFormBegin;
-	klb_assert(pSurface, "NULL PTR");
+	klb_assertNull(pSurface, "NULL PTR");
 
 	while (pFormParse) {
 		// Possible optimization here using form "state" information.
@@ -224,7 +237,6 @@ CKLBUISystem::releaseTouchSurface(CKLBUISelectable* pSurface)
 		}
 
 		if (elem) {
-			printf("FORM Remove Ctrl : %p %p\n", pSurface, pFormParse);
 			if (prev == NULL) {
 				pFormParse->pBegin = elem->m_pNextSelectable;
 			} else {
@@ -238,7 +250,7 @@ CKLBUISystem::releaseTouchSurface(CKLBUISelectable* pSurface)
 		pFormParse = pFormParse->next;
 	}
 
-	klb_assertAlways("Surface not found");
+	klb_assertAlways("Surface not found %p", pSurface);
 }
 
 void 
@@ -254,7 +266,16 @@ CKLBUISystem::releaseAll()
 void 
 CKLBUISystem::setFormList(SFormCtrlList * pList)
 {
+	klb_assert(s_formListStackDepth < FORM_LIST_STACK_CAPACITY, "Form list stack overflow");
+	s_formListStack[s_formListStackDepth++] = s_formList;
 	s_formList = pList;
+}
+
+void
+CKLBUISystem::resetFormList()
+{
+	--s_formListStackDepth;
+	s_formList = s_formListStack[s_formListStackDepth];
 }
 
 // -----------------------------------------------------------------
@@ -277,7 +298,6 @@ CKLBUIElement::CKLBUIElement()
 , m_renderPrio          (0)
 , m_bEnabled            (true)
 , m_bUpperEnabled       (true)
-, m_bDoRefCount         (true)
 {
 	m_bInternalNode  = false;
 	m_status        |= UI_TYPE;	// Node made it visible and marked for refresh.
@@ -343,12 +363,22 @@ CKLBUIElement::setTop(s32 coordinateY)
 void 
 CKLBUIElement::releaseAsset(CKLBAsset* pAsset) 
 {
-	if (pAsset && m_bDoRefCount) {
+	if (pAsset) {
 		if (pAsset->getAssetType() != ASSET_IMAGE) {
 			pAsset->decrementRefCount();
 		} else {
 			((CKLBImageAsset*)pAsset)->getTexture()->decrementRefCount();
 		}
+	}
+}
+
+void
+CKLBUIElement::retainAsset(CKLBAsset* pAsset)
+{
+	if (pAsset->getAssetType() != ASSET_IMAGE) {
+		pAsset->incrementRefCount();
+	} else {
+		((CKLBImageAsset*)pAsset)->getTexture()->incrementRefCount();
 	}
 }
 
@@ -361,12 +391,8 @@ CKLBUIElement::resetAsset(CKLBAsset** ppOldAsset, CKLBNode** ppOldNode, CKLBAsse
 		KLBDELETE((*ppOldNode));
 		*ppOldAsset = newAsset;
 
-		if (newAsset && m_bDoRefCount) {
-			if (newAsset->getAssetType() != ASSET_IMAGE) {
-				newAsset->incrementRefCount();
-			} else {
-				((CKLBImageAsset*)newAsset)->getTexture()->incrementRefCount();
-			}
+		if (newAsset) {
+			retainAsset(newAsset);
 		}
 
 		*ppOldNode	= NULL;
@@ -390,6 +416,42 @@ CKLBUIElement::setAsset(CKLBAsset*	pAsset, CKLBUIElement::ASSET_TYPE mode)
 		// Do nothing.
 		break;
 	}
+}
+
+/*virtual*/
+const char*
+CKLBUIElement::getAssetName(CKLBUIElement::ASSET_TYPE mode)
+{
+	switch (mode) {
+	case NORMAL_ASSET:
+		return m_pNormal->getName();
+	case DISABLED_ASSET:
+		return m_pDisabled->getName();
+	default:
+		return NULL;
+	}
+}
+
+void
+CKLBUIElement::replaceAsset(const char* sourceName, CKLBAsset* replacement)
+{
+	CKLBAsset* normal = m_pNormal;
+	const char* normalSource = normal ? normal->getFileSource() : NULL;
+	if(normalSource && !strcmp(normalSource, sourceName)) {
+		releaseAsset(normal);
+		m_pNormal = replacement;
+		retainAsset(replacement);
+	}
+
+	CKLBAsset* disabled = m_pDisabled;
+	const char* disabledSource = disabled ? disabled->getFileSource() : NULL;
+	if(disabledSource && !strcmp(disabledSource, sourceName)) {
+		releaseAsset(disabled);
+		m_pDisabled = replacement;
+		retainAsset(replacement);
+	}
+
+	CKLBNode::replaceAsset(sourceName, replacement);
 }
 
 void 
@@ -432,6 +494,12 @@ CKLBUIElement::setEnabled(bool isEnabled)
 	}
 }
 
+CKLBNode*
+CKLBUIElement::createSubTree(CKLBAsset* pAsset, u32 priority)
+{
+	return pAsset->createSubTree(priority);
+}
+
 bool 
 CKLBUIElement::isEnabled() 
 {
@@ -453,7 +521,7 @@ CKLBUIElement::switchTo(UI_STATE newState)
 		case CKLBUIElement::NORMAL_ASSET:
 			pCurrAsset = m_pNormal;
 			if (m_pNormal && (m_pNormalTree == NULL)) {
-				m_pNormalTree	= m_pNormal->createSubTree(m_renderPrio);
+				m_pNormalTree	= createSubTree(m_pNormal, m_renderPrio);
 				create = true;
 			}
 			pCurrNode		= m_pNormalTree;
@@ -461,7 +529,7 @@ CKLBUIElement::switchTo(UI_STATE newState)
 		case CKLBUIElement::DISABLED_ASSET:
 			pCurrAsset = m_pDisabled;
 			if (m_pDisabled && (m_pDisabledTree == NULL)) {
-				m_pDisabledTree = m_pDisabled->createSubTree(m_renderPrio);
+				m_pDisabledTree = createSubTree(m_pDisabled, m_renderPrio);
 				create = true;
 			}
 			pCurrNode		= m_pDisabledTree;
@@ -471,7 +539,7 @@ CKLBUIElement::switchTo(UI_STATE newState)
 				CKLBUISelectable* pSelect = (CKLBUISelectable*)this;
 				pCurrAsset = pSelect->m_pFocus;
 				if (pSelect->m_pFocus && (pSelect->m_pFocusTree == NULL)) {
-					pSelect->m_pFocusTree = pCurrNode = pSelect->m_pFocus->createSubTree(m_renderPrio);
+					pSelect->m_pFocusTree = pCurrNode = createSubTree(pSelect->m_pFocus, m_renderPrio);
 				}
 				pCurrNode	= pSelect->m_pFocusTree;
 				create = true;
@@ -482,7 +550,7 @@ CKLBUIElement::switchTo(UI_STATE newState)
 				CKLBUISelectable* pSelect = (CKLBUISelectable*)this;
 				pCurrAsset = pSelect->m_pPushed;
 				if (pSelect->m_pPushed && (pSelect->m_pPushedTree == NULL)) {
-					pCurrNode = pSelect->m_pPushedTree = pSelect->m_pPushed->createSubTree(m_renderPrio);
+					pCurrNode = pSelect->m_pPushedTree = createSubTree(pSelect->m_pPushed, m_renderPrio);
 				}
 				pCurrNode	= pSelect->m_pPushedTree;
 				create = true;
@@ -581,6 +649,15 @@ CKLBUIElement::processAction(CKLBAction* pAction)
 
 #define NO_RADIO_VALUE  (0xFFFFFFFF)
 
+static u64 s_eventSender = ~0ULL;
+
+/*static*/
+u64
+CKLBUISelectable::getEventSender()
+{
+	return s_eventSender;
+}
+
 CKLBUISelectable::CKLBUISelectable()
 : CKLBUIElement         ()
 , m_pNextSelectable     (NULL)
@@ -592,9 +669,11 @@ CKLBUISelectable::CKLBUISelectable()
 , m_radioID             (NO_RADIO_VALUE)
 , m_bStick              (false)
 , m_bDown               (false)
+, m_bStickLock          (false)
 , m_bLocked             (false)
 , m_pDownAudio          (NULL)
 , m_pUpAudio            (NULL)
+, m_recordID            (~0ULL)
 , m_pDownVolumeOriginal (1.0f)
 , m_pUpVolumeOriginal   (1.0f)
 , m_pDownVolumeFactor   (1.0f)
@@ -630,6 +709,10 @@ CKLBUISelectable::recomputeCustom()
 
 CKLBUISelectable::~CKLBUISelectable() 
 {
+	if (m_bLocked) {
+		CKLBTouchEventUIMgr::getInstance().resetDragTarget(this);
+	}
+
 	releaseAsset(m_pPushed);
 	releaseAsset(m_pFocus);
 	m_pPushed   = NULL;
@@ -785,7 +868,7 @@ CKLBUISelectable::setStickedInternal(bool isSticked)
 				switchTo(DOWN);
 			} else {
 				switchTo(NORMAL);
-				m_bLocked = false;
+				m_bStickLock = false;
 			}
 		} else {
 			// Do nothing, stay DISABLED view
@@ -813,10 +896,12 @@ CKLBUISelectable::processAction	(CKLBAction* pAction)
 		if (this->m_bStick == false) {	// If button : down on push.
 			this->setSticked(true);
 			if (m_bStick) {
-				m_bLocked = !m_bLocked;
+				m_bStickLock = !m_bStickLock;
 			}
 		}
-	} else if (pAction->m_actionType == ACTION_RELEASE) {
+	} else if ((pAction->m_actionType == ACTION_RELEASE)
+			|| (pAction->m_actionType == ACTION_CANCEL)) {
+		m_bLocked = false;
 		if (this->m_bStick && down == false) {
 			this->setSticked(true);
 			/* locked desactive
@@ -825,12 +910,12 @@ CKLBUISelectable::processAction	(CKLBAction* pAction)
 			}*/
 		}
 		else
-		if ((this->m_bStick == false) || (m_bLocked == false)) {
+		if ((this->m_bStick == false) || (m_bStickLock == false)) {
 			if (down && m_pUpAudio) {
 				m_pUpAudio->play(m_pUpVolume);
 			}
 			this->setSticked(false);
-			m_bLocked = false;
+			m_bStickLock = false;
 		}
 
 		if (m_bDown && (m_modalResult != 0)) {
@@ -847,7 +932,9 @@ CKLBUISelectable::processAction	(CKLBAction* pAction)
 
 		// Only check box deliver change event.
 		if ((down != this->m_bDown) && (this->m_bStick == true)) {
+			s_eventSender = m_recordID;
 			sendEvent(ACTION_CHANGE, m_bDown ? 1 : 0);
+			s_eventSender = ~0ULL;
 		}
 	} else if (pAction->m_actionType == ACTION_UNDEF) {
 		// Cancel action on a checkbox.
@@ -861,20 +948,30 @@ CKLBUISelectable::processAction	(CKLBAction* pAction)
 
 	switch (pAction->m_actionType) {
 	case ACTION_PUSH:
+		m_bLocked = true;
+		s_eventSender = m_recordID;
 		sendEvent((ACTION_TYPE)pAction->m_actionType, 0);
+		s_eventSender = ~0ULL;
 		break;
 	case ACTION_RELEASE:
+	case ACTION_CANCEL:
 		{
-			sendEvent((ACTION_TYPE)pAction->m_actionType, 0);	// Release
+			m_bLocked = false;
+			s_eventSender = m_recordID;
+			sendEvent(ACTION_RELEASE, 0);
+			s_eventSender = ~0ULL;
 			int fid = CKLBTaskMgr::getInstance().getFrameID();
-			if(fid != m_lastClick) {
+			if ((fid != m_lastClick) && (pAction->m_actionType == ACTION_RELEASE)) {
 				m_lastClick = fid;
 				sendEvent(ACTION_CLICK,0);
 			}
 		}
 		break;
 	case ACTION_UNDEF:
+		m_bLocked = false;
+		s_eventSender = m_recordID;
 		sendEvent(ACTION_RELEASE, 1);
+		s_eventSender = ~0ULL;
 		break;
 	}
 
@@ -925,6 +1022,63 @@ CKLBUISelectable::setAsset(CKLBAsset*	pAsset, CKLBUIElement::ASSET_TYPE mode)
 		CKLBUIElement::setAsset(pAsset, mode);
 		break;
 	}
+}
+
+/*virtual*/
+const char*
+CKLBUISelectable::getAssetName(CKLBUIElement::ASSET_TYPE mode)
+{
+	switch (mode) {
+	case CKLBUIElement::FOCUSED_ASSET:
+		return m_pPushed->getName();
+	case CKLBUIElement::PUSHED_ASSET:
+		return m_pPushed->getName();
+	default:
+		return CKLBUIElement::getAssetName(mode);
+	}
+}
+
+void
+CKLBUISelectable::replaceAsset(const char* sourceName, CKLBAsset* replacement)
+{
+	CKLBAsset* pushed = m_pPushed;
+	const char* pushedSource = pushed ? pushed->getFileSource() : NULL;
+	if(pushedSource && !strcmp(pushedSource, sourceName)) {
+		releaseAsset(pushed);
+		m_pPushed = replacement;
+		if(replacement->getAssetType() != ASSET_IMAGE) {
+			replacement->incrementRefCount();
+		} else {
+			((CKLBImageAsset*)replacement)->getTexture()->incrementRefCount();
+		}
+	}
+
+	CKLBAsset* focus = m_pFocus;
+	const char* focusSource = focus ? focus->getFileSource() : NULL;
+	if(focusSource && !strcmp(focusSource, sourceName)) {
+		releaseAsset(focus);
+		m_pDisabled = replacement; // Preserve the shipped focus-replacement behavior.
+		CKLBAsset* retainedFocus = m_pFocus;
+		if(retainedFocus->getAssetType() != ASSET_IMAGE) {
+			retainedFocus->incrementRefCount();
+		} else {
+			((CKLBImageAsset*)retainedFocus)->getTexture()->incrementRefCount();
+		}
+	}
+
+	CKLBUIElement::replaceAsset(sourceName, replacement);
+}
+
+/*virtual*/
+void
+CKLBUISelectable::invisibleSelf()
+{
+	if (m_bLocked) {
+		CKLBTouchEventUIMgr::getInstance().resetDragTarget(this);
+		m_bEnabled = false;
+		setEnabled(true);
+	}
+	CKLBUIElement::invisibleSelf();
 }
 
 void 
@@ -1161,3 +1315,9 @@ CKLBUIContainer::showModal(CKLBNode* pNode)
 	this->m_bAsModal = true;
 	pNode->addNode(this);
 }
+
+// The shipped build compiled the scale-9 button as part of this unit, not as
+// its own.  Its constructor and init inline CKLBUISelectable's, and reach the
+// vtable with a direct lea rather than through the GOT, neither of which is
+// possible across a translation unit boundary.
+#include "CKLBUIScale9Btn.cpp"

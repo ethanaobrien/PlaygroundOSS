@@ -1,4 +1,4 @@
-﻿/* 
+﻿/*
    Copyright 2013 KLab Inc.
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,14 +36,17 @@ static IFactory::DEFCMD cmd[] = {
     { "STORESERVICE_BUY_ITEMS",		STORESERVICE_BUY_ITEMS 	},
     { "STORESERVICE_FINISH_TRANSACTION", STORESERVICE_FINISH_TRANSACTION },
     { "STORESERVICE_GET_PRODUCTS",	STORESERVICE_GET_PRODUCTS 	},
-    
+
     { "STORE_FAILED",               IClientRequest::E_STORE_FAILED },
+    { "STORE_CANCELED",             IClientRequest::E_STORE_CANCELED },
     { "STORE_PURCHASHING",          IClientRequest::E_STORE_PURCHASHING },
     { "STORE_PURCHACHED",           IClientRequest::E_STORE_PURCHASHED },
+    { "STORE_DEFERRED",             IClientRequest::E_STORE_DEFERRED },
     { "STORE_RESTORE",              IClientRequest::E_STORE_RESTORE },
     { "STORE_RESTORE_COMPLETED",    IClientRequest::E_STORE_RESTORE_COMPLETED },
     { "STORE_RESTORE_FAILED",       IClientRequest::E_STORE_RESTORE_FAILED },
     { "STORE_GET_PRODUCTS" ,        IClientRequest::E_STORE_GET_PRODUCTS },
+	{ "STORE_GET_PRODUCTS_FAILED",   IClientRequest::E_STORE_GET_PRODUCTS_FAILED },
 	{0, 0}
 };
 
@@ -62,7 +65,7 @@ CKLBStoreService::CKLBStoreService()
 {
 }
 
-CKLBStoreService::~CKLBStoreService() 
+CKLBStoreService::~CKLBStoreService()
 {
 	KLBDELETEA(m_callback);
 }
@@ -181,12 +184,15 @@ CKLBStoreService::execute(u32 /*deltaT*/)
         switch(item->type)
         {
         case IClientRequest::E_STORE_FAILED:            cbStoreFailed(item);           	break;
+		case IClientRequest::E_STORE_CANCELED:          cbStoreCanceled(item);          	break;
         case IClientRequest::E_STORE_PURCHASHED:        cbStorePurchashed(item);       	break;
         case IClientRequest::E_STORE_PURCHASHING:       cbStorePurchashing(item);      	break;
+		case IClientRequest::E_STORE_DEFERRED:          cbStoreDeferred(item);          	break;
         case IClientRequest::E_STORE_RESTORE:           cbStoreRestore(item);          	break;
         case IClientRequest::E_STORE_RESTORE_COMPLETED: cbStoreRestoreCompleted(item); 	break;
         case IClientRequest::E_STORE_RESTORE_FAILED:    cbStoreRestoreFailed(item);    	break;
         case IClientRequest::E_STORE_GET_PRODUCTS: 		cbStoreGetProducts(item); 		break;
+		case IClientRequest::E_STORE_GET_PRODUCTS_FAILED: cbStoreGetProductsFailed(item); break;
         case IClientRequest::E_STORE_BAD_ITEMID: 		cbStoreFailed(item); 			break;
         default:
             break;
@@ -210,9 +216,20 @@ int
 CKLBStoreService::cbStoreFailed(const OSCTRL * item)
 {
     const char * itemId = (const char *)item->data1;
-	execCallback(IClientRequest::E_STORE_FAILED, itemId);
+	const char * data   = (const char *)item->data2;
+	execCallback(IClientRequest::E_STORE_FAILED, itemId, data);
     
     return 0;
+}
+
+int
+CKLBStoreService::cbStoreCanceled(const OSCTRL * item)
+{
+	const char * itemId = (const char *)item->data1;
+	const char * data   = (const char *)item->data2;
+	execCallback(IClientRequest::E_STORE_CANCELED, itemId, data);
+
+	return 0;
 }
 
 int
@@ -232,6 +249,15 @@ CKLBStoreService::cbStorePurchashing(const OSCTRL * item)
 	execCallback(IClientRequest::E_STORE_PURCHASHING, itemId);
     
     return 0;
+}
+
+int
+CKLBStoreService::cbStoreDeferred(const OSCTRL * item)
+{
+	const char * itemId = (const char *)item->data1;
+	execCallback(IClientRequest::E_STORE_DEFERRED, itemId);
+
+	return 0;
 }
 int
 CKLBStoreService::cbStoreRestore(const OSCTRL * item)
@@ -266,4 +292,11 @@ CKLBStoreService::cbStoreGetProducts(const OSCTRL * item)
     }
     
     return 0;
+}
+
+int
+CKLBStoreService::cbStoreGetProductsFailed(const OSCTRL * /*item*/)
+{
+	execCallback(IClientRequest::E_STORE_GET_PRODUCTS_FAILED, "");
+	return 0;
 }

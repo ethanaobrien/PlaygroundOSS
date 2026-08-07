@@ -21,11 +21,13 @@
 #include "encryptFile.h"
 #include "ivorbisfile.h"
 #include "KLBPlatformMetrics.h"
+#include "KLBAudioSystem.h"
 #include <pthread.h>
 #include <assert.h>
 #include <jni.h>
 #include <string.h>
 #include <math.h>
+#include <list>
 
 #include <SLES/OpenSLES.h>
 #include <SLES/OpenSLES_Android.h>
@@ -35,30 +37,55 @@
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
 
-class KLBOpenSLEngine;
-class KLBOpenSLSoundAssetLoader;
-class KLBOpenSLSoundAsset;
-class KLBOpenSLSoundHandle;
+class KLBOpenSLOldEngine;
+class KLBOpenSLOldSoundAssetLoader;
+class KLBOpenSLOldSoundAsset;
+class KLBOpenSLOldSoundHandle;
 
-class KLBOpenSLEngine
+extern pthread_mutex_t s_callbackMutex;
+
+class KLBOpenSLOldEngine : public KLBAudioImplementation
 {
 public:
-    ~KLBOpenSLEngine();
+    virtual ~KLBOpenSLOldEngine();
 
-    static KLBOpenSLEngine* getInstance();
-	static inline void terminate()
-	{
-		delete KLBOpenSLEngine::getInstance();
-	}
-	KLBOpenSLSoundHandle* assignSoundHandle(KLBOpenSLSoundAsset *pAsset);
-	void discardCorrespondingSoundHandles(KLBOpenSLSoundAsset *pAsset, bool isLockGained = false);
-	s32 tellCorrespondingSoundHandle(KLBOpenSLSoundAsset *pAsset);
-	void setFadeParamOnCorrespondingSoundHandles(KLBOpenSLSoundAsset *pAsset, float _tgtVol, u32 _millisec);
-	void stopCorrespondingSoundHandles(KLBOpenSLSoundAsset *pAsset, bool isLockGained = false, float _tgtVol=1.0f, u32 _millisec=0);
-	void pauseCorrespondingSoundHandles(KLBOpenSLSoundAsset *pAsset, bool isLockGained = false, float _tgtVol=0.0f, u32 _millisec=0);
-	void resumeCorrespondingSoundHandles(KLBOpenSLSoundAsset *pAsset, bool isLockGained = false, float _tgtVol=1.0f, u32 _millisec=0);
-	s32 getStateOfCorrespondingSoundHandle(KLBOpenSLSoundAsset *pAsset);
-	void setMasterVolume(float volume, bool is_se);
+    static KLBOpenSLOldEngine* getInstance();
+
+	virtual void beginAudioFrame(bool processing);
+	virtual void endAudioFrame();
+	virtual void terminate();
+	virtual bool init();
+	virtual void shutdown();
+	virtual void releaseAudio(void* handle);
+	virtual void pauseAudio(void* handle, bool lockHeld, float targetVolume, u32 msec);
+	virtual void resumeAudio(void* handle, bool lockHeld, float targetVolume, u32 msec);
+	virtual void seekAudio(void* handle, s32 msec);
+	virtual s32 tellAudio(void* handle);
+	virtual s32 getState(void* handle);
+	virtual KLBAudioCommand* popAudioCommand();
+	virtual void setFadeParam(void* handle, float targetVolume, u32 msec);
+	virtual void setAudioMultiProcessType(s32 processType);
+	virtual void setMasterVolume(float volume, bool isSE);
+	virtual void setAudioVolume(void* handle, float volume, bool lockHeld);
+	virtual void setFormAudioVolume(void* handle, float volume, bool lockHeld);
+	virtual void setAudioLoop(void* handle, s32 start, s32 end);
+	virtual void* loadAudio(const char* path, bool isSE, s32 mode, s32 option);
+	virtual bool preLoad(void* handle);
+	virtual bool playAudio(void* handle, s32 msec, float targetVolume, float startVolume);
+	virtual void stopAudio(void* handle, bool lockHeld, float targetVolume, u32 msec);
+	virtual void onActivityPause();
+	virtual void onActivityResume();
+	virtual s32 totalTimeAudio(void* handle);
+	virtual void onHeadsetActive();
+	KLBOpenSLOldSoundHandle* assignSoundHandle(KLBOpenSLOldSoundAsset *pAsset);
+	bool containsSoundHandle(KLBOpenSLOldSoundHandle *soundHandle);
+	void discardCorrespondingSoundHandles(KLBOpenSLOldSoundAsset *pAsset, bool isLockGained = false);
+	inline s32 tellCorrespondingSoundHandle(KLBOpenSLOldSoundAsset* asset) { return tellAudio(asset); }
+	inline void setFadeParamOnCorrespondingSoundHandles(KLBOpenSLOldSoundAsset* asset, float volume, u32 msec) { setFadeParam(asset, volume, msec); }
+	inline void stopCorrespondingSoundHandles(KLBOpenSLOldSoundAsset* asset, bool lockHeld = false, float volume = 1.0f, u32 msec = 0) { stopAudio(asset, lockHeld, volume, msec); }
+	inline void pauseCorrespondingSoundHandles(KLBOpenSLOldSoundAsset* asset, bool lockHeld = false, float volume = 0.0f, u32 msec = 0) { pauseAudio(asset, lockHeld, volume, msec); }
+	inline void resumeCorrespondingSoundHandles(KLBOpenSLOldSoundAsset* asset, bool lockHeld = false, float volume = 1.0f, u32 msec = 0) { resumeAudio(asset, lockHeld, volume, msec); }
+	inline s32 getStateOfCorrespondingSoundHandle(KLBOpenSLOldSoundAsset* asset) { return getState(asset); }
 	inline float GetSEMasterVolume() {
     	return is_se_off ? 0.0f : master_volume_se;
 	}
@@ -69,20 +96,18 @@ public:
 		return is_se ? GetSEMasterVolume() : GetBGMMasterVolume();
 	}
 	inline bool isSoundPaused() { return is_sound_paused; }
-	void setVolumeOnCorrespondingSoundHandles(KLBOpenSLSoundAsset *pAsset, float volume, bool isLockGained = false);
-	KLBOpenSLSoundAsset* load(const char * path, bool is_se);
-	void unload(KLBOpenSLSoundAsset* asset);
-	inline void setAudioMultiProcessType(s32 _type) { m_multiProcessType = _type; }
+	inline void setVolumeOnCorrespondingSoundHandles(KLBOpenSLOldSoundAsset* asset, float volume, bool lockHeld = false) { setAudioVolume(asset, volume, lockHeld); }
+	inline KLBOpenSLOldSoundAsset* load(const char* path, bool isSE) { return static_cast<KLBOpenSLOldSoundAsset*>(loadAudio(path, isSE, 0, 0)); }
+	inline void unload(KLBOpenSLOldSoundAsset* asset) { releaseAudio(asset); }
 	void chackAudioMasterVolume();
+	void deferObjectDestruction(SLObjectItf object);
 
 	SLObjectItf outputMixObject;
 	SLEngineItf engineEngine;
 	static s32 ThreadSoundEngineParam(void * hThread, void * data);
-	void registerAssetForRefilling(KLBOpenSLSoundAsset* asset);
+	void registerAssetForRefilling(KLBOpenSLOldSoundAsset* asset);
 	void updateFadeRatio();
 	void performRefillOnCurrentAsset();
-	void onActivityPause();
-	void onActivityResume();
 	static const char MAX_SOUND_ASSETS = 32;
 	static const char MAX_SOUND_HANDLE = 10;
 	// サウンドの割り込みタイプ
@@ -98,13 +123,21 @@ public:
 	};
 
 private:
-	KLBOpenSLEngine();
+	struct DeferredObject {
+		DeferredObject(SLObjectItf object)
+		: object(object)
+		, framesRemaining(3)
+		{}
+
+		SLObjectItf object;
+		s32 framesRemaining;
+	};
+
+	KLBOpenSLOldEngine();
 	SLObjectItf engineObject;
-	IPlatformRequest* platform;
-	KLBOpenSLSoundAssetLoader* assetLoader;
-	const char *home;
-	KLBOpenSLSoundHandle** soundHandles;
-	KLBOpenSLSoundAsset** soundAssets;
+	KLBOpenSLOldSoundAssetLoader* assetLoader;
+	KLBOpenSLOldSoundHandle** soundHandles;
+	KLBOpenSLOldSoundAsset** soundAssets;
     void* observingThread;
 	float master_volume_bgm;
 	float master_volume_se;
@@ -115,36 +148,46 @@ private:
 	
 	pthread_mutex_t cs_mutex;
 	pthread_mutex_t asset_refill_mutex;
-	KLBOpenSLSoundAsset* asset_waiting_refill;
+	KLBOpenSLOldSoundAsset* assets_waiting_refill[4];
+	std::list<DeferredObject> deferredObjects;
 };
 
-class KLBOpenSLSoundAssetLoader
+// Compatibility entry point for legacy Android request code. New code reaches
+// the implementation through KLBAudioImplementation.
+class KLBOpenSLEngine
 {
-friend class KLBOpenSLEngine;
 public:
-	virtual ~KLBOpenSLSoundAssetLoader();
-	KLBOpenSLSoundAsset* openFile(const char * path, bool isFullBuffered);
+	static KLBOpenSLOldEngine* getInstance() { return KLBOpenSLOldEngine::getInstance(); }
+	static void terminate() { KLBOpenSLOldEngine::getInstance()->terminate(); }
+};
+
+class KLBOpenSLOldSoundAssetLoader
+{
+friend class KLBOpenSLOldEngine;
+public:
+	virtual ~KLBOpenSLOldSoundAssetLoader();
+	KLBOpenSLOldSoundAsset* openFile(const char * path, bool isFullBuffered);
 
 private:
 	static const unsigned SRC_BUFFER_SIZE = 65536;
-	KLBOpenSLSoundAssetLoader();
+	KLBOpenSLOldSoundAssetLoader();
 	void startObservation();
 	void stopObservation();
-	void fillBuffer(KLBOpenSLSoundAsset* soundAsset);
-	void registerAsset(KLBOpenSLSoundAsset *pAsset);
-	void unregisterAsset(KLBOpenSLSoundAsset *pAsset);
+	void fillBuffer(KLBOpenSLOldSoundAsset* soundAsset);
+	void registerAsset(KLBOpenSLOldSoundAsset *pAsset);
+	void unregisterAsset(KLBOpenSLOldSoundAsset *pAsset);
 	static int FileObservationThreadParam(void* hThread, void* data);
 
-	KLBOpenSLSoundAsset** assets;
+	KLBOpenSLOldSoundAsset** assets;
 	AAssetManager* mgr;
 	JNIEnv* env;
 	char const *home;
 	void* observationThread;
 };
 
-class KLBOpenSLSoundAsset
+class KLBOpenSLOldSoundAsset
 {
-friend class KLBOpenSLSoundAssetLoader;
+friend class KLBOpenSLOldSoundAssetLoader;
 public:
 	enum REPEAT_MODE {
 		ONCE,
@@ -153,18 +196,16 @@ public:
 	static const int MAX_BUFFER_SAMPLES = 176400;
 	static const int DEFAULT_LOAD_SAMPLES = 44100;
 	static const int VORBIS_READ_BUFFER = 4096;
-	KLBOpenSLSoundAsset(const char* path, bool isFullBuffered);
-	virtual ~KLBOpenSLSoundAsset();
+	KLBOpenSLOldSoundAsset(const char* path, bool isFullBuffered);
+	virtual ~KLBOpenSLOldSoundAsset();
 
 	void prepare(int frames);
 	inline bool isFullyBuffered() { return src_buf_flags & 0x04; }
-	KLBOpenSLSoundHandle* play(REPEAT_MODE = ONCE, s32 _milisec=0, float _tgtVol=1.0f, float _startVol=0.0f);
+	KLBOpenSLOldSoundHandle* play(REPEAT_MODE = ONCE, s32 _milisec=0, float _tgtVol=1.0f, float _startVol=0.0f);
 	void stopAll();
-	void fetchNextPcmBuffer(KLBOpenSLSoundHandle* soundHandle);
-	inline void readVorbisSamples(int samplesToRead) {
-		MEASURE_THREAD_CPU_BEGIN(TASKTYPE_SOUND_DECODE);
-		readVorbisSamplesImpl(samplesToRead);
-		MEASURE_THREAD_CPU_END(TASKTYPE_SOUND_DECODE);
+	void fetchNextPcmBuffer(KLBOpenSLOldSoundHandle* soundHandle);
+	inline void readVorbisSamples(int samplesToRead, ogg_int64_t sampleOffset = -1) {
+		readVorbisSamplesImpl(samplesToRead, sampleOffset);
 	}
 	void close();
 	inline long getSrcFileSize() { return src_file_size; }
@@ -191,8 +232,8 @@ public:
 	static long tell_func(void *datasource);
 
 private:
-	void readVorbisSamplesImpl(int samplesToRead);
-	KLBOpenSLSoundAssetLoader* assetLoader;
+	void readVorbisSamplesImpl(int samplesToRead, ogg_int64_t sampleOffset);
+	KLBOpenSLOldSoundAssetLoader* assetLoader;
 	const char* src_path;
 	const char* src_full_path;
 	long src_file_size;
@@ -223,12 +264,12 @@ private:
 	ov_callbacks callbacks;
 };
 
-class KLBOpenSLSoundHandle
+class KLBOpenSLOldSoundHandle
 {
-friend class KLBOpenSLSoundAsset;
+friend class KLBOpenSLOldSoundAsset;
 public:
-	KLBOpenSLSoundHandle();
-	virtual ~KLBOpenSLSoundHandle();
+	KLBOpenSLOldSoundHandle();
+	virtual ~KLBOpenSLOldSoundHandle();
 
 	static void bqPlayerCallback(SLAndroidSimpleBufferQueueItf bq, void *context);
 
@@ -236,6 +277,7 @@ public:
 	void stop(int _msec=0, float _tgtVol=0.0f);
 	void pause(int _msec=0, float _tgtVol=0.0f);
 	void resume(int _msec=0, float _tgtVol=1.0f);
+	void seekAudio(s32 msec);
 	void closeAudio(void);
 	void setVolume(float volume);
 	void refreshVolume();
@@ -243,8 +285,8 @@ public:
 	s32 tellAudio();
 	void fillPcmBuffer(SLAndroidSimpleBufferQueueItf bq, bool is_starting);
 
-	void setSoundAsset(KLBOpenSLSoundAsset *asset);
-	inline KLBOpenSLSoundAsset* getSoundAsset() { return asset; }
+	void setSoundAsset(KLBOpenSLOldSoundAsset *asset);
+	inline KLBOpenSLOldSoundAsset* getSoundAsset() { return asset; }
     bool setFadeParam(s16 _fadeType, float _tgtVol, u32 _msec, s16 _interType=INTER_TYPE_LINEAR, float _startVolume=1.0f);
 	void updateFadeParam();
 	inline float getVolume() { return volume; }
@@ -317,14 +359,14 @@ public:
 private:
 	void initInternalResources();
 	void destroyOpenSLObjects();
-	inline void updateAsset(KLBOpenSLSoundAsset *asset) {
+	inline void updateAsset(KLBOpenSLOldSoundAsset *asset) {
 		this->asset = asset;
 		this->pcm_depth = 2;
 		this->pcm_channels = asset->getChannels();
 		this->pcm_sampling_rate = asset->getPcmSamplingRate();
 	}
-	KLBOpenSLSoundAsset::REPEAT_MODE repeatMode;
-	KLBOpenSLSoundAsset* asset;
+	KLBOpenSLOldSoundAsset::REPEAT_MODE repeatMode;
+	KLBOpenSLOldSoundAsset* asset;
 	SLAndroidSimpleBufferQueueItf bqPlayerBufferQueue;
 	SLObjectItf bqPlayerObject;
 	SLPlayItf bqPlayerPlay;
@@ -341,7 +383,7 @@ private:
 		// using this code snippet. http://www.verious.com/qa/audio-output-level-in-a-form-that-can-be-converted-to-decibel/
 		SLmillibel volume_mb;
 		if(volume>=1.0f) volume_mb=max_mbel;
-		else if(volume<=0.02f) volume_mb=SL_MILLIBEL_MIN;
+		else if(volume<0.02f) volume_mb=SL_MILLIBEL_MIN;
 		else
 		{
 			volume_mb=M_LN2/log(1.0f/(1.0f-volume))*-1000.0f;
@@ -371,9 +413,11 @@ private:
 	} fade_param;
 	s32 state;
 	bool is_loop_requested;
-	pthread_mutex_t buf_fill_lock;
 	s32 last_error;
+	s32 position_offset;
+	SLmillisecond last_position;
 	SLmillibel cur_mbel;
+	pthread_mutex_t* buf_fill_lock;
 };
 
 #endif

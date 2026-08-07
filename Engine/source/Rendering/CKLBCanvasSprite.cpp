@@ -24,11 +24,7 @@ CKLBCanvasSprite* CKLBRenderingManager::allocateCommandCanvasSprite(
 	CKLBCanvasSprite* pSpr = KLBNEW(CKLBCanvasSprite);
 	if (pSpr) {
 		if (pSpr->setupCanvas(vertexCount, indexCount)) {
-			pSpr->m_pAllocNext			= m_pAllocatedSpriteList;
-			if (m_pAllocatedSpriteList) {
-				m_pAllocatedSpriteList->m_pAllocPrev = pSpr;
-			}
-			m_pAllocatedSpriteList		= pSpr;
+			registerCommand(pSpr);
 			pSpr->m_uiOrder				= priority;
 			return pSpr;
 		}
@@ -44,6 +40,10 @@ CKLBCanvasSprite::CKLBCanvasSprite()
 }
 
 CKLBCanvasSprite::~CKLBCanvasSprite() {
+}
+
+CKLBSprite::GEOMETRY_TYPE CKLBCanvasSprite::getGeometryType() const {
+	return GEOMETRY_CANVAS;
 }
 
 void CKLBCanvasSprite::setupTexture(CKLBTextureAsset* pTexture) {
@@ -138,7 +138,7 @@ void CKLBCanvasSprite::endDynamicSection(u32 section) {
 }
 
 void CKLBCanvasSprite::dynamicSectionTranslate(u32 section, float x, float y) {
-	klb_assert(((section < MAX_SECTION) && (!m_dynSection[section].started)),"Canvas section out of range or not defined completly");
+	klb_assertNull(((section < MAX_SECTION) && (!m_dynSection[section].started)),"Canvas section out of range or not defined completly");
 
 	int fCount = m_dynSection[section].lengthFloat;
 
@@ -153,7 +153,7 @@ void CKLBCanvasSprite::dynamicSectionTranslate(u32 section, float x, float y) {
 }
 
 void CKLBCanvasSprite::dynamicSectionColor(u32 section, u32 color) {
-	klb_assert(((section < MAX_SECTION) && (!m_dynSection[section].started)),"Canvas section out of range or not defined completly");
+	klb_assertNull(((section < MAX_SECTION) && (!m_dynSection[section].started)),"Canvas section out of range or not defined completly");
 
 	int cCount			= m_dynSection[section].lengthFloat>>1;
 	u32* pFillColors	= &m_pColors[m_dynSection[section].start>>1];
@@ -203,8 +203,8 @@ bool CKLBCanvasSprite::drawImage(float x, float y, CKLBImageAsset* pImage, u32 c
 
 	doUVAndColor(pImage, color, vCount, iCount);
 	
-	klb_assert(_internalImg.m_uiIndexCount  <= m_uiMaxIndexCount,  "Reached Limit");
-	klb_assert(_internalImg.m_uiVertexCount <= m_uiMaxVertexCount, "Reached Limit");
+	klb_assertNull(_internalImg.m_uiIndexCount  <= m_uiMaxIndexCount,  "Reached Limit");
+	klb_assertNull(_internalImg.m_uiVertexCount <= m_uiMaxVertexCount, "Reached Limit");
 	return true;
 }
 
@@ -270,8 +270,8 @@ bool CKLBCanvasSprite::drawScale(float x, float y, float scale, CKLBImageAsset* 
 
 	doUVAndColor(pImage, color, vCount, iCount);
 
-	klb_assert(_internalImg.m_uiIndexCount  <= m_uiMaxIndexCount,  "Reached Limit");
-	klb_assert(_internalImg.m_uiVertexCount <= m_uiMaxVertexCount, "Reached Limit");
+	klb_assertNull(_internalImg.m_uiIndexCount  <= m_uiMaxIndexCount,  "Reached Limit");
+	klb_assertNull(_internalImg.m_uiVertexCount <= m_uiMaxVertexCount, "Reached Limit");
 	return true;
 }
 
@@ -337,7 +337,7 @@ bool CKLBCanvasSprite::fillRect(float x, float y, float w, float h, u32 color) {
 
 	m_uiStatus						|= FLAG_BUFFERSHIFT | FLAG_XYUPDATE | FLAG_COLORUPDATE | FLAG_UVUPDATE;
 
-	klb_assert(_internalImg.m_uiIndexCount  <= m_uiMaxIndexCount,  "Reached Limit");
-	klb_assert(_internalImg.m_uiVertexCount <= m_uiMaxVertexCount, "Reached Limit");
+	klb_assertNull(_internalImg.m_uiIndexCount  <= m_uiMaxIndexCount,  "Reached Limit");
+	klb_assertNull(_internalImg.m_uiVertexCount <= m_uiMaxVertexCount, "Reached Limit");
 	return true;
 }
