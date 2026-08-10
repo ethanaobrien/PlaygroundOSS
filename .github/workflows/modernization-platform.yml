@@ -32,6 +32,11 @@ jobs:
         run: cmake --preset ${{ matrix.preset }}
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
+      - name: Smoke test SDL3 host lifecycle
+        if: runner.os == 'Linux'
+        run: >-
+          ./out/build/linux-release/Engine/modern/host/sdl/playground-desktop-host
+          --headless --frames 3
 
   android:
     name: Android ${{ matrix.abi }}
