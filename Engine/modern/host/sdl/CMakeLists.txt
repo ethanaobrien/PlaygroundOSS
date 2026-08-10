@@ -20,3 +20,14 @@ target_link_libraries(playground-desktop-host
         Playground::DesktopHost
         Playground::PlatformContract
 )
+
+if(TARGET playground_engine_runtime)
+    add_executable(playground-sdl-engine tools/sdl_engine_main.cpp)
+    target_compile_features(playground-sdl-engine PRIVATE cxx_std_17)
+    target_link_libraries(playground-sdl-engine
+        PRIVATE
+            Playground::DesktopHost
+            $<LINK_LIBRARY:WHOLE_ARCHIVE,playground_engine_runtime>
+            Playground::PlatformContract
+    )
+endif()

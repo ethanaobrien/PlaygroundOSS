@@ -16,7 +16,6 @@
 #include "CKLBLuaLibAPP.h"
 #include "CKLBTask.h"
 #include "CKLBDrawTask.h"
-#include "CAndroidPathConv.h"
 
 ;
 static ILuaFuncLib::DEFCONST luaConst[] = {
@@ -111,9 +110,13 @@ CKLBLuaLibAPP::luaScreenShot(lua_State * L)
 		return 1;
 	}
 
-	char path[256];
-	CKLBPathConv& pathConv = CKLBPathConv::getInstance();
-	sprintf(path, "%s%s", pathConv.external(), "ScreenShot.png");
+	const char* path = CPFInterface::getInstance().platform().getFullPath(
+		"file://external/ScreenShot.png"
+	);
+	if (!path) {
+		lua.retString(NULL);
+		return 1;
+	}
 	CKLBOGLWrapper::getInstance().screenshot(path);
 
 	if (lua.getType(1) == LUA_TBOOLEAN) {
@@ -125,6 +128,7 @@ CKLBLuaLibAPP::luaScreenShot(lua_State * L)
 	}
 
 	lua.retString(path);
+	delete [] path;
 	return 1;
 }
 

@@ -1,0 +1,6 @@
+#ifndef PLAYGROUND_MODERN_KLB_PLATFORM_METRICS_H
+#define PLAYGROUND_MODERN_KLB_PLATFORM_METRICS_H
+
+#include "KLBPlatformMetricsCommon.h"
+
+#endif

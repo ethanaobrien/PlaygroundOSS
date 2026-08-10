@@ -343,3 +343,8 @@ void* playgroundDesktopHostNativeWindow(const PlaygroundDesktopHost* host)
 {
     return host ? host->window : NULL;
 }
+
+void* playgroundDesktopHostGetGLProcAddress(const char* name)
+{
+    return (void*)SDL_GL_GetProcAddress(name);
+}

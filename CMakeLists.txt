@@ -24,7 +24,21 @@ option(
     ${_playground_desktop_host_default}
 )
 
+set(_playground_engine_runtime_default OFF)
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux)
+    set(_playground_engine_runtime_default ON)
+endif()
+option(
+    PLAYGROUND_BUILD_ENGINE_RUNTIME
+    "Compile the reconstructed engine graph for the selected platform"
+    ${_playground_engine_runtime_default}
+)
+
 add_subdirectory(Engine/modern/platform)
+
+if(PLAYGROUND_BUILD_ENGINE_RUNTIME)
+    add_subdirectory(Engine/modern/runtime)
+endif()
 
 if(PLAYGROUND_BUILD_DESKTOP_HOST)
     include(cmake/PlaygroundSDL.cmake)

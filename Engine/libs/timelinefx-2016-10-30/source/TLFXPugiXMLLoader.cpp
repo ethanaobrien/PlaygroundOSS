@@ -4,6 +4,7 @@
 #include "TLFXEmitter.h"
 
 #include <cassert>
+#include <cstring>
 
 namespace TLFX
 {

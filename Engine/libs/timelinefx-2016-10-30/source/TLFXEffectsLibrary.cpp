@@ -4,6 +4,7 @@
 #include "TLFXAnimImage.h"
 
 #include <cassert>
+#include <cstring>
 
 namespace TLFX
 {

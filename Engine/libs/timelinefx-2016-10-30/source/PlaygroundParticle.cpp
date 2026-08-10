@@ -20,7 +20,9 @@
 #include "RectangleBinPack/Rect.cpp"
 #include "RectangleBinPack/MaxRectsBinPack.cpp"
 
+#if defined(__ANDROID__)
 typedef char KLBImageSizeCheck[((__SIZEOF_POINTER__ != 8) || (sizeof(KLBImage) == 0xe8)) ? 1 : -1];
+#endif
 
 static const SVertexEntry particlePositionUVFormat[] = {
     { 1, 0, false, VEC2 | VERTEX },

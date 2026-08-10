@@ -87,6 +87,7 @@ void playgroundDesktopHostGetPixelSize(
     int* height
 );
 void* playgroundDesktopHostNativeWindow(const PlaygroundDesktopHost* host);
+void* playgroundDesktopHostGetGLProcAddress(const char* name);
 
 #ifdef __cplusplus
 }
