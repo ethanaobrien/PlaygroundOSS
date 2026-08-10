@@ -48,7 +48,7 @@ public:
 
 	void execute(u32 deltaT);
 	void dieUI  ();
-	void onResume();
+	void onResume() const;
 
 	inline u32  getWidth()					{ return m_width;	}
 	inline void setWidth(u32 width)			{

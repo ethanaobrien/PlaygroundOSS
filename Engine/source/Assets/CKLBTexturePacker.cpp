@@ -149,7 +149,8 @@ public:
 
 	void unloadSurfaces		();
 	bool reloadSurfaces		();
-	u16  allocateSurface	(u16 w,		u16 h,		void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner, TexturePackerOnce** ppRealAlloc);
+	TexturePacker::SurfaceHandle
+		 allocateSurface	(u16 w,		u16 h,		void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner, TexturePackerOnce** ppRealAlloc);
 	TexturePacker::SurfaceHandle
 		 reallocateSurface	(u16 surface,		u16 w,		u16 h,	void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner, TexturePackerOnce** ppRealAlloc);
 	void releaseSurface		(TexturePacker::SurfaceHandle surface);
@@ -518,7 +519,7 @@ bool TexturePackerOnce::reloadSurfaces() {
 
 	for (u32 n = 0; n < m_surfaceCount; n++) {
 		SSurface* pSurf = &m_surface[n];
-		u32 handle = marker | n;
+		TexturePacker::SurfaceHandle handle(marker | n);
 		if (!pSurf->free) {
 			pSurf->compaction(pSurf->owner, handle, handle);
 		}
@@ -526,7 +527,7 @@ bool TexturePackerOnce::reloadSurfaces() {
 	return true;
 }
 
-u16 TexturePackerOnce::allocateSurface(u16 w, u16 h, void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner, TexturePackerOnce** ppRealAlloc) {
+TexturePacker::SurfaceHandle TexturePackerOnce::allocateSurface(u16 w, u16 h, void* owner, SurfaceCompactionCallback compaction, SurfaceOwnerReleaseCallback releaseOwner, TexturePackerOnce** ppRealAlloc) {
 	u16 x = 0;
 	u16 y = 0;
 	klb_assertNull(ppRealAlloc, "null pointer");
@@ -546,7 +547,7 @@ u16 TexturePackerOnce::allocateSurface(u16 w, u16 h, void* owner, SurfaceCompact
 		}
 
 		if (res) {	// Add 1 pixel border around the buffer.
-			u16 update = foundIdx;
+			size_t update = foundIdx;
 			
 			//	[.] Partial update of texture to GPU only for new item.
 			/*  Caller to main allocator does it.
@@ -573,7 +574,7 @@ u16 TexturePackerOnce::allocateSurface(u16 w, u16 h, void* owner, SurfaceCompact
 			m_packer.setSize(m_width,m_height);
 		
 			//	[.] For each already existing entry, register again
-			u16 write = 0;
+			size_t write = 0;
 
 			TexturePacker& packer = *m_owner;
 			packer.addIgnoreList(this);
@@ -599,8 +600,9 @@ u16 TexturePackerOnce::allocateSurface(u16 w, u16 h, void* owner, SurfaceCompact
 							KLBDELETEA(buffer);
 							return NULL_IDX;
 						} else {
-							u16 localSurface = newSurface & SURFACE_INDEX_MASK;
-							TexturePackerOnce* pOtherTextureAllocator = packer.m_allocatedPacker[(newSurface & TEXTURE_INDEX_MASK) >> SURFACE_INDEX_BITS];
+							u32 localSurface = newSurface & SURFACE_INDEX_MASK;
+							u16 texture = newSurface & TEXTURE_INDEX_MASK;
+							TexturePackerOnce* pOtherTextureAllocator = packer.m_allocatedPacker[texture >> SURFACE_INDEX_BITS];
 							*ppRealAlloc = pOtherTextureAllocator;
 
 							// Get New Surface Definition.
@@ -613,7 +615,8 @@ u16 TexturePackerOnce::allocateSurface(u16 w, u16 h, void* owner, SurfaceCompact
 
 							// Update target Texture with old software buffer.
 							pOtherTextureAllocator->moveImage(localSurface);
-							pNewSurf->compaction(pNewSurf->owner, n | this->marker, newSurface);
+							u16 oldSurface = n | this->marker;
+							pNewSurf->compaction(pNewSurf->owner, oldSurface, newSurface);
 
 							// Free old surface entry.
 							pSurf->free		= true;
@@ -625,15 +628,17 @@ u16 TexturePackerOnce::allocateSurface(u16 w, u16 h, void* owner, SurfaceCompact
 						m_surface[n].y++;
 
 						// Perform compaction of freed items.
-						m_surface[write] = m_surface[n];
+						u32 writeIndex = static_cast<u16>(write);
+						m_surface[writeIndex] = m_surface[n];
 
-						newSurface = write | this->marker;
-						m_surface[write].compaction(m_surface[write].owner, n | this->marker, newSurface);
+						size_t surfaceMarker = this->marker;
+						newSurface = static_cast<u16>(writeIndex | surfaceMarker);
+						m_surface[writeIndex].compaction(m_surface[writeIndex].owner, static_cast<u16>(n | surfaceMarker), newSurface);
 						// If a displacement in texture occurs, texture must be updated.
 						// if ((m_surface[write].x != oldX) || (m_surface[write].y != oldY)) {
-							moveImage(write);
+							moveImage(writeIndex);
 						// }
-						write++;
+						write = writeIndex + 1;
 					}
 					INTERNAL_DUMP_TEXPACKER;
 
@@ -743,8 +748,9 @@ bool TexturePackerOnce::simpleAllocInternal(u16 x, u16 y, u16 w, u16 h, u16& fou
 	//	[.] Store Item
 	klb_assertNull((m_surfaceCount <= (SURFACE_MAX - 1)), "Texture Packer no more surface available");
 
-	s32 idx = m_surfaceCount;
-	bool initializePosition = true;
+	u32 surfaceCount = m_surfaceCount;
+	s32 idx;
+	bool initializePosition;
 	bool allocatedNew = true;
 
 	for (u32 n = 0; n < m_surfaceCount; n++) {
@@ -764,6 +770,7 @@ bool TexturePackerOnce::simpleAllocInternal(u16 x, u16 y, u16 w, u16 h, u16& fou
 	if (allocatedNew) {
 		initializePosition = true;
 		m_surfaceCount++;
+		idx = surfaceCount;
 		klb_assert((m_surfaceCount <= SURFACE_MAX), "More than %i surfaces per texture", SURFACE_MAX);
 	}
 

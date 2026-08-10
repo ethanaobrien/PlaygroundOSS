@@ -276,7 +276,7 @@ public:
 	  もともと回転に対応しており、GL側が回転後の上下を把握して設定を変更する環境の場合は、
 	  幅、高さだけが更新されて通知されます。
 	  */
-	virtual void changeScreenInfo(ORIGIN origin, int width, int height) = 0;
+	virtual void changeProjectionMatrix() = 0;
 
 	//! ゲームリブート
 	/*!

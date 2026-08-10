@@ -35,7 +35,7 @@ private:
 	bool init(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, u32 width, u32 height, u32 alpha, u32 color, const char* font, u32 size, const char* text, u32 align, float shadowBlur, u32 shadowColor, s32 shadowOffsetX, s32 shadowOffsetY, u32 shadowEnabled, bool marqueeActive);
 	bool initCore(u32 order, float x, float y, u32 width, u32 height, u32 alpha, u32 color, const char* font, u32 size, const char* text,u32 align);
 public:
-	static CKLBUILabel* create(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, u32 width, u32 height, u32 alpha, u32 color, const char* font, u32 size, const char* text, u32 align, float shadowBlur, u32 shadowColor, s32 shadowOffsetX, s32 shadowOffsetY, u32 shadowEnabled, bool marqueeActive);
+	static CKLBUILabel* create(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, u32 width, u32 height, u32 alpha, u32 color, const char* font, u32 size, const char* text, u32 align, float shadowBlur, u32 shadowColor, s32 shadowOffsetX, s32 shadowOffsetY, u32 shadowEnabled, u8 marqueeActive);
 	virtual u32 getClassID();
 
 	bool initUI (CLuaState& lua);

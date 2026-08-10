@@ -2214,11 +2214,12 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 		}
 	}
 
-	u32 newPrio = priorityOffset + templateDef->priority;
+	const u32 templatePriority = templateDef->priority;
 	resetTmpBuff();
 
 	SCompositeLayoutRecord& layout = g_layoutRecords[m_slotCurrent];
-	if (templateDef->classID == FORMAT_RECT_CLASSID) {
+	const u16 layoutClassID = templateDef->classID;
+	if (layoutClassID == FORMAT_RECT_CLASSID) {
 		const float marginLeft   = templateDef->getLayoutValue(CKLBInnerDef::LAYOUT_CLIP_X, layout.width);
 		const float marginTop    = templateDef->getLayoutValue(CKLBInnerDef::LAYOUT_CLIP_Y, layout.height);
 		const float marginRight  = templateDef->getLayoutValue(CKLBInnerDef::LAYOUT_CLIP_WIDTH, layout.width);
@@ -2276,27 +2277,29 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 				break;
 			case DOCK_NONE:
 				childWidth = child->getLayoutValue(CKLBInnerDef::LAYOUT_WIDTH, layout.width);
-				childHeight = child->getLayoutValue(CKLBInnerDef::LAYOUT_HEIGHT, layout.height);
 				childLayout.width = childWidth;
+				childHeight = child->getLayoutValue(CKLBInnerDef::LAYOUT_HEIGHT, layout.height);
 				childLayout.height = childHeight;
 
 				float childX = child->getLayoutValue(CKLBInnerDef::LAYOUT_X);
 				float childY = child->getLayoutValue(CKLBInnerDef::LAYOUT_Y);
+				const float childBaseX = layout.x;
 				if (child->anchor & 1) {
 					childX = layout.width - (childX + childWidth);
 				}
+				childLayout.x = childBaseX + childX;
+				const float childBaseY = layout.y;
 				if (child->anchor & 2) {
 					childY = layout.height - (childY + childHeight);
 				}
-				childLayout.x = layout.x + childX;
-				childLayout.y = layout.y + childY;
+				childLayout.y = childBaseY + childY;
 				isFlowItem = true;
 				break;
 			}
 		} else {
 			childWidth = child->getLayoutValue(CKLBInnerDef::LAYOUT_WIDTH, layout.width);
-			childHeight = child->getLayoutValue(CKLBInnerDef::LAYOUT_HEIGHT, layout.height);
 			childLayout.width = childWidth;
+			childHeight = child->getLayoutValue(CKLBInnerDef::LAYOUT_HEIGHT, layout.height);
 			childLayout.height = childHeight;
 			isFlowItem = true;
 		}
@@ -2333,12 +2336,12 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 	child = templateDef->sub;
 	childSlot = childSlotBase;
 	if (child) {
-		float runLeft = layout.x;
 		float runTop = layout.y;
-		float runRight = layout.x + layout.width;
 		float runBottom = layout.y + layout.height;
-		const float availableWidth = runRight - dockedWidth;
+		float runLeft = layout.x;
+		float runRight = layout.x + layout.width;
 		const float availableHeight = runBottom - dockedHeight;
+		const float availableWidth = runRight - dockedWidth;
 		const float horizontalGap = (layout.width - contentWidth) * inverseFlowCount;
 		const float verticalGap = (layout.height - contentHeight) * inverseFlowCount;
 		float flowX = flowAlignment * horizontalGap;
@@ -2407,7 +2410,7 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 					childLayout.width = layout.width;
 					childLayout.height = layout.height;
 				} else {
-					float childX = child->getLayoutValue(CKLBInnerDef::LAYOUT_X);
+					childLayout.x = child->getLayoutValue(CKLBInnerDef::LAYOUT_X);
 					float childY = child->getLayoutValue(CKLBInnerDef::LAYOUT_Y);
 
 					float lowInsetX = (child->anchor & 8) ? borderX : 0.0f;
@@ -2425,19 +2428,19 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 					}
 
 					if (child->anchor & 1) {
-						childX = highInsetX + layout.width - (childX + childLayout.width);
+						childLayout.x = highInsetX + layout.width - (childLayout.x + childLayout.width);
 					} else {
-						childX -= lowInsetX;
+						childLayout.x -= lowInsetX;
 					}
 					if (child->anchor & 2) {
 						childY = highInsetY + layout.height - (childY + childLayout.height);
 					} else {
 						childY -= lowInsetY;
 					}
-					childLayout.x = baseX + childX;
+					childLayout.x += baseX;
 					childLayout.y = baseY + childY;
 
-					if ((templateDef->classID == FORMAT_RECT_CLASSID) && templateDef->layoutDir) {
+					if ((layoutClassID == FORMAT_RECT_CLASSID) && templateDef->layoutDir) {
 						bool horizontalFlow = true;
 						switch (templateDef->layoutDir) {
 						case 1:
@@ -2511,14 +2514,16 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 		}
 	}
 
+	const u32 newPrio = templatePriority + priorityOffset;
 	klb_assert(
 		   ((((s64)priorityOffset + (s64)templateDef->priority)>>32) != 0)
 		|| ((((s64)priorityOffset + (s64)templateDef->priority)>>32) != -1), "Overflow or underflow");
 
 	bool execNodeSetup = true;
-	if (templateDef->classID != NONE_CLASSID) {
+	const u16 classID = templateDef->classID;
+	if (classID != NONE_CLASSID) {
 
-		switch (templateDef->classID) {
+		switch (classID) {
 		case WEBVIEW_CLASSID:
 			{
 				const char* url = NULL;
@@ -2611,6 +2616,7 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 				for (int n = 0; n < 10; n++) {
 					tex_table[n] = addAssetPrefix(templateDef->assets[n]->string);
 				}
+				CKLBCompositeAsset::STRINGENTRY* dotAssetEntry = templateDef->assets[DOT_ASSET];
 
 				CKLBUIScore* tsk = CKLBUIScore::create(
 					pParentTask,
@@ -2632,18 +2638,19 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 				tsk->setValue(templateDef->value);
 				tsk->setColor(filterDBInt(templateDef->dbField[DB_VAL_COLOR], templateDef->color));
 
-				if (templateDef->assets[DOT_ASSET]) {
+				if (dotAssetEntry) {
 					CKLBImageAsset* dotImage =
 						(CKLBImageAsset*)templateDef->assets[DOT_ASSET]->assetCache;
 					SKLBRect* dotSize = dotImage->getSize();
-					s32 dotLeft = dotSize->m_iLeft;
 					s32 dotRight = dotSize->m_iRight;
-					s32 dotTop = dotSize->m_iTop;
+					s32 dotLeft = dotSize->m_iLeft;
 					s32 dotBottom = dotSize->m_iBottom;
+					s32 dotTop = dotSize->m_iTop;
+					const s16 dotAxis = templateDef->sx;
 					const char* dotAsset =
 						addAssetPrefix(templateDef->assets[DOT_ASSET]->string);
 
-					if (templateDef->sx) {
+					if (dotAxis) {
 						tsk->setDot(dotAsset, dotRight - dotLeft, 0);
 					} else {
 						tsk->setDot(dotAsset, 0, dotBottom - dotTop);
@@ -2818,10 +2825,10 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 					priorityOffset + templateDef->priorityClipEnd,
 					layout.x,
 					layout.y,
-					templateDef->clipw,
-					templateDef->cliph,
+					layout.width,
+					layout.height,
 					((templateDef->sx == 1) ?
-						layout.height : layout.width),
+						templateDef->height : templateDef->width),
 					templateDef->sx ? true : false,		// Vertical/Horizontal
 					cb,									//  
 					templateDef->flag[0] ? CKLBUIList::LIST_FLAG_BOTTOM : 0
@@ -2978,6 +2985,7 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 			{
 				const char * fontname  = (templateDef->fontName) ? templateDef->fontName->string : 0; // "default";
 				const char * labelText = (templateDef->text)     ? templateDef->text->string		: "";
+				const char * filteredLabelText = filterDB(labelText);
 				u32 color = filterDBInt(templateDef->dbField[DB_VAL_COLOR], templateDef->color);
 				CKLBUILabel* tsk = CKLBUILabel::create(
 					pParentTask,
@@ -2991,7 +2999,7 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 					color & 0xFFFFFF,
 					fontname,
 					templateDef->fontSize,
-					filterDB(labelText),
+					filteredLabelText,
 					templateDef->flag[0],
 					templateDef->shadowBlur,
 					templateDef->shadowColor,
@@ -3013,7 +3021,7 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 		case BUTTON_SCALE9_CLASSID:
 		case CHECK_CLASSID:
 			{
-				CKLBUISelectable* pElement = (templateDef->classID == BUTTON_SCALE9_CLASSID)
+				CKLBUISelectable* pElement = (classID == BUTTON_SCALE9_CLASSID)
 					? static_cast<CKLBUISelectable*>(KLBNEW(CKLBUIScale9Btn))
 					: KLBNEW(CKLBUISelectable);
 				if (pElement && pElement->init(newPrio)) {
@@ -3052,7 +3060,7 @@ bool CKLBCompositeAsset::createSubTreeRecursive(u16 groupID, CKLBUITask* pParent
 					pElement->m_groupID = groupID;
 					pElement->setRecordID(m_recordID);
 
-					if (templateDef->classID == BUTTON_SCALE9_CLASSID) {
+					if (classID == BUTTON_SCALE9_CLASSID) {
 						CKLBUIScale9Btn* scale9Button =
 							static_cast<CKLBUIScale9Btn*>(pElement);
 						scale9Button->setTextAlign(templateDef->flag[0]);

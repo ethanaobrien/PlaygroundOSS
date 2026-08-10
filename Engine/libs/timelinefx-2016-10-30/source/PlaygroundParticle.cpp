@@ -398,8 +398,7 @@ CKLBParticleAssetPlugin::blitImagePlane(ImageLoadRecord* record, bool premultipl
     u32 atlasWidth = m_atlasWidth;
     u32 atlasHeight = m_atlasHeight;
     u8* destination = m_atlasPixels + (top * atlasWidth + left) * 4;
-    u32 width = record->width;
-    u64 sourceStride = record->channelCount * (u64)width;
+    u64 sourceStride = (u64)record->width * record->channelCount;
     float horizontalScale = 1.0f / (float)atlasWidth;
     float verticalScale = 1.0f / (float)atlasHeight;
     s32 uvSet = maskPlane ? 1 : 0;
@@ -424,10 +423,10 @@ CKLBParticleAssetPlugin::blitImagePlane(ImageLoadRecord* record, bool premultipl
             }
             destination += 4;
         }
-        image->m_uv[uvSet][2] = u0;
-        image->m_uv[uvSet][3] = v0 + width * verticalScale;
-        image->m_uv[uvSet][6] = u0 + record->height * horizontalScale;
-        image->m_uv[uvSet][7] = v0;
+        image->m_uv[uvSet][2] = image->m_uv[uvSet][0];
+        image->m_uv[uvSet][3] = image->m_uv[uvSet][1] + record->width * verticalScale;
+        image->m_uv[uvSet][6] = image->m_uv[uvSet][0] + record->height * horizontalScale;
+        image->m_uv[uvSet][7] = image->m_uv[uvSet][1];
         image->m_uv[uvSet][4] = image->m_uv[uvSet][6];
         image->m_uv[uvSet][5] = image->m_uv[uvSet][3];
     } else {
@@ -445,10 +444,10 @@ CKLBParticleAssetPlugin::blitImagePlane(ImageLoadRecord* record, bool premultipl
             }
             destination += destinationStride;
         }
-        image->m_uv[uvSet][2] = u0 + width * horizontalScale;
-        image->m_uv[uvSet][3] = v0;
-        image->m_uv[uvSet][6] = u0;
-        image->m_uv[uvSet][7] = v0 + record->height * verticalScale;
+        image->m_uv[uvSet][2] = image->m_uv[uvSet][0] + record->width * horizontalScale;
+        image->m_uv[uvSet][3] = image->m_uv[uvSet][1];
+        image->m_uv[uvSet][6] = image->m_uv[uvSet][0];
+        image->m_uv[uvSet][7] = image->m_uv[uvSet][1] + record->height * verticalScale;
         image->m_uv[uvSet][4] = image->m_uv[uvSet][2];
         image->m_uv[uvSet][5] = image->m_uv[uvSet][7];
     }
@@ -822,22 +821,19 @@ KLBParticleMovie::DrawSprite(
 
     float top = -y * scaleY;
     float bottom = (image->_height - y) * scaleY;
-    float left = x * scaleX;
+    float left = -x * scaleX;
     float right = (image->_width - x) * scaleX;
     float angle = rotation * 0.01745329251994329577f;
     float cosine = cosf(angle);
     float sine = sinf(angle);
-    float cosineLeft = cosine;
-    cosineLeft *= left;
-
-    m_positionCursor[0] = px - cosineLeft - top * sine;
-    m_positionCursor[1] = py - left * sine + top * cosine;
+    m_positionCursor[0] = px + left * cosine - top * sine;
+    m_positionCursor[1] = py + left * sine + top * cosine;
     m_positionCursor[2] = px + right * cosine - top * sine;
     m_positionCursor[3] = py + right * sine + top * cosine;
     m_positionCursor[4] = px + right * cosine - bottom * sine;
     m_positionCursor[5] = py + right * sine + bottom * cosine;
-    m_positionCursor[6] = px - cosineLeft - bottom * sine;
-    m_positionCursor[7] = py - left * sine + bottom * cosine;
+    m_positionCursor[6] = px + left * cosine - bottom * sine;
+    m_positionCursor[7] = py + left * sine + bottom * cosine;
 
     bool useMaskTexture = additive && image->_blendModes == 3;
     CTextureUsage* texture = image->m_textureUsage[useMaskTexture ? 1 : 0];

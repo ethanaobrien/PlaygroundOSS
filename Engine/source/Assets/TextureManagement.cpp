@@ -1493,32 +1493,32 @@ namespace TextureBackgroundFilter {
 			 source[1].channel[FILTER_BLUE] * line->opacity) / edgeDivisor;
 
 		u32 weightedRed = source[1].channel[FILTER_RED] * 0x100;
-		for (u32 x = 0; x < BACKGROUND_FILTER_WIDTH; x++) {
-			u32 filtered = source[x + 2].channel[FILTER_RED];
-			filtered += source[x].channel[FILTER_RED];
+		BackgroundFilterPixel* current = source;
+		for (u32 x = 0; x < BACKGROUND_FILTER_WIDTH; ++x, ++current) {
+			BackgroundFilterPixel* output =
+				destination + (current - source);
+			u32 filtered = current[2].channel[FILTER_RED];
+			filtered += current[0].channel[FILTER_RED];
 			filtered *= line->opacity;
 			filtered += weightedRed;
-			destination[x + 1].channel[FILTER_RED] =
-				filtered / centerDivisor;
+			output[1].channel[FILTER_RED] = filtered / centerDivisor;
 
-			filtered = source[x + 2].channel[FILTER_GREEN];
+			filtered = current[2].channel[FILTER_GREEN];
 			const u32 weightedGreen =
-				source[x + 1].channel[FILTER_GREEN] * 0x100;
-			filtered += source[x].channel[FILTER_GREEN];
+				current[1].channel[FILTER_GREEN] * 0x100;
+			filtered += current[0].channel[FILTER_GREEN];
 			filtered *= line->opacity;
 			filtered += weightedGreen;
-			destination[x + 1].channel[FILTER_GREEN] =
-				filtered / centerDivisor;
+			output[1].channel[FILTER_GREEN] = filtered / centerDivisor;
 
-			filtered = source[x + 2].channel[FILTER_BLUE];
+			filtered = current[2].channel[FILTER_BLUE];
 			const u32 weightedBlue =
-				source[x + 1].channel[FILTER_BLUE] * 0x100;
-			filtered += source[x].channel[FILTER_BLUE];
+				current[1].channel[FILTER_BLUE] * 0x100;
+			filtered += current[0].channel[FILTER_BLUE];
 			filtered *= line->opacity;
 			filtered += weightedBlue;
-			destination[x + 1].channel[FILTER_BLUE] =
-				filtered / centerDivisor;
-			weightedRed = source[x + 2].channel[FILTER_RED] * 0x100;
+			output[1].channel[FILTER_BLUE] = filtered / centerDivisor;
+			weightedRed = current[2].channel[FILTER_RED] * 0x100;
 		}
 
 		destination[BACKGROUND_FILTER_WIDTH + 1].channel[FILTER_RED] =
@@ -1990,31 +1990,28 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 
 					char *exts = (char *)glGetString(GL_EXTENSIONS);
 
+					// Successful recognition retains the compressed payload for the common upload block.
 					// Prefer to put the strcmp AFTER the equality check to avoid useless string compare.
 					//
 					// === GL_IMG_texture_compression_pvrtc group ===
 					//
 					#ifdef GL_COMPRESSED_RGB_PVRTC_4BPPV1_IMG
 					if ((compressType == GL_COMPRESSED_RGB_PVRTC_4BPPV1_IMG) && strstr(exts, "GL_IMG_texture_compression_pvrtc")) {
-						pixelFormat = GL_COMPRESSED_RGB_PVRTC_4BPPV1_IMG;
 						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
 					#ifdef GL_COMPRESSED_RGB_PVRTC_2BPPV1_IMG
 					if ((compressType == GL_COMPRESSED_RGB_PVRTC_2BPPV1_IMG) && strstr(exts, "GL_IMG_texture_compression_pvrtc")) {
-						pixelFormat = GL_COMPRESSED_RGB_PVRTC_2BPPV1_IMG;
 						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
 					#ifdef GL_COMPRESSED_RGBA_PVRTC_4BPPV1_IMG
 					if ((compressType == GL_COMPRESSED_RGBA_PVRTC_4BPPV1_IMG) && strstr(exts, "GL_IMG_texture_compression_pvrtc")) {
-						pixelFormat = GL_COMPRESSED_RGBA_PVRTC_4BPPV1_IMG;
 						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
 					#ifdef GL_COMPRESSED_RGBA_PVRTC_2BPPV1_IMG
 					if ((compressType == GL_COMPRESSED_RGBA_PVRTC_2BPPV1_IMG) && strstr(exts, "GL_IMG_texture_compression_pvrtc")) {
-						pixelFormat = GL_COMPRESSED_RGBA_PVRTC_2BPPV1_IMG;
 						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
@@ -2023,13 +2020,11 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 					//
 					#ifdef GL_COMPRESSED_RGBA_PVRTC_2BPPV2_IMG
 					if ((compressType == GL_COMPRESSED_RGBA_PVRTC_2BPPV2_IMG) && strstr(exts, "GL_IMG_texture_compression_pvrtc2")) {
-						pixelFormat = GL_COMPRESSED_RGBA_PVRTC_2BPPV2_IMG;
 						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
 					#ifdef GL_COMPRESSED_RGBA_PVRTC_4BPPV2_IMG
 					if ((compressType == GL_COMPRESSED_RGBA_PVRTC_4BPPV2_IMG) && strstr(exts, "GL_IMG_texture_compression_pvrtc2")) {
-						pixelFormat = GL_COMPRESSED_RGBA_PVRTC_4BPPV2_IMG;
 						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
@@ -2038,7 +2033,6 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 					//
 					#ifdef GL_ETC1_RGB8_OES
 					if ((compressType == GL_ETC1_RGB8_OES) && strstr(exts, "GL_OES_compressed_ETC1_RGB8_texture")) {
-						pixelFormat = GL_ETC1_RGB8_OES;
 						channelCount = CKLBOGLWrapper::RGBA;
 					} else
 					#endif
@@ -2174,11 +2168,11 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 							klb_assertAlways("COMPRESSED TEXTURE FORMAT %8X NOT SUPPORTED ON THIS PLATFORM",compressType);
 						}
 					}
-
 					if (compressType != 0) {
 						pixelFormat = compressType;
-						pNewAsset->m_bitmap				= &stream[0];
 					}
+					// Unsupported formats trap in the final fallback instead.
+
 				}
 			}
 
@@ -2293,8 +2287,10 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 							((s32)truncf(y + 0.99f) != pixelY)) {
 							fractionalUV = true;
 						}
-					if (pixelX <= minX) minX = pixelX; if (pixelX >= maxX) maxX = pixelX;
-						if (pixelY <= minY) minY = pixelY; if (pixelY >= maxY) maxY = pixelY;
+						if (pixelX <= minX) minX = pixelX;
+						if (pixelX >= maxX) maxX = pixelX;
+						if (pixelY <= minY) minY = pixelY;
+						if (pixelY >= maxY) maxY = pixelY;
 					}
 
 					{
@@ -2306,8 +2302,10 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 							((s32)truncf(y + 0.99f) != pixelY)) {
 							fractionalUV = true;
 						}
-					if (pixelX <= minX) minX = pixelX; if (pixelX >= maxX) maxX = pixelX;
-						if (pixelY <= minY) minY = pixelY; if (pixelY >= maxY) maxY = pixelY;
+						if (pixelX <= minX) minX = pixelX;
+						if (pixelX >= maxX) maxX = pixelX;
+						if (pixelY <= minY) minY = pixelY;
+						if (pixelY >= maxY) maxY = pixelY;
 					}
 
 					{
@@ -2340,13 +2338,17 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 						if (pixelY >= maxY) maxY = pixelY;
 					}
 
+					const s32 usedWidth = maxX - minX;
+					const s32 usedHeight = maxY - minY;
+
 					if (fractionalUV) {
 						if (maxX < sourceWidth)  maxX++;
 						if (maxY < sourceHeight) maxY++;
 					}
-
-					const s32 usedWidth = maxX - minX;
-					const s32 usedHeight = maxY - minY;
+					const bool growWidth = (usedWidth == sourceWidth);
+					const bool growHeight = (usedHeight == sourceHeight);
+					const s32 copyWidth = maxX - minX;
+					const s32 copyHeight = maxY - minY;
 						u8* sourceBitmap = (u8*)pNewAsset->m_bitmap;
 						u8* patchedBitmap = sourceBitmap;
 						u16 patchedWidth = sourceWidth;
@@ -2357,8 +2359,6 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 						// A rectangle that consumes a complete dimension has no
 						// spare texel for its border.  Grow that dimension and
 						// place the original pixels one texel inside it.
-						const bool growWidth = (usedWidth == sourceWidth);
-						const bool growHeight = (usedHeight == sourceHeight);
 						const bool repack =
 							growWidth || growHeight ||
 							(minX == 0) || (maxX == sourceWidth) ||
@@ -2378,30 +2378,30 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 						pNewAsset->m_width = patchedWidth;
 						pNewAsset->m_height = patchedHeight;
 
-						const size_t copyBytes = (size_t)usedWidth * bytePerPix;
-						if (repack && (contentTop > minY)) {
-							for (s32 row = usedHeight; row-- > 0; ) {
+						const size_t copyBytes = (size_t)copyWidth * bytePerPix;
+						if (repack && (minY >= 2)) {
+							for (s32 y = minY; y < maxY; y++) {
 								memmove(
 									patchedBitmap +
-										((contentTop + row) * patchedWidth + contentLeft) * bytePerPix,
+										((contentTop + y - minY) * patchedWidth + contentLeft) * bytePerPix,
 									sourceBitmap +
-										((minY + row) * sourceWidth + minX) * bytePerPix,
+										(y * sourceWidth + minX) * bytePerPix,
 									copyBytes);
 							}
 						} else if (repack) {
-							for (s32 row = 0; row < usedHeight; row++) {
+							for (s32 y = maxY; y-- > minY; ) {
 								memmove(
 									patchedBitmap +
-										((contentTop + row) * patchedWidth + contentLeft) * bytePerPix,
+										((contentTop + y - minY) * patchedWidth + contentLeft) * bytePerPix,
 									sourceBitmap +
-										((minY + row) * sourceWidth + minX) * bytePerPix,
+										(y * sourceWidth + minX) * bytePerPix,
 									copyBytes);
 							}
 						}
 
 						const size_t rowStride = (size_t)patchedWidth * bytePerPix;
-						if ((contentLeft > 0) && (contentLeft + usedWidth <= patchedWidth)) {
-							for (s32 row = 0; row < usedHeight; row++) {
+						if (contentLeft > 0) {
+							for (s32 row = 0; row < copyHeight; row++) {
 								u8* rowPixels = patchedBitmap +
 									(size_t)(contentTop + row) * rowStride;
 								u8* border = rowPixels + (contentLeft - 1) * bytePerPix;
@@ -2414,11 +2414,11 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 								}
 							}
 						}
-						if (contentLeft + usedWidth < patchedWidth) {
-							for (s32 row = 0; row < usedHeight; row++) {
+						if (contentLeft + copyWidth < patchedWidth) {
+							for (s32 row = 0; row < copyHeight; row++) {
 								u8* rowPixels = patchedBitmap +
 									(size_t)(contentTop + row) * rowStride;
-								u8* border = rowPixels + (contentLeft + usedWidth) * bytePerPix;
+								u8* border = rowPixels + (contentLeft + copyWidth) * bytePerPix;
 								u8* edge = border - bytePerPix;
 								switch (bytePerPix) {
 								case 4: border[3] = edge[3];
@@ -2429,7 +2429,7 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 							}
 						}
 
-						const size_t borderedRowBytes = (size_t)usedWidth * bytePerPix;
+						const size_t borderedRowBytes = (size_t)copyWidth * bytePerPix;
 						if (contentTop > 0) {
 							memcpy(
 								patchedBitmap +
@@ -2438,12 +2438,12 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 									(contentTop * patchedWidth + contentLeft) * bytePerPix,
 								borderedRowBytes);
 						}
-						if (contentTop + usedHeight < patchedHeight) {
+						if (contentTop + copyHeight < patchedHeight) {
 							memcpy(
 								patchedBitmap +
-									((contentTop + usedHeight) * patchedWidth + contentLeft) * bytePerPix,
+									((contentTop + copyHeight) * patchedWidth + contentLeft) * bytePerPix,
 								patchedBitmap +
-									((contentTop + usedHeight - 1) * patchedWidth + contentLeft) * bytePerPix,
+									((contentTop + copyHeight - 1) * patchedWidth + contentLeft) * bytePerPix,
 								borderedRowBytes);
 						}
 
@@ -2457,10 +2457,10 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 
 						const float scaleU = growWidth ? 0.5f : 1.0f;
 						const float scaleV = growHeight ? 0.5f : 1.0f;
-						const float sourceU = (float)minX / sourceWidthF;
-						const float sourceV = (float)minY / sourceHeightF;
-						const float targetU = (float)contentLeft / patchedWidth;
-						const float targetV = (float)contentTop / patchedHeight;
+						const float sourceU = (float)minX * (1.0f / sourceWidthF);
+						const float sourceV = (float)minY * (1.0f / sourceHeightF);
+						const float targetU = (float)contentLeft * (1.0f / patchedWidth);
+						const float targetV = (float)contentTop * (1.0f / patchedHeight);
 						uv[0] = (uv[0] - sourceU) * scaleU + targetU;
 						uv[1] = (uv[1] - sourceV) * scaleV + targetV;
 						uv[2] = (uv[2] - sourceU) * scaleU + targetU;
@@ -2685,46 +2685,46 @@ bool decodeTexturePayload(
 	CKLBTextureAsset* texture,
 	KLBTextureAssetPlugin::TextureLoadCallback callback)
 {
-	if (!callback) {
-		return false;
-	}
-
-	TexturePayloadReader reader;
-	u8 channel;
-	u8* pixel = reader.readHeader(bitmap, image, texture, &channel);
-	if (!reader.payload()) {
-		if (!reader.suppressMissingPayloadCallback()) {
-			callback(NULL, 1, false);
+	if (callback) {
+		TexturePayloadReader reader;
+		u8 channel;
+		u8* pixel = reader.readHeader(bitmap, image, texture, &channel);
+		if (reader.payload()) {
+			reader.readPayload(pixel, channel);
+			if (reader.payloadLength() > 0) {
+				u8* decodedPayload = reader.payload();
+				u64 randomState = 0xDEADBEEF;
+				s32 n = 0;
+				while (true) {
+					randomState = (randomState * 16807) % 2147483647;
+					decodedPayload[(u32)n] ^= (u8)randomState;
+					const s32 payloadLength = reader.payloadLength();
+					n++;
+					if (n >= payloadLength) { break; }
+				}
+			}
+			u8* decodedData = reader.payload();
+			const s32 length = reader.payloadLength();
+			u32 firstSum = 1;
+			u32 secondSum = 0;
+			for (u64 n = 0; n != (u64)length; n++) {
+				firstSum = (firstSum + decodedData[n]) % reader.checksumModulus();
+				secondSum = (secondSum + firstSum) % reader.checksumModulus();
+			}
+			const u32 checksum = (secondSum << 16) | firstSum;
+			const u8* header = reader.header();
+			const bool checksumValid =
+				((u8)(checksum >> 24) == header[4]) &&
+				((u8)(checksum >> 16) == header[6]) &&
+				((u8)(checksum >> 8) == header[7]) &&
+				((u8)checksum == header[9]);
+			callback(decodedData, length, checksumValid);
+			return true;
+		} else if (!reader.suppressMissingPayloadCallback()) {
+				callback(NULL, 1, false);
 		}
-		return false;
 	}
-
-	reader.readPayload(pixel, channel);
-
-	const u32 length = reader.payloadLength();
-	u8* decodedData = reader.payload();
-	u64 randomState = 0xDEADBEEF;
-	for (s32 n = 0; n < reader.payloadLength(); n++) {
-		randomState = (randomState * 16807) % 2147483647;
-		decodedData[(u32)n] ^= (u8)randomState;
-	}
-
-	u32 firstSum = 1;
-	u32 secondSum = 0;
-	for (u32 n = 0; n < length; n++) {
-		firstSum = (firstSum + decodedData[n]) % reader.checksumModulus();
-		secondSum = (secondSum + firstSum) % reader.checksumModulus();
-	}
-	const u32 checksum = (secondSum << 16) | firstSum;
-	const u8* header = reader.header();
-	const bool checksumValid =
-		((u8)(checksum >> 24) == header[4]) &&
-		((u8)(checksum >> 16) == header[6]) &&
-		((u8)(checksum >> 8) == header[7]) &&
-		((u8)checksum == header[9]);
-
-	callback(decodedData, length, checksumValid);
-	return true;
+	return false;
 }
 
 namespace {

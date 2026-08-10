@@ -144,7 +144,7 @@ CKLBUILabel::getClassID()
 	return CLS_KLBUILABEL;
 }
 
-CKLBUILabel* CKLBUILabel::create(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, u32 width, u32 height, u32 alpha, u32 color, const char* font, u32 size, const char* text, u32 align, float shadowBlur, u32 shadowColor, s32 shadowOffsetX, s32 shadowOffsetY, u32 shadowEnabled, bool marqueeActive) {
+CKLBUILabel* CKLBUILabel::create(CKLBUITask* parent, CKLBNode* pNode, u32 order, float x, float y, u32 width, u32 height, u32 alpha, u32 color, const char* font, u32 size, const char* text, u32 align, float shadowBlur, u32 shadowColor, s32 shadowOffsetX, s32 shadowOffsetY, u32 shadowEnabled, u8 marqueeActive) {
 	CKLBUILabel* pTask = KLBNEW(CKLBUILabel);
     if(!pTask) { return NULL; }
 	if (!pTask->setupNode()) {

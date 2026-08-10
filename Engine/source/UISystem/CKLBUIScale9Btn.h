@@ -43,7 +43,7 @@ private:
 	void setTextAlign(u16 align);
 	void setFont(const char* fontName, u16 fontSize, u32 color);
 	void setTextColor(u32 color);
-	void setTextShadow(u32 color, s8 offsetX, s8 offsetY, float blur, u8 shadowEnabled);
+	void setTextShadow(u32 color, s8 offsetX, s8 offsetY, float blur, u32 shadowEnabled);
 	bool rebuildText();
 	bool rebuildTextInternal();
 

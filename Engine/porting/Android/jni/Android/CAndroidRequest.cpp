@@ -153,7 +153,8 @@ typedef std::vector<std::string> DeviceIntegrityFiles;
 #define LOAD_AND_DECODE_DEVICE_INTEGRITY_STRING(						\
 			rounds, destination, encoded)								\
 	do {																\
-		memcpy(destination, encoded, sizeof(encoded));					\
+		memcpy(destination, encoded, sizeof(encoded) - 1);				\
+		destination[sizeof(encoded) - 1] = encoded[sizeof(encoded) - 1];	\
 		const char* decodeSource = destination;							\
 		for (unsigned int decodeRound = 0;							\
 			 decodeRound < rounds; ++decodeRound)						\
@@ -295,9 +296,8 @@ readDeviceProperties(const char* path,
 				break;
 			}
 		}
+		input.close();
 	}
-
-	input.close();
 
 	for(DevicePropertyNames::const_iterator name = requestedNames.begin();
 		name != requestedNames.end(); ++name) {
@@ -494,12 +494,14 @@ CAndroidRequest::requestExtensionEvent(const char* eventName, ExtensionEventArgs
 	arguments->pop_front();
 
 	std::stringstream argumentStream("");
-	ExtensionEventArgs::const_iterator iterator = arguments->begin();
-	if (iterator != arguments->end()) {
-		int remainingCount = arguments->size() - 1;
-		for (int index = 0; index < remainingCount; ++index) {
-			argumentStream << *iterator << ",";
-			++iterator;
+	if (!arguments->empty()) {
+		ExtensionEventArgs::const_iterator iterator = arguments->begin();
+		if (iterator != arguments->end()) {
+			int remainingCount = arguments->size() - 1;
+			for (int index = 0; index < remainingCount; ++index) {
+				argumentStream << *iterator << ",";
+				++iterator;
+			}
 		}
 		argumentStream << *iterator;
 	}
@@ -1711,25 +1713,6 @@ CAndroidRequest::getDeviceIntegrityInfo(const char* request)
 			requestedProperties.push_back(decodedString);
 		}
 		{
-			LOAD_AND_DECODE_DEVICE_INTEGRITY_STRING(2, decodedString,
-				AndroidIntegrityStrings::MANUFACTURER_METHOD);
-			callJavaMethod(NULL, integrityResult,
-				decodedString, 'S', "");
-			jstring manufacturerJavaString =
-				static_cast<jstring>(integrityResult.l);
-			JNIEnv* manufacturerEnv = CJNI::getJNIEnv();
-			const char* manufacturerValue =
-				manufacturerEnv->GetStringUTFChars(
-					manufacturerJavaString, NULL);
-			LOAD_AND_DECODE_DEVICE_INTEGRITY_STRING(4, decodedString,
-				AndroidIntegrityStrings::PRODUCT_MANUFACTURER_4);
-			properties.insert(std::make_pair(
-				std::string(decodedString),
-				std::string(manufacturerValue)));
-			CJNI::getJNIEnv()->ReleaseStringUTFChars(
-				manufacturerJavaString, manufacturerValue);
-		}
-		{
 			DECODE_DEVICE_INTEGRITY_STRING(5, decodedString,
 				AndroidIntegrityStrings::PRODUCT_BOARD_5);
 			requestedProperties.push_back(decodedString);
@@ -1756,6 +1739,15 @@ CAndroidRequest::getDeviceIntegrityInfo(const char* request)
 			INSERT_ENCODED_DEVICE_INTEGRITY_PROPERTY(integrityResult,
 				decodedString,
 				AndroidIntegrityStrings::PRODUCT_NAME_4, 4,
+				decodedString);
+		}
+
+		{
+			LOAD_AND_DECODE_DEVICE_INTEGRITY_STRING(2, decodedString,
+				AndroidIntegrityStrings::MANUFACTURER_METHOD);
+			INSERT_ENCODED_DEVICE_INTEGRITY_PROPERTY(integrityResult,
+				decodedString,
+				AndroidIntegrityStrings::PRODUCT_MANUFACTURER_4, 4,
 				decodedString);
 		}
 
@@ -1928,7 +1920,7 @@ CAndroidRequest::getDeviceIntegrityInfo(const char* request)
 			AndroidIntegrityStrings::MODE_METHOD); // getMode
 		const bool adbEnabled =
 			getDeviceIntegrityInteger(this, decodedString) == 1;
-		char adbState[512];
+		char adbState[32];
 
 		DECODE_DEVICE_INTEGRITY_STRING(3, decodedString,
 			AndroidIntegrityStrings::ADB_ENABLED_KEY);
@@ -1959,10 +1951,9 @@ CAndroidRequest::getDeviceIntegrityInfo(const char* request)
 		LOAD_AND_DECODE_DEVICE_INTEGRITY_STRING(3, decodedString,
 			AndroidIntegrityStrings::UNIT_DATABASE_ASSET_PATH);
 		unitDatabasePath =
-			pathConverter.fullpath(decodedString + 7);
-		char databaseHash[40];
-		CKLBUtility::sha1File(unitDatabasePath, databaseHash,
-			sizeof(databaseHash));
+			pathConverter.fullpath(decodedString);
+		char databaseHash[64];
+		CKLBUtility::sha1File(unitDatabasePath, databaseHash, 40);
 		strcpy(decodedString, "db_sha1");
 		properties.insert(std::make_pair(
 			std::string(decodedString), std::string(databaseHash)));
@@ -1971,10 +1962,9 @@ CAndroidRequest::getDeviceIntegrityInfo(const char* request)
 
 	{
 		Dl_info libraryInfo;
-		char libraryHash[40];
+		char libraryHash[64];
 		dladdr(reinterpret_cast<void*>(remove), &libraryInfo);
-		CKLBUtility::sha1File(libraryInfo.dli_fname, libraryHash,
-			sizeof(libraryHash));
+		CKLBUtility::sha1File(libraryInfo.dli_fname, libraryHash, 40);
 		DECODE_DEVICE_INTEGRITY_STRING(3, decodedString,
 			AndroidIntegrityStrings::STOCK_OPTION_KEY); // GreatStockOption
 		properties.insert(std::make_pair(
@@ -1982,7 +1972,7 @@ CAndroidRequest::getDeviceIntegrityInfo(const char* request)
 	}
 
 	if (request) {
-		char encodedKey[512];
+		char encodedKey[32];
 		u32 encodedLength = 0;
 		// The property key is stored obfuscated and does not decode to text
 		// under the device-integrity transform; these are the shipped bytes,

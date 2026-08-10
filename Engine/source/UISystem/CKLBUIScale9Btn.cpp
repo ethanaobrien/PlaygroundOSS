@@ -164,7 +164,7 @@ CKLBUIScale9Btn::setTextColor(u32 color)
 }
 
 void
-CKLBUIScale9Btn::setTextShadow(u32 color, s8 offsetX, s8 offsetY, float blur, u8 shadowEnabled)
+CKLBUIScale9Btn::setTextShadow(u32 color, s8 offsetX, s8 offsetY, float blur, u32 shadowEnabled)
 {
 	m_shadowColor = color;
 	m_shadowOffsetX = offsetX;

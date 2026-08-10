@@ -381,9 +381,9 @@ CKLBUIPolygon::commandUI(CLuaState& lua, int argc, int cmd)
 			if(point->client_data.polygon.has_color) {
 				u32 rgb = static_cast<u32>(lua.getInt(5));
 				u32 alpha = static_cast<u32>(lua.getInt(6));
-				color = (rgb & 0xff00ff00)
+				color = ((rgb & 0x00ff0000) >> 16)
 				      | ((rgb & 0x000000ff) << 16)
-				      | ((rgb & 0x00ff0000) >> 16)
+				      | (rgb & 0xff00ff00)
 				      | (alpha << 24);
 			}
 			point->client_data.polygon.color = color;
@@ -396,18 +396,6 @@ CKLBUIPolygon::commandUI(CLuaState& lua, int argc, int cmd)
 	case PUSH_PATH:
 		result = true;
 		break;
-	case SET_TEXTURE:
-		if(argc >= 4) {
-			if(lua.isNil(3)) {
-				result = bindTexture(NULL, 0.0f);
-			} else {
-				result = bindTexture(lua.getString(3), lua.getFloat(4));
-			}
-			if(argc >= 5 && lua.getBool(5)) {
-				updateTextureCoordinates();
-			}
-		}
-		break;
 	case BUILD:
 		result = argc >= 4;
 		if(result) {
@@ -416,9 +404,9 @@ CKLBUIPolygon::commandUI(CLuaState& lua, int argc, int cmd)
 			if(alpha > 255) {
 				alpha = 255;
 			}
-			u32 color = (rgb & 0x0000ff00)
+			u32 color = ((rgb & 0x00ff0000) >> 16)
 			          | ((rgb & 0x000000ff) << 16)
-			          | ((rgb & 0x00ff0000) >> 16)
+			          | (rgb & 0x0000ff00)
 			          | (alpha << 24);
 
 			std::vector<u16> indices;
@@ -484,7 +472,7 @@ CKLBUIPolygon::commandUI(CLuaState& lua, int argc, int cmd)
 
 			u16* indexBuffer = m_render->getSrcIndexBuffer();
 			for(s32 index = 0; index < indexCount; ++index) {
-				indexBuffer[index] = indices[index];
+				*indexBuffer++ = indices[index];
 			}
 
 			const std::vector<float>& vertices = builder->m_vertices;
@@ -492,22 +480,20 @@ CKLBUIPolygon::commandUI(CLuaState& lua, int argc, int cmd)
 			for(s32 index = 0;
 				index < m_geometry.vertexCount;
 				++index) {
-				vertexBuffer[index * 2] = vertices[index * 2];
-				vertexBuffer[index * 2 + 1] = vertices[index * 2 + 1];
+				*vertexBuffer++ = vertices[index * 2];
+				*vertexBuffer++ = vertices[index * 2 + 1];
 			}
 
 			updateTextureCoordinates();
 
 			const std::vector<u32>& colors = builder->m_colors;
-			if(m_geometry.vertexCount > 0) {
+			m_render->setVertexColor(
+				getNode(), 0, colors[0]);
+			for(s32 index = 1;
+				index < m_geometry.vertexCount;
+				++index) {
 				m_render->setVertexColor(
-					getNode(), 0, colors[0]);
-				for(s32 index = 1;
-					index < m_geometry.vertexCount;
-					++index) {
-					m_render->setVertexColor(
-						NULL, index, colors[index]);
-				}
+					NULL, index, colors[index]);
 			}
 
 			getNode()->markUpMatrixAndColor();
@@ -518,6 +504,18 @@ CKLBUIPolygon::commandUI(CLuaState& lua, int argc, int cmd)
 			getNode()->markUpMatrixAndColor();
 		}
 		releaseResources(false);
+		break;
+	case SET_TEXTURE:
+		if(argc >= 4) {
+			if(lua.isNil(3)) {
+				result = bindTexture(NULL, 0.0f);
+			} else {
+				result = bindTexture(lua.getString(3), lua.getFloat(4));
+			}
+			if(argc >= 5 && lua.getBool(5)) {
+				updateTextureCoordinates();
+			}
+		}
 		break;
 	}
 

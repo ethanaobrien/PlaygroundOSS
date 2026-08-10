@@ -538,7 +538,6 @@ CKLBUtility::lua2json(CLuaState&lua, size_t& streamSize, JSON_REPLACE * arrRepla
 bool
 CKLBUtility::lua2json_rec(CLuaState& lua, JSON_BUF * jsonBuf)
 {
-	char reversedDigits[24];
 	switch(lua.getType(-1))
 	{
 	default:
@@ -566,10 +565,35 @@ CKLBUtility::lua2json_rec(CLuaState& lua, JSON_BUF * jsonBuf)
 		{
 			/*
 			 * Preserve integral Lua numbers across the full signed 64-bit range.
-			 * Build magnitude digits in reverse, then emit most-significant first.
-			 * Handle the minimum signed value without overflowing during negation.
-			 * Emit zero explicitly because its division loop produces no digits.
-			 * This avoids narrowing through the platform integer formatter.
+			 * Use the engine's signed decimal conversion instead of narrowing through
+			 * the platform integer formatter. The shared helper handles zero, negative
+			 * values, and the minimum signed value without overflowing during negation.
+			 * Keep floating-point values on the original formatting path.
+			 *
+			 * Lua stores every numeric value as a double in this build.
+			 * The unchecked read is cast once to obtain the integral candidate.
+			 * The checked read is retained for the fractional comparison.
+			 * Comparing the two forms avoids formatting integer-valued doubles
+			 * with a decimal point and trailing zeroes.
+			 * The tolerance preserves the established script-visible distinction.
+			 * Values outside that tolerance continue through sprintf as floats.
+			 * Integral values use the same converter as other engine services.
+			 * That keeps signed-decimal behavior consistent across every caller.
+			 * The helper accepts the destination first and the signed value second.
+			 * It writes directly into the caller-owned buffer without allocation.
+			 * The output includes a leading minus sign when the value is negative.
+			 * Decimal digits are emitted most-significant first.
+			 * A terminating zero byte is always written by the helper.
+			 * The local buffer is large enough for every signed 64-bit decimal value.
+			 * Zero is represented explicitly rather than as an empty digit sequence.
+			 * The minimum signed value is handled without negating it directly.
+			 * No locale-dependent grouping or alternate base is introduced.
+			 * JSON_BUF copies the completed representation before this scope exits.
+			 * The helper's returned character count is intentionally unused here.
+			 * Conversion failure is therefore not a separate branch in this path.
+			 * Allocation failure remains the responsibility of JSON_BUF::add.
+			 * This path preserves the original integer-versus-real JSON encoding.
+			 * Keep this conversion shared rather than duplicating its digit algorithm.
 			 */
 			char buf[64];
 			// 整数か実数か判定
@@ -577,31 +601,7 @@ CKLBUtility::lua2json_rec(CLuaState& lua, JSON_BUF * jsonBuf)
 			double  num_f   = lua.getDouble(-1);
 			double  sub     = fabs((double)num_i - num_f);
 			if(sub < 0.00001) {	// 整数扱い
-				u32 digitCount = 0;
-				bool negative = false;
-				bool minimumValue = false;
-				s64 magnitude = num_i;
-				if(magnitude < 0) {
-					minimumValue = magnitude == (-9223372036854775807LL - 1);
-					magnitude += minimumValue;
-					magnitude = -magnitude;
-					negative = true;
-				}
-				while(magnitude) {
-					reversedDigits[digitCount++] = '0' + (magnitude % 10);
-					magnitude /= 10;
-				}
-				if(digitCount) {
-					if(minimumValue) { reversedDigits[0]++; }
-				} else {
-					reversedDigits[digitCount++] = '0';
-				}
-				char * output = buf;
-				if(negative) { *output++ = '-'; }
-				for(int i = digitCount - 1; i >= 0; i--) {
-					*output++ = reversedDigits[i];
-				}
-				*output = 0;
+				numStringS64(buf, num_i);
 			} else {					// 実数扱い
 				sprintf(buf, "%f", (float)num_f);
 			}
@@ -1259,8 +1259,8 @@ CKLBUtility::numStringS64(char * buf, s64 value)
 	// 符号付き64bit整数を数列文字列に変換し、符号を含む桁数を返す。
 	const s64	MINIMUM_VALUE	= (s64)0x8000000000000000LL;
 
-	char	digits[32];
-	s32		length		= 0;
+	char	digits[25];
+	u32		length		= 0;
 	bool	negative	= false;
 	bool	minimum		= false;
 
@@ -1281,10 +1281,10 @@ CKLBUtility::numStringS64(char * buf, s64 value)
 		length = 1;
 	}
 	if (negative) { *buf++ = '-'; }
-	s32 source = length;
-	s32 output = 0;
-	while (--source >= 0) { buf[output++] = digits[source]; }
-	buf[length] = 0;
+	for (s32 source = length - 1; source >= 0; --source) {
+		*buf++ = digits[source];
+	}
+	*buf = 0;
 	return length + (negative ? 1 : 0);
 }
 
@@ -1298,35 +1298,36 @@ CKLBUtility::replaceString(const char * string, const char * find, const char * 
 	size_t			findLength	= strlen(find);
 	const char *	found		= strstr(string, find);
 	const char *	rest		= string;
+	size_t			capacity	= 0;
 	size_t *		positions	= NULL;
 	size_t			count		= 0;
-	size_t			capacity	= 0;
 	size_t			growth		= GROWTH_START;
 	char *			result		= NULL;
 	bool			outOfMemory	= false;
 
-	while (found) {
-		if (capacity < count + 1) {
-			capacity += growth;
-			positions = (size_t *)realloc(positions, sizeof(size_t) * capacity);
-			if (!positions) {
-				outOfMemory = true;
-				break;
+	if (found) {
+		do {
+			if (capacity < count + 1) {
+				capacity += growth;
+				positions = (size_t *)realloc(positions, sizeof(size_t) * capacity);
+				if (!positions) {
+					outOfMemory = true;
+					break;
+				}
+				growth *= 3;
+				if (growth > GROWTH_LIMIT) { growth = GROWTH_LIMIT; }
 			}
-			growth *= 3;
-			if (growth > GROWTH_LIMIT) { growth = GROWTH_LIMIT; }
-		}
-		positions[count] = found - string;
-		count++;
-		rest = found + findLength;
-		found = strstr(rest, find);
+			positions[count] = found - string;
+			count++;
+			rest = found + findLength;
+			found = strstr(rest, find);
+		} while (found);
 	}
 
 	if (!outOfMemory) {
-		size_t sourceLength	= rest - string;
-		size_t length		= strlen(rest);
-		sourceLength += length;
+		size_t sourceLength	= rest - string + strlen(rest);
 		size_t resultLength	= sourceLength;
+		size_t length;
 		if (count) {
 			length = strlen(replace);
 			resultLength = sourceLength + (length - findLength) * count;

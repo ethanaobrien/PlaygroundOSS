@@ -1555,7 +1555,8 @@ void KLBOpenSLNewEngine::processAudio() {
 		}
 
 		KLBOpenSLVoice::PlaybackBufferState* current = voice.m_bufferState;
-		if (!current->loopBoundary && seekMsec < 0) {
+		const volatile KLBOpenSLVoice::PlaybackBufferState* sharedState = current;
+		if (!sharedState->loopBoundary && seekMsec < 0) {
 			continue;
 		}
 
@@ -1568,9 +1569,10 @@ void KLBOpenSLNewEngine::processAudio() {
 		const bool seekRequested = seekMsec >= 0;
 		s16* bufferBegin = current->bufferBegin;
 		s16* bufferEnd = current->bufferEnd;
+		const u32 halfSamples = refillOffset >> 1;
 
-		if (seekRequested || current->endReached) {
-			if (seekMsec < 0) {
+		if (current->endReached || seekMsec >= 0) {
+			if (!seekRequested) {
 				const s64 sampleOffset =
 					static_cast<s32>(voice.m_loopStartSample);
 				target->bufferOffset = sampleOffset;
@@ -1584,7 +1586,7 @@ void KLBOpenSLNewEngine::processAudio() {
 						&CPFInterface::getInstance().platform();
 					loopPlatform->mutexLock(loopAsset->m_playback.mutex);
 					loopAsset->m_playback.decoder->decode(refillOffset,
-						static_cast<u32>(sampleOffset), bufferEnd);
+						sampleOffset & 0xFFFFFFFF, bufferEnd);
 					loopPlatform->mutexUnlock(loopAsset->m_playback.mutex);
 				}
 				target->requestedPosition = 0;
@@ -1602,7 +1604,7 @@ void KLBOpenSLNewEngine::processAudio() {
 
 				if (voice.m_stagingBuffer && voice.m_reusable) {
 					memcpy(bufferEnd, voice.m_stagingBuffer,
-						voice.m_refillOffset * 2);
+						voice.m_refillOffset * sizeof(s16));
 				} else {
 					KLBOpenSLNewSoundAsset* seekAsset = voice.m_asset;
 					u32 sampleCount = voice.m_refillOffset;
@@ -1617,7 +1619,6 @@ void KLBOpenSLNewEngine::processAudio() {
 				voice.m_loopEnd = seekMsec;
 			}
 		} else {
-			const u32 halfSamples = refillOffset >> 1;
 			memcpy(bufferEnd, bufferBegin + halfSamples,
 				halfSamples * sizeof(s16));
 
@@ -1627,12 +1628,14 @@ void KLBOpenSLNewEngine::processAudio() {
 			target->bufferOffset = bufferOffset;
 
 			KLBOpenSLNewSoundAsset* decodeAsset = voice.m_asset;
+			const u32 decodeOffset =
+				static_cast<u32>(bufferOffset + advance);
 			s16* output = bufferEnd + halfSamples;
 			IPlatformRequest* decodePlatform =
 				&CPFInterface::getInstance().platform();
 			decodePlatform->mutexLock(decodeAsset->m_playback.mutex);
-			decodeAsset->m_playback.decoder->decode(halfSamples,
-				static_cast<u32>(bufferOffset + advance), output);
+			decodeAsset->m_playback.decoder->decode(
+				halfSamples, decodeOffset, output);
 			decodePlatform->mutexUnlock(decodeAsset->m_playback.mutex);
 
 			const s64 requestedPosition =

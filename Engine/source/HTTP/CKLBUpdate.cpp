@@ -670,14 +670,12 @@ CKLBUpdate::exec_init_subthread_unzip(u32 /*deltaT*/)
 
 	bool started = unzip->unCompress("file://external/");
 	CKLBScriptEnv::getInstance().call_eventUpdateZIP(m_callbackZIP, this, 0, 1);
-	if(!started) {
-		const char * errorCallback = m_callbackDetailedError;
-		if(errorCallback) {
-			s32 errorStatus = m_subThreadUnzip->getErrorStatus();
-			CKLBScriptEnv::getInstance().call_eventUpdateError(m_callbackDetailedError, this, -5, errorStatus, 0);
-			CPFInterface::getInstance().platform().removeTmpFile(gUpdateFile);
-			m_progress.step = S_COMPLETE;
-		}
+	const char * errorCallback = m_callbackDetailedError;
+	if(errorCallback && !started) {
+		s32 errorStatus = m_subThreadUnzip->getErrorStatus();
+		CKLBScriptEnv::getInstance().call_eventUpdateError(m_callbackDetailedError, this, -5, errorStatus, 0);
+		CPFInterface::getInstance().platform().removeTmpFile(gUpdateFile);
+		m_progress.step = S_COMPLETE;
 	}
 }
 

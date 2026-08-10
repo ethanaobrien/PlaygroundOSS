@@ -353,47 +353,42 @@ CKLBUIPolyline2::build(u32 color, bool close, float width, bool antialias)
 	for(s32 i = 0; i < pointCount; ++i) {
 		currentX = m_points[i * 2];
 		currentY = m_points[i * 2 + 1];
-		if(i + 1 >= pointCount) {
-			continue;
+		if(i + 1 < pointCount) {
+			float x1 = m_points[i * 2 + 2];
+			float y1 = m_points[i * 2 + 3];
+			float dx = x1 - currentX;
+			float dy = y1 - currentY;
+			float length = sqrtf(dx * dx + dy * dy);
+			if(length <= 0.0f) {
+				length = 0.0001f;
+			}
+
+			offsetX = dy / length * radius;
+			offsetY = -dx / length * radius;
+
+			leftSegments.push_back(currentX + offsetX);
+			leftSegments.push_back(currentY + offsetY);
+			leftSegments.push_back(x1 + offsetX);
+			leftSegments.push_back(y1 + offsetY);
+
+			rightSegments.push_back(currentX - offsetX);
+			rightSegments.push_back(currentY - offsetY);
+			rightSegments.push_back(x1 - offsetX);
+			rightSegments.push_back(y1 - offsetY);
+
+			directions.push_back(-offsetY);
+			directions.push_back(offsetX);
 		}
-
-		float x1 = m_points[i * 2 + 2];
-		float y1 = m_points[i * 2 + 3];
-		float dx = x1 - currentX;
-		float dy = y1 - currentY;
-		float length = sqrtf(dx * dx + dy * dy);
-		if(length <= 0.0f) {
-			length = 0.0001f;
-		}
-
-		offsetX = dy / length * radius;
-		offsetY = -dx / length * radius;
-
-		leftSegments.push_back(currentX + offsetX);
-		leftSegments.push_back(currentY + offsetY);
-		leftSegments.push_back(x1 + offsetX);
-		leftSegments.push_back(y1 + offsetY);
-
-		rightSegments.push_back(currentX - offsetX);
-		rightSegments.push_back(currentY - offsetY);
-		rightSegments.push_back(x1 - offsetX);
-		rightSegments.push_back(y1 - offsetY);
-
-		directions.push_back(-offsetY);
-		directions.push_back(offsetX);
 
 		if(i > 0 || !antialias) {
 			continue;
 		}
 
-		float normalX = leftSegments[0] - currentX;
-		float normalY = leftSegments[1] - currentY;
-
 		joins.push_back(STROKE_ENDPOINT);
-		vertices.push_back(currentX + offsetY + normalX);
-		vertices.push_back(currentY - offsetX + normalY);
-		vertices.push_back(currentX + offsetY - normalX);
-		vertices.push_back(currentY - offsetX - normalY);
+		vertices.push_back(currentX + offsetY + offsetX);
+		vertices.push_back(currentY - offsetX + offsetY);
+		vertices.push_back(currentX + offsetY - offsetX);
+		vertices.push_back(currentY - offsetX - offsetY);
 		textureCoordinates.push_back(0.0f);
 		textureCoordinates.push_back(m_textureVScale);
 		textureCoordinates.push_back(0.0f);

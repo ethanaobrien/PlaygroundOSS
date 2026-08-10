@@ -24,7 +24,6 @@
 
 class TexturePackerOnce;
 
-typedef void (*SurfaceCompactionCallback)(void* owner, u32 surfaceID, u32 newSurfaceID);
 typedef void (*SurfaceOwnerReleaseCallback)(void* owner);
 
 #define FORMAT_8888		(4)
@@ -49,6 +48,7 @@ public:
 
 		u16 value;
 	};
+	typedef void (*SurfaceCompactionCallback)(void* owner, SurfaceHandle surfaceID, SurfaceHandle newSurfaceID);
 
 	TexturePacker();
 	~TexturePacker();
@@ -134,6 +134,8 @@ private:
 	static
 	u8					s_currentTextureMode;
 };
+
+typedef TexturePacker::SurfaceCompactionCallback SurfaceCompactionCallback;
 
 #include "ILuaFuncLib.h"
 #include "CKLBLibRegistrator.h"

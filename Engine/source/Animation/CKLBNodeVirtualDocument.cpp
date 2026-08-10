@@ -1759,7 +1759,7 @@ void CKLBNodeVirtualDocument::check() {
 */
 }
 
-void CKLBNodeVirtualDocument::docTextureCompaction(void* ctx, u32 oldsurface, u32 newSurface) {
+void CKLBNodeVirtualDocument::docTextureCompaction(void* ctx, TexturePacker::SurfaceHandle oldsurface, TexturePacker::SurfaceHandle newSurface) {
 	CKLBNodeVirtualDocument* owner = (CKLBNodeVirtualDocument*)ctx;
 	CKLBNodeVirtualDocument* document = owner;
 	if (document->m_listHead) {
@@ -2479,8 +2479,8 @@ bool VDocSplitTextLines(SVDocTextSplit* split) {
 											: (s16)((token - 'w') * 0x11);
 							code = directions | 0x8000;
 						}
-						const size_t tail = strlen(term) - 3;	// remove the token itself
-						memmove(term, term + 4, tail);
+						const size_t length = strlen(term);
+						memmove(term, term + 4, length - 3);	// remove the token itself
 						if (tag == tagEnd) { return false; }
 						tag->code	= code;
 						tag->offset	= (u16)(term - cursor);
@@ -2590,7 +2590,8 @@ void CKLBNodeVirtualDocument::drawText		(s16 x0, s16 y0, const char* string, u32
 		s32 spreadAbove  = effectExtra - borderPixels;
 		s32 spreadBelow  = heightF + effectExtra + borderPixels;
 		if (spreadBelow < heightF) { spreadBelow = heightF; }
-		if (spreadAbove > 0)       { spreadAbove = 0; }
+		// Positive offsets add no space above the line; retain only negative reach.
+		spreadAbove &= spreadAbove >> 31;
 		s32 lineStep = letterSpacing - spreadAbove + spreadBelow;
 
 		for (s32 n = 0; n < lineCount; n++) {
@@ -2948,8 +2949,9 @@ void CKLBNodeVirtualDocument::renderDocument(u8 index, s32 offsetX, s32 offsetY)
 		if(pDCom->y0 <= pDCom->y1) { y0 = pDCom->y0; y1 = pDCom->y1; } else { y0 = pDCom->y1; y1 = pDCom->y0; }
 
 		// Marquee scrolling only shifts the text run horizontally.
-		x0 = (s16)(s32)((float)x0 - m_scrollOffset);
-		x1 = (s16)(s32)((float)x1 - m_scrollOffset);
+		const float scrollOffset = m_scrollOffset;
+		x0 = (s16)(s32)((float)x0 - scrollOffset);
+		x1 = (s16)(s32)((float)x1 - scrollOffset);
 
 		// x0 <= x1, y0 < y1
 		const ECOMMAND command = m_commandArray[n].command;

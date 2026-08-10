@@ -436,15 +436,14 @@ bool CKLBMapAsset::buildLayerData() {
 			static_cast<size_t>(outputWidth * outputHeight) * sizeof(u16);
 		u16 outputStride = static_cast<u16>(outputWidth);
 		MapLayer* previous = NULL;
-		MapLayer* layer = m_mapData.layers;
-		do {
-			MapLayer* current = layer;
-			layer = layer->next;
+		MapLayer* current = m_mapData.layers;
+		while (current) {
+			MapLayer* next = current->next;
 			if (static_cast<s32>(current->objectGroup) == 1) {
 				if (previous) {
-					previous->next = layer;
+					previous->next = next;
 				} else {
-					m_mapData.layers = layer;
+					m_mapData.layers = next;
 				}
 				delete current;
 			} else {
@@ -476,7 +475,8 @@ bool CKLBMapAsset::buildLayerData() {
 				current->sourceData = source;
 				previous = current;
 			}
-		} while (layer);
+			current = next;
+		}
 	}
 
 	m_mapData.height = outputHeight;

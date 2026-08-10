@@ -581,7 +581,10 @@ void CKLBLabelNode::updateLabel()
 				y = scaledVerticalOffset - displayedHeight;
 				break;
 			default:
-				y = scaledVerticalOffset;
+				// The addition is meaningful: truncf can return -0.0f, and
+				// adding +0.0f canonicalizes it to +0.0f before it reaches
+				// setTranslate.
+				y = scaledVerticalOffset + 0.0f;
 				break;
 			}
 		} else {
@@ -661,7 +664,6 @@ void CKLBLabelNode::updateLabel()
 				KLBDELETEA(m_textBuf);
 				m_textBuf = replacement;
 
-				txinfo.characterCount = 500;
 				pForm.setNativeFont(m_useNativeFont);
 				pForm.getTextInfo(m_textBuf, pFont, &txinfo, 1.0f, 1.0f);
 			}
@@ -727,9 +729,9 @@ void CKLBLabelNode::updateLabel()
 		outwardShadowY = m_shadowOffsetY < 0 ? -m_shadowOffsetY : m_shadowOffsetY;
 	}
 	const s32 descentCompensation = (s32)-txinfo.descent;
-	const u32 width = (u32)documentWidth + blurRadius * 2 + outwardShadowX;
+	const u32 width = (s32)documentWidth + blurRadius * 2 + outwardShadowX;
 	const u32 height =
-		(u32)documentHeight + blurRadius * 2 + outwardShadowY + descentCompensation;
+		(s32)documentHeight + blurRadius * 2 + outwardShadowY + descentCompensation;
 
 	m_pLabel->setDocumentSize(width, height, false);
 	x = roundf(x);

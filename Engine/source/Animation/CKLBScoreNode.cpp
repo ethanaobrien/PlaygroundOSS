@@ -350,10 +350,11 @@ void CKLBScoreNode::update(u32 order) {
 			m_commaCount = 0;
 			if (m_scoreLength) {
 				int n = 0;
+				int next = 0;
 				do {
 					float fStepX = (float)(n*m_stepX) + (m_commaCount * m_widthComma);
 					float fStepY = (float)(n*m_stepY);
-					int next = n + 1;
+					++next;
 
 					if (commaCounter >= 2) {
 						commaCounter = 0;

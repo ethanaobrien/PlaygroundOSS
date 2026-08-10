@@ -27,11 +27,43 @@ JNIEXPORT void JNICALL JAVA_FUNC(frameFlip)
 
 /*
  * Class:     klb_android_GameEngine_PFInterface
- * Method:    finishGame
- * Signature: ()V
+ * Method:    onKLabIdResult
+ * Signature: (ILjava/lang/String;)V
  */
-JNIEXPORT void JNICALL JAVA_FUNC(finishGame)
-  (JNIEnv *, jobject);
+JNIEXPORT void JNICALL JAVA_FUNC(onKLabIdResult)
+  (JNIEnv *, jobject, jint, jstring);
+
+/*
+ * Class:     klb_android_GameEngine_PFInterface
+ * Method:    onShareCallback
+ * Signature: (Ljava/lang/String;ZLjava/lang/String;)V
+ */
+JNIEXPORT void JNICALL JAVA_FUNC(onShareCallback)
+  (JNIEnv *, jobject, jstring, jboolean, jstring);
+
+/*
+ * Class:     klb_android_GameEngine_PFInterface
+ * Method:    setLoadAppPath
+ * Signature: (Ljava/lang/String;)V
+ */
+JNIEXPORT void JNICALL JAVA_FUNC(setLoadAppPath)
+  (JNIEnv *, jobject, jstring);
+
+/*
+ * Class:     klb_android_GameEngine_PFInterface
+ * Method:    OnLocationCallback
+ * Signature: (IIDDLjava/lang/String;)V
+ */
+JNIEXPORT void JNICALL JAVA_FUNC(OnLocationCallback)
+  (JNIEnv *, jobject, jint, jint, jdouble, jdouble, jstring);
+
+/*
+ * Class:     klb_android_GameEngine_PFInterface
+ * Method:    OnNotificationCallback
+ * Signature: (IILjava/lang/String;)V
+ */
+JNIEXPORT void JNICALL JAVA_FUNC(OnNotificationCallback)
+  (JNIEnv *, jobject, jint, jint, jstring);
 
 /*
  * Class:     klb_android_GameEngine_PFInterface
@@ -105,6 +137,29 @@ JNIEXPORT void JNICALL JAVA_FUNC(WebViewControlEvent) ( JNIEnv *, jobject, jobje
 JNIEXPORT void JNICALL JAVA_FUNC(clientResumeGame) ( void );
 
 JNIEXPORT void JNICALL JAVA_FUNC(jniOnLoad) ( JavaVM*, void* );
+
+/*
+ * Class:     klb_android_GameEngine_PFInterface
+ * Method:    internalGetLocalizedMessage
+ * Signature: (Ljava/lang/String;Ljava/lang/String;)[B
+ */
+JNIEXPORT jbyteArray JNICALL JAVA_FUNC(internalGetLocalizedMessage)
+  (JNIEnv *, jobject, jstring, jstring);
+
+/*
+ * Class:     klb_android_GameEngine_PFInterface
+ * Method:    onHeadsetActive
+ * Signature: ()V
+ */
+JNIEXPORT void JNICALL JAVA_FUNC(onHeadsetActive) ( void );
+
+/*
+ * Class:     extension_klb_Firebase_PFInterface
+ * Method:    onAdMobCallback
+ * Signature: (IILjava/lang/String;)V
+ */
+JNIEXPORT void JNICALL JAVA_EXT_FUNC(Firebase, onAdMobCallback)
+  (JNIEnv *, jobject, jint, jint, jstring);
 
 #ifdef __cplusplus
 }

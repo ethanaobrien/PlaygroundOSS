@@ -1099,9 +1099,10 @@ void FontObject::renderText	(s32 x, s32 y, const char* text, u8* Buffer8888, u32
 	s32 currY = y;
 
 	u32* codepoints;
-	size_t charCount = s_textCapacity;
+	size_t charCount;
 	for (;;) {
 		codepoints = s_textCodepoints;
+		charCount = s_textCapacity;
 		s32 result = wind_utf8ucs4(text, codepoints, NULL, &charCount);
 		if (result == WIND_ERR_INVALID_UTF8) {
 			return;
@@ -1120,7 +1121,6 @@ void FontObject::renderText	(s32 x, s32 y, const char* text, u8* Buffer8888, u32
 			s_textFormatting = grownFormatting;
 			s_textCapacity = required;
 		}
-		charCount = s_textCapacity;
 	}
 
 	for (u32 n=0; n < (u32)charCount; n++) {
@@ -1237,6 +1237,7 @@ void FontObject::renderText	(s32 x, s32 y, const char* text, u8* Buffer8888, u32
 				u32 roundX		= (((startX & 0x1F)>>2)<<2);
 				u8* pSrcL		= &buffSrc		[roundX + (startY * strideSrc) + slab];
 
+				klb_assertNull((pixelBytes == 1) || (pixelBytes == 4), "INVALID PIXEL FORMAT");
 				if (pixelBytes == 1) {
 					u8* pDstL	= &Buffer8888[px + (py * strideByte) + slab];
 					u8* pDstE	= &pDstL[Wheight * strideByte];
@@ -1287,7 +1288,6 @@ void FontObject::renderText	(s32 x, s32 y, const char* text, u8* Buffer8888, u32
 						pDstL += strideByte;
 					}
 				} else {
-					klb_assertNull(pixelBytes == 4, "INVALID PIXEL FORMAT");
 					u8* pDstL		= &Buffer8888	[(px<<2) + (py * strideByte) + (slab << 2)];
 					u8* pDstE		= &pDstL		[Wheight * strideByte];
 				
@@ -1350,6 +1350,7 @@ void FontObject::renderText	(s32 x, s32 y, const char* text, u8* Buffer8888, u32
 						pDstL += strideByte;
 					}
 				}
+				px = (px < 0) ? 0 : px;
 			}
 			currX += pChar->m_advanceX;
 		}

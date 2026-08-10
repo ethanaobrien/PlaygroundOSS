@@ -467,23 +467,32 @@ namespace NMAsset {
 	    @return     parameter set index, 0..3
 	 */
 	u32 pathModeSelector(const char* path, u32 mode) {
-		u32 checksum = 0, selected = 0;
-		s32 length = 0;
+		u32 selected = 0;
 		switch (mode) {
-		case 0:
-			while (path[length]) {
-				checksum += static_cast<u8>(path[length]);
+		case 0: {
+			const char* cursor = path;
+			u32 checksum = 0;
+			s32 length = 0;
+			while (*cursor) {
+				checksum += static_cast<u8>(*cursor);
+				++cursor;
 				++length;
 			}
 			selected = length + checksum;
 			break;
-		case 1:
-			while (path[length]) {
-				checksum += ~static_cast<u32>(static_cast<u8>(path[length]));
+		}
+		case 1: {
+			const char* cursor = path;
+			u32 checksum = 0;
+			s32 length = 0;
+			while (*cursor) {
+				checksum += ~static_cast<u32>(static_cast<u8>(*cursor));
+				++cursor;
 				++length;
 			}
 			selected = length + checksum;
 			break;
+		}
 		}
 		return selected & 3;
 	}
@@ -619,13 +628,13 @@ namespace NMAsset {
 		u32* hash3,
 		u32* nameLength)
 	{
-		const s32 pathLength = static_cast<s32>(strlen(path));
-		// Walk back from the end of the path to the character after the last
-		// separator, or to the start of the path if it has none.  The scan
-		// leaves nameStart one short because the test consumed a step.
-		const char* cursor = path + pathLength - 1;
-		s32 nameStart = pathLength;
-		while (nameStart-- > 0 && *cursor != '\\' && *cursor-- != '/') {
+		const u32 pathLength = static_cast<u32>(strlen(path));
+		// Walk back from the end of the path to the last separator, or one
+		// position before the path if it has none.  Advancing the result below
+		// produces the first character of the basename.
+		s32 nameStart = pathLength - 1;
+		while (nameStart >= 0 && path[nameStart] != '\\' && path[nameStart] != '/') {
+			--nameStart;
 		}
 		++nameStart;
 		const char* const name = path + nameStart;
@@ -930,14 +939,8 @@ void NMAsset::initializePathKeyed(
 		return;
 	}
 
-	u32 checksum = 0;
-	s32 length = 0;
-	while (path[length]) {
-		checksum += static_cast<u8>(path[length]);
-		++length;
-	}
-
-	const s32 set = ((length + checksum) & 3) * s_streamCipherParameterStride;
+	const s32 set =
+		pathModeSelector(path, 0) * s_streamCipherParameterStride;
 	decryptor->m_primaryMultiplier = g_streamCipherParameters[set];
 	decryptor->m_primaryIncrement = g_streamCipherParameters[set + 1];
 	decryptor->m_primaryShift = static_cast<u8>(g_streamCipherParameters[set + 2]);
@@ -1056,7 +1059,8 @@ void CDecryptBaseClass::decryptLehmer(void* ptr, u32 length) {
 		}
 	} else {
 		u16* words = reinterpret_cast<u16*>(bytes);
-		for (u32 step = 0; step < stepCount; ++step) {
+		u32 step;
+		for (step = 0; step < stepCount; ++step) {
 			*words ^= *reinterpret_cast<u16*>(m_userCtx.m_headerKeyBytes);
 			++words;
 			NMAsset::advanceLehmerKey(&m_userCtx, multiplier, modulus);

@@ -98,7 +98,11 @@ LOCAL_MODULE    := libjniproxy
 LOCAL_C_INCLUDES := ./jni/proxy
 LOCAL_CFLAGS    := -Werror
 LOCAL_SRC_FILES := proxy/jniproxy.cpp
-LOCAL_LDLIBS    := -llog
+# Clang ドライバが標準で付ける GNU build ID は出荷モジュールには存在しない
+LOCAL_LDFLAGS   := -Wl,--build-id=none
+# このモジュールは DEBUG 無しでビルドされ __android_log_write を参照しないので
+# liblog はリンクしない
+#LOCAL_LDLIBS    := -llog
 
 include $(BUILD_SHARED_LIBRARY)
 # ---------------------

@@ -157,7 +157,7 @@ public:
 	void	forceRefresh	();
 protected:
 	static
-	void	docTextureCompaction(void* ctx, u32 oldsurface, u32 newSurface);
+	void	docTextureCompaction(void* ctx, TexturePacker::SurfaceHandle oldsurface, TexturePacker::SurfaceHandle newSurface);
 	static
 	void	docTextureRelease(void* ctx);
 

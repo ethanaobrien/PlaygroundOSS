@@ -227,7 +227,7 @@ CKLBUITextInput::dieUI()
 }
 
 void
-CKLBUITextInput::onResume()
+CKLBUITextInput::onResume() const
 {
 	const char* fontName = m_pTextBox->getFontName();
 	if (fontName) {

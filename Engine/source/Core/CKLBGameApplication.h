@@ -47,7 +47,7 @@ public:
 	void reboot			();
 
     void resetViewport	();
-	void changeProjectionMatrix();
+	virtual void changeProjectionMatrix();
 
 	virtual FILE* getShellOutput();
 	virtual void  setShellOutput(FILE* stream);

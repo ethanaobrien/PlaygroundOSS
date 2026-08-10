@@ -67,4 +67,14 @@
 
 #endif
 
+//------------------------------------------------
+/*
+  拡張機能(extension)側のJNI名はパッケージ名に依存しない
+ */
+#define JAVA_EXT_FUNC( ext, func ) Java_extension_klb_##ext##_PFInterface_##func
+
+// proxy が最初に探すライブラリ名。見つからない場合は
+// setLoadAppPath() で組み立てたインストール先を使用する。
+#define APP_LOAD_NAME "libGame.so"
+
 #endif //__PACKAGE_DEF_H__

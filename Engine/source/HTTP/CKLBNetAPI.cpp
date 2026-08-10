@@ -711,17 +711,23 @@ CKLBNetAPI::init(	CKLBTask* pTask,
 			// Registration only happens when every formatted connection
 			// header was assembled; otherwise the whole context is released.
 			u32 headerIndex;
-			for(headerIndex = 2; headerIndex <= 10; headerIndex++) {
-				if(!m_headerContext[headerIndex]) break;
+			for(headerIndex = 0; headerIndex < 14; headerIndex++) {
+				if(headerIndex != 0 && headerIndex != 1
+				&& headerIndex != 11 && headerIndex != 12
+				&& headerIndex != 13 && !m_headerContext[headerIndex]) break;
 			}
-			if(headerIndex > 10) {
+			if(headerIndex >= 14) {
 				strcpy(m_authorizeHeader, "Authorize: ");
 				m_authorizePrefixLength = strlen(m_authorizeHeader);
 				return regist(pTask, P_INPUT);
 			}
 
-			for(headerIndex = 2; headerIndex <= 10; headerIndex++) {
-				KLBDELETEA(m_headerContext[headerIndex]);
+			for(headerIndex = 0; headerIndex < 14; headerIndex++) {
+				if(headerIndex != 0 && headerIndex != 1
+				&& headerIndex != 11 && headerIndex != 12
+				&& headerIndex != 13) {
+					KLBDELETEA(m_headerContext[headerIndex]);
+				}
 			}
 			KLBDELETEA(m_headerContext);
 		}
@@ -1184,8 +1190,8 @@ CKLBNetAPI::commandScript(CLuaState& lua)
 
 			const char* endPoint = "/api";
 			int timeout = 0;
-			bool checkVersion = false;
 			const char* specialKey = NULL;
+			bool checkVersion = false;
 			bool absolute = false;
 			bool hasSessionMACKey = false;
 			if(argc >= 4) {

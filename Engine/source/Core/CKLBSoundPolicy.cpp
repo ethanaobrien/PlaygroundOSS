@@ -198,53 +198,53 @@ CKLBSoundPolicy::findPolicy(const char* soundPath) const
 s32
 CKLBSoundPolicy::parsePolicyField(const char* policy, s32 field)
 {
-	bool found = (field == 0);
-	s32 sign;
-	s32 value;
-	if(field != 0) {
-		char character = *policy;
-		if(character) {
-			s32 commaCount = 0;
-			do {
-				commaCount += (character == ',');
-				const char* next = policy + 1;
-				found = (commaCount == field);
-				if(found) {
-					policy = next;
-					break;
-				}
-				character = policy[1];
-				policy = next;
-			} while(character);
-		}
+	s32 commaCount = 0;
+	while(*policy && commaCount != field) {
+		commaCount += (*policy == ',');
+		++policy;
 	}
+	const char* cursor = policy;
+	bool found = (commaCount == field);
 
-	sign = 1;
-	value = 0;
+	s32 value = 0;
+	s32 sign = 1;
 	if(found) {
 		s32 started = 0;
 		for(;;) {
-			s32 character = *policy;
+			s32 character = *cursor;
 			if(static_cast<u32>(character - '0') < 10) {
 				value = value * 10 + character - '0';
-				++policy;
+				++cursor;
 				started = 1;
-			} else if(!character) {
-				break;
-			} else if(character == '-') {
-				++policy;
+				continue;
+			}
+			if(!character) { break; }
+			if(character == '-') {
+				++cursor;
 				started = 1;
 				sign = -1;
-			} else if(started) {
-				break;
-			} else {
-				++policy;
-				started = 0;
+				continue;
 			}
+			if(started) { break; }
+			++cursor;
 		}
 	}
 	return value * sign;
 }
+
+/*
+ * Policy fields are selected by counting separators from the row start.
+ * Field zero begins at the input pointer; later fields begin after a comma.
+ * Advancing the scan pointer after each character keeps the selected field
+ * cursor independent from the separator count used to validate the lookup.
+ *
+ * Numeric conversion skips leading non-numeric characters. A minus sign is
+ * part of the number-start state and may precede the first decimal digit;
+ * once conversion has started, an unrelated character terminates the field.
+ * Each classification branch consumes its own character before rejoining
+ * the shared read, which itself never advances the cursor. Missing fields
+ * and fields without digits evaluate to zero; the sign is applied last.
+ */
 
 /*
  * Sound policy rows are null-terminated records in a comma-separated table.
@@ -429,7 +429,7 @@ CKLBSoundPolicy::execute(u32 deltaT)
 				break;
 			}
 
-			if(motion.volume < minimumVolume) {
+			if(minimumVolume > motion.volume) {
 				minimumVolume = motion.volume;
 			}
 		}
