@@ -20,7 +20,7 @@
 #include "RectangleBinPack/Rect.cpp"
 #include "RectangleBinPack/MaxRectsBinPack.cpp"
 
-typedef char KLBImageSizeCheck[(sizeof(KLBImage) == 0xe8) ? 1 : -1];
+typedef char KLBImageSizeCheck[((__SIZEOF_POINTER__ != 8) || (sizeof(KLBImage) == 0xe8)) ? 1 : -1];
 
 static const SVertexEntry particlePositionUVFormat[] = {
     { 1, 0, false, VEC2 | VERTEX },

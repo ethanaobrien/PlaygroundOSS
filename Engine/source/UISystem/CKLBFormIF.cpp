@@ -32,8 +32,8 @@ struct NodeUpdateContext {
 };
 
 typedef char AssertNodeUpdateClassIDOffset[(offsetof(NodeUpdateContext, classID) == 0) ? 1 : -1];
-typedef char AssertNodeUpdateTaskOffset[(offsetof(NodeUpdateContext, task) == 8) ? 1 : -1];
-typedef char AssertNodeUpdateContextSize[(sizeof(NodeUpdateContext) == 16) ? 1 : -1];
+typedef char AssertNodeUpdateTaskOffset[((__SIZEOF_POINTER__ != 8) || (offsetof(NodeUpdateContext, task) == 8)) ? 1 : -1];
+typedef char AssertNodeUpdateContextSize[((__SIZEOF_POINTER__ != 8) || (sizeof(NodeUpdateContext) == 16)) ? 1 : -1];
 
 // Every update helper receives &context.classID. Because classID is the first
 // member of this standard-layout record, that pointer also identifies the

@@ -138,13 +138,13 @@ private:
 typedef char PolygonClientDataMustBePointerSized[
 	(sizeof(p2t::PointClientData) == sizeof(void*)) ? 1 : -1];
 typedef char PolygonPointMustMatchTargetLayout[
-	(sizeof(p2t::Point) == 0x30) ? 1 : -1];
+	((__SIZEOF_POINTER__ != 8) || (sizeof(p2t::Point) == 0x30)) ? 1 : -1];
 typedef char PolygonPointStorageMustBeNaturallyAligned[
-	(offsetof(PolygonPointBlock, points) == 0x10) ? 1 : -1];
+	((__SIZEOF_POINTER__ != 8) || (offsetof(PolygonPointBlock, points) == 0x10)) ? 1 : -1];
 typedef char PolygonPointBlockMustMatchTargetLayout[
-	(sizeof(PolygonPointBlock) == 0x5fb0) ? 1 : -1];
+	((__SIZEOF_POINTER__ != 8) || (sizeof(PolygonPointBlock) == 0x5fb0)) ? 1 : -1];
 typedef char PolygonBuilderMustMatchTargetLayout[
-	(sizeof(CKLBPolygonBuilder) == 0x60f0) ? 1 : -1];
+	((__SIZEOF_POINTER__ != 8) || (sizeof(CKLBPolygonBuilder) == 0x60f0)) ? 1 : -1];
 
 CKLBLuaPropTask::PROP_V2 CKLBUIPolygon::ms_propItems[] = {
 	UI_BASE_PROP

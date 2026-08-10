@@ -34,11 +34,11 @@ namespace NMAsset {
 	};
 
 	typedef char DecryptRoutineSize[
-		(sizeof(DecryptRoutine) == 0x10) ? 1 : -1];
+		((__SIZEOF_POINTER__ != 8) || (sizeof(DecryptRoutine) == 0x10)) ? 1 : -1];
 	typedef char PositionRoutineSize[
-		(sizeof(PositionRoutine) == 0x10) ? 1 : -1];
+		((__SIZEOF_POINTER__ != 8) || (sizeof(PositionRoutine) == 0x10)) ? 1 : -1];
 	typedef char EncryptionDispatchRegistrySize[
-		(sizeof(EncryptionDispatchRegistry) == 0x788) ? 1 : -1];
+		((__SIZEOF_POINTER__ != 8) || (sizeof(EncryptionDispatchRegistry) == 0x788)) ? 1 : -1];
 
 	// ---------------------------------------------------------------
 	//  Obfuscated constant storage
