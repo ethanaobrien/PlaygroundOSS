@@ -11,6 +11,11 @@ Other folders (CSharpVersion, SampleProject) are more related to prototype featu
 
 To get started, please read the /Doc/Project.md
 
+Modern multi-platform build work is documented in
+[`Doc/Modernization.md`](Doc/Modernization.md). The historical platform
+projects remain available as compatibility references while the modern CMake
+and SDL3-based host layers are introduced incrementally.
+
 The dev team.
 
 ## Build Status
