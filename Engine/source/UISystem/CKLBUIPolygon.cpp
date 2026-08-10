@@ -135,8 +135,8 @@ private:
 	s32							m_pointCount;
 };
 
-typedef char PolygonClientDataMustBePointerSized[
-	(sizeof(p2t::PointClientData) == sizeof(void*)) ? 1 : -1];
+typedef char PolygonClientDataMustMatchTargetLayout[
+	(sizeof(p2t::PointClientData) == 0x8) ? 1 : -1];
 typedef char PolygonPointMustMatchTargetLayout[
 	((__SIZEOF_POINTER__ != 8) || (sizeof(p2t::Point) == 0x30)) ? 1 : -1];
 typedef char PolygonPointStorageMustBeNaturallyAligned[
