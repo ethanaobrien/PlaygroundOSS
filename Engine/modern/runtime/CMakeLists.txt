@@ -1,5 +1,6 @@
 find_package(CURL REQUIRED)
 find_package(Freetype REQUIRED)
+find_package(OpenSSL REQUIRED)
 find_package(PNG REQUIRED)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
@@ -78,6 +79,7 @@ list(TRANSFORM playground_chipmunk_sources
 
 add_library(playground_engine_runtime STATIC
     src/DesktopPlatform.cpp
+    src/DesktopStateStore.cpp
     src/DesktopServices.cpp
     src/NullAudio.cpp
     ${playground_engine_sources}
@@ -160,6 +162,7 @@ target_link_libraries(playground_engine_runtime
     PUBLIC
         CURL::libcurl
         Freetype::Freetype
+        OpenSSL::Crypto
         PNG::PNG
         Threads::Threads
         ZLIB::ZLIB
@@ -180,4 +183,8 @@ if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux)
     )
     add_executable(playground-stream-probe tools/runtime_stream_probe.cpp)
     target_link_libraries(playground-stream-probe PRIVATE playground_engine_runtime)
+    add_executable(playground-platform-services-probe
+        tools/platform_services_probe.cpp)
+    target_link_libraries(playground-platform-services-probe
+        PRIVATE playground_engine_runtime)
 endif()
