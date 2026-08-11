@@ -1,6 +1,16 @@
 name: Windows installer
 
 on:
+  push:
+    branches:
+      - modernization
+    paths:
+      - .github/workflows/windows-installer.yml
+      - Engine/modern/host/sdl/**
+      - installer/windows/**
+      - scripts/build_windows_installer.ps1
+      - scripts/test_windows_bootstrap.ps1
+      - scripts/test_windows_runtime.ps1
   workflow_dispatch:
     inputs:
       app_assets_url:
@@ -46,7 +56,7 @@ jobs:
       - name: Acquire immutable AppAssets input
         shell: pwsh
         env:
-          APP_ASSETS_URL: ${{ inputs.app_assets_url }}
+          APP_ASSETS_URL: ${{ inputs.app_assets_url || 'https://ethanthesleepy.one/public/lovelive/sif/Android/lovelive-community.apk' }}
         run: |
           $apk = Join-Path $env:RUNNER_TEMP "lovelive-community.apk"
           $assets = Join-Path $env:RUNNER_TEMP "AppAssets.zip"
@@ -68,7 +78,7 @@ jobs:
           -BuildDirectory out/build/windows-msvc
           -Configuration Release
           -AppAssetsZip "$env:APP_ASSETS_ZIP"
-          -Version "${{ inputs.version }}"
+          -Version "${{ inputs.version || '9.11.0' }}"
           -OutputDirectory out/package/windows
           -SkipBuild
       - name: Exercise install, upgrade, launch, and uninstall
@@ -114,6 +124,6 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: PlaygroundOSS-SIF-Windows-${{ inputs.version }}
+          name: PlaygroundOSS-SIF-Windows-${{ inputs.version || '9.11.0' }}
           path: out/package/windows/PlaygroundOSS-SIF-Setup-*.exe
           if-no-files-found: error
