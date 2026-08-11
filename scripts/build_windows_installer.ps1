@@ -40,9 +40,23 @@ $output = Resolve-RepositoryPath $OutputDirectory
 $iscc = (Resolve-Path -LiteralPath $ISCCPath).Path
 
 if (-not $VCRedistPath) {
-    $visualStudioRoot = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\2022"
-    $candidate = Get-ChildItem -LiteralPath $visualStudioRoot -Directory |
-        ForEach-Object { Join-Path $_.FullName "VC\Redist\MSVC" } |
+    $installationRoots = @()
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path -LiteralPath $vswhere -PathType Leaf) {
+        $installationRoots += & $vswhere -products * -version '[17.0,18.0)' `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+    }
+    foreach ($programFilesRoot in @(${env:ProgramFiles}, ${env:ProgramFiles(x86)})) {
+        if (-not $programFilesRoot) { continue }
+        $visualStudioRoot = Join-Path $programFilesRoot "Microsoft Visual Studio\2022"
+        if (Test-Path -LiteralPath $visualStudioRoot -PathType Container) {
+            $installationRoots += Get-ChildItem -LiteralPath $visualStudioRoot -Directory |
+                Select-Object -ExpandProperty FullName
+        }
+    }
+    $candidate = $installationRoots | Sort-Object -Unique |
+        ForEach-Object { Join-Path $_ "VC\Redist\MSVC" } |
         Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
         ForEach-Object { Get-ChildItem -LiteralPath $_ -Directory } |
         Sort-Object Name -Descending |
