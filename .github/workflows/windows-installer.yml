@@ -14,7 +14,8 @@ on:
 
 jobs:
   package:
-    runs-on: windows-latest
+    # CMakePresets.json intentionally targets Visual Studio 17 2022.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - name: Restore vcpkg binary cache
