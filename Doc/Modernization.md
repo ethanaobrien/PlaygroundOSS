@@ -1,5 +1,8 @@
 # PlaygroundOSS modernization
 
+For prerequisites and exact build/run commands on Linux, Windows, macOS, and
+Android, start with [BuildAndRun.md](BuildAndRun.md).
+
 The `mostly-exact` branch at commit `c67d46e` is the protected compatibility
 reference. Modern infrastructure work is developed on `modernization`; the
 legacy engine source and platform projects remain unchanged until their
