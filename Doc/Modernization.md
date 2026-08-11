@@ -62,6 +62,8 @@ motion are unavailable; secure/user-default storage is process-local; and
 encrypted write streams are not implemented yet. These services return
 conservative unavailable results instead of emulating successful platform
 behavior. They are the next portability work, not engine-source patches.
+The measured implementation scope and priority order are maintained in
+[LinuxPlatformGapAnalysis.md](LinuxPlatformGapAnalysis.md).
 
 `playground-engine-link-probe` links every engine object with whole-archive
 semantics. The SDL engine executable does the same because Lua API libraries
