@@ -23,11 +23,20 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef __ANDROID__
 #include <SLES/OpenSLES_Android.h>
+#endif
 
 class KLBOpenSLNewEngine;
+#ifdef __ANDROID__
 void platformBufferQueueCallback(
 	SLAndroidSimpleBufferQueueItf queue, void* context);
+#else
+struct SDL_AudioStream;
+void desktopAudioStreamCallback(
+	void* userdata, SDL_AudioStream* stream, int additionalAmount,
+	int totalAmount);
+#endif
 bool initializeOpenSLPlatform(KLBOpenSLNewEngine* engine);
 void prepareOpenSLPlayback(bool soundEffect);
 bool isOpenSLPlaybackBlocked();
@@ -251,8 +260,14 @@ public:
 private:
 	friend class KLBOpenSLNewSoundAsset;
 	friend class KLBOpenSLVoice;
+#ifdef __ANDROID__
 	friend void platformBufferQueueCallback(
 		SLAndroidSimpleBufferQueueItf queue, void* context);
+#else
+	friend void desktopAudioStreamCallback(
+		void* userdata, SDL_AudioStream* stream, int additionalAmount,
+		int totalAmount);
+#endif
 	friend void resumeOpenSLActivity(KLBOpenSLNewEngine* engine);
 	friend bool initializeOpenSLPlatform(KLBOpenSLNewEngine* engine);
 

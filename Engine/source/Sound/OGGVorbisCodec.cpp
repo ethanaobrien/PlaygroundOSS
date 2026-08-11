@@ -130,11 +130,20 @@ OGGVorbisCodecInstance::open(AudioCodecSource* source, s32 bufferingMode) {
 	callbacks.seek_func  = seekCallback;
 	callbacks.close_func = closeCallback;
 	callbacks.tell_func  = tellCallback;
-	klb_assertNull(ov_open_callbacks(this, m_file, NULL, 0, callbacks) == 0, "");
+	if (ov_open_callbacks(this, m_file, NULL, 0, callbacks) != 0) {
+		free(m_file);
+		m_file = NULL;
+		return false;
+	}
 
 	vorbis_info* info = ov_info(m_file, -1);
 	const ogg_int64_t frames = ov_pcm_total(m_file, -1);
-	klb_assertNull(frames > 0, "");
+	if (!info || info->rate <= 0 || frames <= 0) {
+		ov_clear(m_file);
+		free(m_file);
+		m_file = NULL;
+		return false;
+	}
 
 	const u32 durationMs = static_cast<u32>((frames * 1000) / info->rate);
 	AudioCodecSource* output = m_source;

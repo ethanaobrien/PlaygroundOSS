@@ -81,7 +81,8 @@ add_library(playground_engine_runtime STATIC
     src/DesktopPlatform.cpp
     src/DesktopStateStore.cpp
     src/DesktopServices.cpp
-    src/NullAudio.cpp
+    src/DesktopAudioPlatform.cpp
+    "${PROJECT_SOURCE_DIR}/Engine/porting/Android/jni/Android/KLBOpenSLNewEngine.cpp"
     ${playground_engine_sources}
     ${playground_json_sources}
     ${playground_lua_sources}
@@ -148,6 +149,7 @@ set(playground_engine_include_directories
     Engine/libs/timelinefx-2016-10-30/source
     Engine/libs/utf8_converter
     Engine/porting
+    Engine/porting/Android/jni/Android
 )
 list(TRANSFORM playground_engine_include_directories PREPEND "${PROJECT_SOURCE_DIR}/")
 
@@ -164,6 +166,7 @@ target_link_libraries(playground_engine_runtime
         Freetype::Freetype
         OpenSSL::Crypto
         PNG::PNG
+        SDL3::SDL3
         Threads::Threads
         ZLIB::ZLIB
 )
@@ -187,4 +190,6 @@ if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux)
         tools/platform_services_probe.cpp)
     target_link_libraries(playground-platform-services-probe
         PRIVATE playground_engine_runtime)
+    add_executable(playground-audio-probe tools/audio_probe.cpp)
+    target_link_libraries(playground-audio-probe PRIVATE playground_engine_runtime)
 endif()

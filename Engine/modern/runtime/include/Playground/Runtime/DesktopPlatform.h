@@ -19,6 +19,7 @@ public:
                   GLProcResolver glResolver = nullptr);
   ~DesktopPlatform() override;
 
+  bool init() override;
   bool useEncryption() override;
   void validateEnvironment() override;
   void detailedLogging(const char *, const char *, int, const char *,

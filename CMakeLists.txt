@@ -36,12 +36,15 @@ option(
 
 add_subdirectory(Engine/modern/platform)
 
+if(PLAYGROUND_BUILD_ENGINE_RUNTIME OR PLAYGROUND_BUILD_DESKTOP_HOST)
+    include(cmake/PlaygroundSDL.cmake)
+endif()
+
 if(PLAYGROUND_BUILD_ENGINE_RUNTIME)
     add_subdirectory(Engine/modern/runtime)
 endif()
 
 if(PLAYGROUND_BUILD_DESKTOP_HOST)
-    include(cmake/PlaygroundSDL.cmake)
     add_subdirectory(Engine/modern/host/sdl)
 endif()
 

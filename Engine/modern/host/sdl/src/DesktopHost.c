@@ -251,6 +251,9 @@ int playgroundDesktopHostRun(
     host.running = true;
 
     initFlags = SDL_INIT_EVENTS;
+    if (config->audio) {
+        initFlags |= SDL_INIT_AUDIO;
+    }
     if (!config->headless) {
         initFlags |= SDL_INIT_VIDEO;
     }

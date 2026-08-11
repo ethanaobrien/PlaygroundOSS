@@ -16,8 +16,10 @@
 
 #include "KLBOpenSLNewEngine.h"
 #include "AudioCodec.h"
+#ifdef __ANDROID__
 #include "CAndroidPathConv.h"
 #include "CAndroidRequest.h"
+#endif
 #include "CKLBUtility.h"
 #include "CPFInterface.h"
 
@@ -27,9 +29,11 @@
 extern KLBAudioImplementation* g_audioImplementation;
 bool g_decompressBGM;
 
+#ifdef __ANDROID__
 void CAndroidRequest::decompressBGM(bool decompress) {
 	g_decompressBGM = decompress;
 }
+#endif
 
 extern void pauseOpenSLActivity(KLBOpenSLNewEngine* engine);
 extern void resumeOpenSLActivity(KLBOpenSLNewEngine* engine);
@@ -269,18 +273,39 @@ bool KLBOpenSLNewSoundAsset::initialize(
 	bool opened = false;
 	for (u32 i = 0; i < IAudioCodec::getCodecCount(); ++i) {
 		IAudioCodec* candidate = KLBOpenSLNewEngine::getInstance()->m_codecs[i];
+#ifdef __ANDROID__
 		m_playback.archivePath = CKLBPathConv::getInstance().fullpath(
 			path, candidate->getExtension());
+#else
+		const size_t candidateLength = strlen(path) + strlen(candidate->getExtension()) + 1;
+		char* candidatePath = new char[candidateLength];
+		snprintf(candidatePath, candidateLength, "%s%s", path, candidate->getExtension());
+		const char* resolved = CPFInterface::getInstance().platform().getFullPath(candidatePath);
+		m_playback.archivePath = resolved;
+#endif
 		if (m_playback.archivePath) {
 			m_source.sourceFile = fopen(m_playback.archivePath, "rb");
 			if (m_source.sourceFile) {
 				codec = candidate;
 				opened = true;
+#ifndef __ANDROID__
+				const char* encryptionPath = candidatePath;
+				if (!strncmp(encryptionPath, "asset://", 8)) {
+					encryptionPath += 8;
+				} else if (!strncmp(encryptionPath, "file://", 7)) {
+					encryptionPath += 7;
+				}
+				m_playback.sourcePath = CKLBUtility::copyString(encryptionPath);
+				delete [] candidatePath;
+#endif
 				break;
 			}
 			delete [] m_playback.archivePath;
 			m_playback.archivePath = NULL;
 		}
+#ifndef __ANDROID__
+		delete [] candidatePath;
+#endif
 	}
 
 	bool ready = false;
@@ -298,12 +323,16 @@ bool KLBOpenSLNewSoundAsset::initialize(
 
 		if (CPFInterface::getInstance().platform().useEncryption()) {
 			u32 headerSize = 0;
+			const char* encryptionPath = m_playback.archivePath;
+#ifndef __ANDROID__
+			encryptionPath = m_playback.sourcePath;
+#endif
 			m_source.decryptSetup(
-				(const u8*)m_playback.archivePath, header, &headerSize);
+				(const u8*)encryptionPath, header, &headerSize);
 			if (headerSize >= 5) {
 				u8 extendedHeader[128];
 				fread(extendedHeader, 1, headerSize - 4, m_source.sourceFile);
-				m_source.finishSetup(extendedHeader, m_playback.archivePath);
+				m_source.finishSetup(extendedHeader, encryptionPath);
 			}
 			fseek(m_source.sourceFile, headerSize, SEEK_SET);
 		} else {

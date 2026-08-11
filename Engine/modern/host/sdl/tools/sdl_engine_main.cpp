@@ -134,6 +134,7 @@ int main(int argc, char** argv)
     config.graphicsProfile = PLAYGROUND_DESKTOP_GRAPHICS_OPENGL_ES;
     config.graphicsMajorVersion = 2;
     config.graphicsMinorVersion = 0;
+    config.audio = true;
 
     for(int i = 1; i < argc; ++i) {
         if(!std::strcmp(argv[i], "--install-root") && i + 1 < argc) {

@@ -34,6 +34,7 @@ typedef struct PlaygroundDesktopHostConfig {
     bool highPixelDensity;
     bool resizable;
     bool verticalSync;
+    bool audio;
     bool headless;
 } PlaygroundDesktopHostConfig;
 

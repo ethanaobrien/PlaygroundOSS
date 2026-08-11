@@ -26,6 +26,8 @@
 #include <openssl/rsa.h>
 #include <openssl/sha.h>
 
+extern bool g_decompressBGM;
+
 namespace playground::runtime {
 namespace {
 
@@ -266,6 +268,11 @@ DesktopPlatform::DesktopPlatform(std::string installRoot,
 }
 DesktopPlatform::~DesktopPlatform() = default;
 
+bool DesktopPlatform::init() {
+  m_audio = getNewAudioImplementation();
+  return m_audio && m_audio->init();
+}
+
 bool DesktopPlatform::useEncryption() { return true; }
 void DesktopPlatform::validateEnvironment() {}
 void DesktopPlatform::detailedLogging(const char *file, const char *fn,
@@ -439,7 +446,7 @@ char *DesktopPlatform::getDeviceIntegrityInfo(const char *) {
   std::strcpy(p, "{}");
   return p;
 }
-void DesktopPlatform::decompressBGM(bool) {}
+void DesktopPlatform::decompressBGM(bool decompress) { g_decompressBGM = decompress; }
 s64 DesktopPlatform::getElapsedTime() { return nanotime() / 1000000; }
 void *DesktopPlatform::getFontSystem() { return nullptr; }
 void DesktopPlatform::deleteFontSystem(void *) {}
