@@ -54,18 +54,39 @@ jobs:
         shell: pwsh
         run: ./scripts/test_windows_runtime.ps1 -SkipBuild
       - name: Acquire immutable AppAssets input
+        if: github.event_name == 'workflow_dispatch'
         shell: pwsh
         env:
           APP_ASSETS_URL: ${{ inputs.app_assets_url || 'https://ethanthesleepy.one/public/lovelive/sif/Android/lovelive-community.apk' }}
         run: |
           $apk = Join-Path $env:RUNNER_TEMP "lovelive-community.apk"
           $assets = Join-Path $env:RUNNER_TEMP "AppAssets.zip"
-          Invoke-WebRequest -Uri $env:APP_ASSETS_URL -OutFile $apk
+          curl.exe --fail --location --retry 5 --retry-all-errors `
+            --output $apk $env:APP_ASSETS_URL
+          if ($LASTEXITCODE -ne 0) { throw "Could not download the configured APK" }
           & 7z e $apk assets/AppAssets.zip "-o$env:RUNNER_TEMP" -y
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $assets)) {
             throw "The APK did not contain assets/AppAssets.zip"
           }
           Get-FileHash -LiteralPath $apk -Algorithm SHA256
+          Get-FileHash -LiteralPath $assets -Algorithm SHA256
+          "APP_ASSETS_ZIP=$assets" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Generate deterministic CI AppAssets input
+        if: github.event_name != 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:RUNNER_TEMP "synthetic-appassets"
+          $assets = Join-Path $env:RUNNER_TEMP "AppAssets.zip"
+          New-Item -ItemType Directory -Force -Path `
+            $source, (Join-Path $source "assets") | Out-Null
+          [System.IO.File]::WriteAllText(
+            (Join-Path $source "start.lua"),
+            "-- Deterministic installer/bootstrap CI fixture.`n",
+            [System.Text.UTF8Encoding]::new($false))
+          [System.IO.File]::WriteAllText(
+            (Join-Path $source "assets/fixture.txt"), "PlaygroundOSS-SIF`n",
+            [System.Text.UTF8Encoding]::new($false))
+          Compress-Archive -Path (Join-Path $source "*") -DestinationPath $assets
           Get-FileHash -LiteralPath $assets -Algorithm SHA256
           "APP_ASSETS_ZIP=$assets" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Install Inno Setup

@@ -68,13 +68,15 @@ The default output is
 Setup or redistributable discovery with `-ISCCPath` and `-VCRedistPath` when
 using a nonstandard Visual Studio installation.
 
-The manually dispatched `Windows installer` GitHub workflow performs the same
-build. It downloads the configured immutable APK input, extracts only
-`assets/AppAssets.zip`, records both input hashes, runs the
-native/runtime/bootstrap gates, builds the installer, and exercises silent
-fresh install, default-root launch, same-version upgrade, persistent user data,
-default uninstall, and explicit data-removal uninstall before uploading the
-workflow artifact.
+The `Windows installer` GitHub workflow performs the same build. Automatic
+branch runs use a deterministic generated AppAssets fixture, keeping the full
+installer lifecycle gate independent of an asset host or anti-bot service.
+Manual release dispatches instead download the configured immutable APK input,
+extract only `assets/AppAssets.zip`, and record both input hashes. Both modes
+run the native/runtime/bootstrap gates, build the installer, and exercise
+silent fresh install, default-root launch, same-version upgrade, persistent
+user data, default uninstall, and explicit data-removal uninstall before
+uploading the workflow artifact.
 
 ## Verification
 
