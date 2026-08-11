@@ -279,6 +279,9 @@ int playgroundDesktopHostRun(
         host.running = false;
     } else {
         started = true;
+        if (host.window && host.callbacks.onTextInput) {
+            SDL_StartTextInput(host.window);
+        }
     }
     previousTick = SDL_GetTicksNS();
     while (host.running) {
@@ -308,6 +311,9 @@ int playgroundDesktopHostRun(
         SDL_GL_DestroyContext(host.graphicsContext);
     }
     if (host.window) {
+        if (host.callbacks.onTextInput) {
+            SDL_StopTextInput(host.window);
+        }
         SDL_DestroyWindow(host.window);
     }
     SDL_Quit();

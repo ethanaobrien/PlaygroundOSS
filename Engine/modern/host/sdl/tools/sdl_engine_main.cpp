@@ -59,6 +59,7 @@ bool onFrame(void* opaque, PlaygroundDesktopHost* host, uint64_t deltaNs)
 {
     auto& context = *static_cast<EngineContext*>(opaque);
     if(!context.initialized) return false;
+    context.platform->pumpPlatformEvents();
     u32 deltaMs = static_cast<u32>(std::clamp<uint64_t>(deltaNs / 1000000, 1, 250));
     if(!CPFInterface::getInstance().client().frameFlip(deltaMs)) return false;
     playgroundDesktopHostSwapBuffers(host);
@@ -94,11 +95,18 @@ void onKey(void* opaque, PlaygroundDesktopHost* host, int32_t key, int32_t,
 {
     auto& context = *static_cast<EngineContext*>(opaque);
     if(!context.initialized) return;
+    if(context.platform->handleEditingKey(key, pressed)) return;
     if(key == SDLK_ESCAPE && pressed && !repeat) {
         CPFInterface::getInstance().client().inputDeviceKey(
             IClientRequest::KEY_BACK, IClientRequest::KEYEVENT_CLICK);
     }
     if(key == SDLK_F4 && pressed) playgroundDesktopHostRequestQuit(host);
+}
+
+void onTextInput(void* opaque, PlaygroundDesktopHost*, const char* text)
+{
+    auto& context = *static_cast<EngineContext*>(opaque);
+    if(context.initialized) context.platform->handleTextInput(text);
 }
 
 void onActivity(void* opaque, PlaygroundDesktopHost*, bool active)
@@ -131,6 +139,7 @@ int main(int argc, char** argv)
     callbacks.onActivity = onActivity;
     callbacks.onPointer = onPointer;
     callbacks.onKey = onKey;
+    callbacks.onTextInput = onTextInput;
     config.graphicsProfile = PLAYGROUND_DESKTOP_GRAPHICS_OPENGL_ES;
     config.graphicsMajorVersion = 2;
     config.graphicsMinorVersion = 0;

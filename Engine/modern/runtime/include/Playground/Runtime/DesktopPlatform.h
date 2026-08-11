@@ -10,6 +10,8 @@
 namespace playground::runtime {
 
 class DesktopStateStore;
+class DesktopScriptRegistry;
+class DesktopWidgetManager;
 
 class DesktopPlatform final : public IPlatformRequest {
 public:
@@ -97,6 +99,7 @@ public:
   void breakThread(void *) override;
   int genUserID(char *, int) override;
   int genUserPW(const char *, char *, int) override;
+  void registerScriptSource(const char *, int, const char *) override;
   void initStoreTransactionObserver() override;
   void releaseStoreTransactionObserver() override;
   void buyStoreItems(const char *) override;
@@ -148,6 +151,9 @@ public:
   bool getTextInfo(const char *, void *, STextInfo *) override;
 
   bool quitRequested() const { return m_quitRequested.load(); }
+  void handleTextInput(const char *);
+  bool handleEditingKey(int, bool);
+  void pumpPlatformEvents();
 
 private:
   std::string resolvePath(const char *, bool *) const;
@@ -155,6 +161,8 @@ private:
   std::string m_externalRoot;
   GLProcResolver m_glResolver;
   std::unique_ptr<DesktopStateStore> m_state;
+  std::unique_ptr<DesktopScriptRegistry> m_scriptRegistry;
+  std::unique_ptr<DesktopWidgetManager> m_widgetManager;
   std::string m_deviceId;
   std::atomic<bool> m_quitRequested{false};
   int m_frameRate{60};

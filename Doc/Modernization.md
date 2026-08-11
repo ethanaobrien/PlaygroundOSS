@@ -17,7 +17,7 @@ original `GameSetup`, `initGame`, `frameFlip`, and `finishGame` lifecycle.
 | --- | --- | --- | --- |
 | Android | Reconstructed JNI/GLES/OpenSL runtime | Configures for all four ABIs | Move the proven source graph behind CMake |
 | Windows | Legacy Visual Studio/Win32 runtime | Native MSVC preset and SDL3 host | Connect the engine adapter |
-| Linux | Modern SDL3/GLES desktop bootstrap | Complete engine graph builds and official assets reach `m_boot/start.lua` | Replace temporary mute/unsupported services and validate longer flows |
+| Linux | Modern SDL3/GLES desktop runtime | Complete engine graph, desktop services, audio, widgets, and movies build; official assets reach `m_login/start.lua` | Interactive network/gameplay validation against available community services |
 | macOS | Legacy Xcode/Cocoa runtime | Native Clang preset and SDL3 host | Connect the engine adapter |
 
 ## Configure and build
@@ -56,20 +56,35 @@ separate writable external root, while `asset://` checks the external override
 first and then the install root. Shipped encrypted reads use the reconstructed
 `CDecryptBaseClass` with the same virtual-path key as Android.
 
-Current Linux limitations are explicit: audio is a mute lifecycle-compatible
-backend; native text widgets, movies, store, ads, notifications, location, and
-motion are unavailable; secure/user-default storage is process-local; and
-encrypted write streams are not implemented yet. These services return
-conservative unavailable results instead of emulating successful platform
-behavior. They are the next portability work, not engine-source patches.
-The measured implementation scope and priority order are maintained in
+The Linux runtime now provides persistent atomic secure/default storage and a
+stable device ID, OpenSSL implementations of the engine RSA/AES contracts,
+request-ID and device-integrity payloads, encrypted reads and writes, an SDL3
+audio output backed by the reconstructed mixer and Ogg decoder, text/password
+widgets, external-browser web and movie-widget fallbacks, FFmpeg movie textures,
+clipboard/screenshot/sleep/locale/memory integration, notifications, and
+configurable location/motion data. Purchases and rewarded ads cannot honestly
+succeed on a desktop community build; those adapters issue the engine's normal
+failure callbacks instead of silently succeeding or disappearing.
+
+Set `PLAYGROUND_LANGUAGE`, `PLAYGROUND_COUNTRY`, `PLAYGROUND_LOCATION` (as
+`latitude,longitude`), or `PLAYGROUND_MOTION` (as `azimuth,elevation`) to
+override deterministic desktop defaults. The implementation inventory and its
+validation evidence are maintained in
 [LinuxPlatformGapAnalysis.md](LinuxPlatformGapAnalysis.md).
 
 `playground-engine-link-probe` links every engine object with whole-archive
 semantics. The SDL engine executable does the same because Lua API libraries
 register through static constructors and must not be discarded as apparently
 unreferenced archive members. `playground-stream-probe` provides a focused
-encrypted-read diagnostic.
+encrypted-read diagnostic. `playground-platform-services-probe` covers durable
+identity/state, RSA/AES, request headers, encrypted-write round trips, memory,
+threads, and text input. `playground-audio-probe` decodes an engine audio asset
+through the real SDL output path, and `playground-movie-probe` validates the
+FFmpeg decoder independently of game Lua.
+
+Linux engine builds require development packages for SDL3 (or the pinned fetch
+fallback), GLES2, curl, FreeType, OpenSSL, PNG, zlib, and FFmpeg's avcodec,
+avformat, avutil, and swscale libraries.
 
 `PLAYGROUND_SDL_PROVIDER` accepts `auto`, `system`, or `fetch`. The default
 first uses an installed SDL 3.4 package and otherwise fetches the pinned SDL

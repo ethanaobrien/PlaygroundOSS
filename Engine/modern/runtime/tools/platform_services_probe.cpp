@@ -1,10 +1,17 @@
+#include "BaseType.h"
+#include "FileSystem.h"
 #include "Playground/Runtime/DesktopPlatform.h"
+#include "encryptFile.h"
+
+#include <SDL3/SDL_keycode.h>
 
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -15,6 +22,11 @@ bool check(bool condition, const char *message) {
     std::_Exit(1);
   }
   return condition;
+}
+
+s32 probeThread(void *, void *) {
+  std::this_thread::sleep_for(std::chrono::milliseconds(40));
+  return 73;
 }
 
 } // namespace
@@ -28,12 +40,34 @@ int main(int argc, char **argv) {
   std::string firstDeviceId;
   {
     playground::runtime::DesktopPlatform platform(".", argv[1]);
+    initNMAsset(0);
     std::array<char, 256> buffer{};
     if (!check(platform.readyDevID(), "device ID unavailable") ||
         !check(platform.getDevID(buffer.data(), buffer.size()) == 36,
                "device ID is not a UUID"))
       return 1;
     firstDeviceId = buffer.data();
+
+    char encryptedPayload[] = "encrypted desktop stream";
+    const char expectedPayload[] = "encrypted desktop stream";
+    IReadStream *writeHandle = platform.openWriteStream(
+        "file://external/probe/encrypted.bin", true, 0);
+    IWriteStream *writer = reinterpret_cast<IWriteStream *>(writeHandle);
+    if (!check(writer && writer->getStatus() == IWriteStream::NORMAL,
+               "encrypted writer unavailable"))
+      return 1;
+    writer->writeBlock(encryptedPayload, sizeof(encryptedPayload));
+    delete writer;
+    IReadStream *reader =
+        platform.openReadStream("file://external/probe/encrypted.bin", true, 0);
+    std::array<char, sizeof(encryptedPayload)> decoded{};
+    if (!check(reader && reader->getStatus() == IReadStream::NORMAL &&
+                   reader->readBlock(decoded.data(), decoded.size()) &&
+                   std::memcmp(decoded.data(), expectedPayload,
+                               sizeof(expectedPayload)) == 0,
+               "encrypted stream round trip differs"))
+      return 1;
+    delete reader;
 
     if (!check(platform.setSecureDataID("probe", "user"),
                "secure ID write failed") ||
@@ -67,6 +101,64 @@ int main(int argc, char **argv) {
                    sizeof(plain) - 1, rsa.data(), rsa.size()) == 128,
                "RSA public encryption failed"))
       return 1;
+
+    for (int index = 0; index < 30; ++index) {
+      const std::string name =
+          "asset://probe/" + std::to_string(index) + ".lua";
+      const std::string source = "return " + std::to_string(index);
+      platform.registerScriptSource(source.data(), source.size(), name.c_str());
+    }
+    char *requestHeader = platform.createRequestIdHeader();
+    if (!check(requestHeader &&
+                   std::strncmp(requestHeader, "X-REQUEST-ID:", 13) == 0,
+               "request ID header was not generated"))
+      return 1;
+    delete[] requestHeader;
+
+    char *integrity = platform.getDeviceIntegrityInfo("probe-request");
+    if (!check(integrity && std::strstr(integrity, "device_id") &&
+                   std::strstr(integrity, "SuspiciousElement"),
+               "desktop integrity payload is incomplete"))
+      return 1;
+    delete[] integrity;
+
+    void *thread = platform.createThread(probeThread, nullptr);
+    s32 status = 0;
+    if (!check(thread && platform.watchThread(thread, &status),
+               "live thread was reported complete"))
+      return 1;
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    if (!check(!platform.watchThread(thread, &status) && status == 73,
+               "completed thread status differs"))
+      return 1;
+    platform.deleteThread(thread);
+
+    if (!check(platform.getPhysicalMemKB() > 0,
+               "physical memory metric unavailable") ||
+        !check(platform.getFreeMemorySize() > 0,
+               "free memory metric unavailable") ||
+        !check(platform.getUsedMemorySize() > 0,
+               "process memory metric unavailable"))
+      return 1;
+
+    IWidget *text =
+        platform.createControl(IWidget::TEXTBOX, 7, "seed", 10, 20, 300, 40, 8);
+    if (!check(text != nullptr && text->getTextMaxLength() == 8,
+               "desktop text control unavailable"))
+      return 1;
+    platform.handleTextInput("-payload");
+    std::array<char, 32> widgetText{};
+    text->getText(widgetText.data(), widgetText.size());
+    if (!check(std::string(widgetText.data()) == "seed-pay",
+               "text input/max-length behavior differs") ||
+        !check(platform.handleEditingKey(SDLK_BACKSPACE, true),
+               "text backspace was not consumed"))
+      return 1;
+    text->getText(widgetText.data(), widgetText.size());
+    if (!check(std::string(widgetText.data()) == "seed-pa",
+               "text backspace behavior differs"))
+      return 1;
+    platform.destroyControl(text);
   }
 
   {

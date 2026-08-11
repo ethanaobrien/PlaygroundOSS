@@ -1,9 +1,12 @@
 find_package(CURL REQUIRED)
 find_package(Freetype REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(PkgConfig REQUIRED)
 find_package(PNG REQUIRED)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+    libavcodec libavformat libavutil libswscale)
 
 file(GLOB_RECURSE playground_engine_sources CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/Engine/source/*.c"
@@ -80,8 +83,10 @@ list(TRANSFORM playground_chipmunk_sources
 add_library(playground_engine_runtime STATIC
     src/DesktopPlatform.cpp
     src/DesktopStateStore.cpp
+    src/DesktopWidgets.cpp
     src/DesktopServices.cpp
     src/DesktopAudioPlatform.cpp
+    src/DesktopMoviePlatform.cpp
     "${PROJECT_SOURCE_DIR}/Engine/porting/Android/jni/Android/KLBOpenSLNewEngine.cpp"
     ${playground_engine_sources}
     ${playground_json_sources}
@@ -165,6 +170,7 @@ target_link_libraries(playground_engine_runtime
         CURL::libcurl
         Freetype::Freetype
         OpenSSL::Crypto
+        PkgConfig::FFMPEG
         PNG::PNG
         SDL3::SDL3
         Threads::Threads
@@ -192,4 +198,6 @@ if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux)
         PRIVATE playground_engine_runtime)
     add_executable(playground-audio-probe tools/audio_probe.cpp)
     target_link_libraries(playground-audio-probe PRIVATE playground_engine_runtime)
+    add_executable(playground-movie-probe tools/movie_probe.cpp)
+    target_link_libraries(playground-movie-probe PRIVATE playground_engine_runtime)
 endif()
