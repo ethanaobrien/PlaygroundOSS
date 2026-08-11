@@ -79,6 +79,32 @@ int main(int argc, char **argv) {
       return 1;
     delete reader;
 
+    const char downloadedPayload[] = "published on-demand asset";
+    ITmpFile *temporary =
+        platform.openTmpFile("file://external/probe/downloaded.bin_");
+    if (!check(temporary &&
+                   temporary->writeTmp(
+                       const_cast<char *>(downloadedPayload),
+                       sizeof(downloadedPayload)) == sizeof(downloadedPayload) &&
+                   temporary->closeTmp() == 0,
+               "temporary download write failed"))
+      return 1;
+    delete temporary;
+    if (!check(platform.irename("file://external/probe/downloaded.bin_",
+                                "file://external/probe/downloaded.bin") == 0,
+               "virtual-path download publication failed"))
+      return 1;
+    reader = platform.openReadStream(
+        "file://external/probe/downloaded.bin", false, 0);
+    std::array<char, sizeof(downloadedPayload)> downloaded{};
+    if (!check(reader && reader->getStatus() == IReadStream::NORMAL &&
+                   reader->readBlock(downloaded.data(), downloaded.size()) &&
+                   std::memcmp(downloaded.data(), downloadedPayload,
+                               sizeof(downloadedPayload)) == 0,
+               "published download differs"))
+      return 1;
+    delete reader;
+
     if (!check(platform.setSecureDataID("probe", "user"),
                "secure ID write failed") ||
         !check(platform.setSecureDataPW("probe", "password"),

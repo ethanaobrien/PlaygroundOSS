@@ -254,15 +254,27 @@ public:
 
 class DesktopTmpFile final : public ITmpFile {
 public:
-  explicit DesktopTmpFile(const std::string &path) {
+  explicit DesktopTmpFile(const std::string &path) : m_path(path) {
     std::error_code error;
     std::filesystem::create_directories(
         std::filesystem::path(path).parent_path(), error);
     m_file = error ? nullptr : std::fopen(path.c_str(), "wb");
+    if (!m_file)
+      std::fprintf(stderr, "asset download: cannot open temporary file %s: %s\n",
+                   m_path.c_str(),
+                   error ? error.message().c_str() : std::strerror(errno));
   }
   ~DesktopTmpFile() override { closeTmp(); }
   size_t writeTmp(void *p, size_t n) override {
-    return m_file ? std::fwrite(p, 1, n, m_file) : 0;
+    if (!m_file)
+      return 0;
+    const size_t written = std::fwrite(p, 1, n, m_file);
+    if (written != n)
+      std::fprintf(stderr,
+                   "asset download: short write to %s: requested=%zu "
+                   "written=%zu error=%s\n",
+                   m_path.c_str(), n, written, std::strerror(errno));
+    return written;
   }
   int closeTmp() override {
     if (!m_file)
@@ -274,6 +286,7 @@ public:
   bool ready() const { return m_file != nullptr; }
 
 private:
+  std::string m_path;
   FILE *m_file;
 };
 
@@ -593,7 +606,13 @@ bool DesktopPlatform::icreateEmptyFile(const char *n) {
   return true;
 }
 int DesktopPlatform::irename(const char *a, const char *b) {
-  return std::rename(a, b);
+  const std::string source = resolvePath(a, nullptr);
+  const std::string destination = resolvePath(b, nullptr);
+  const int result = std::rename(source.c_str(), destination.c_str());
+  if (result)
+    std::fprintf(stderr, "asset download: cannot publish %s -> %s: %s\n",
+                 source.c_str(), destination.c_str(), std::strerror(errno));
+  return result;
 }
 const char *DesktopPlatform::getBundleVersion() { return "9.11-desktop"; }
 const char *DesktopPlatform::getBundleId() {
