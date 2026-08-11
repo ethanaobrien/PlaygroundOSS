@@ -115,3 +115,7 @@ try {
 } finally {
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# Expected-failure probes intentionally leave a nonzero native process status.
+# Do not leak that status to callers after every scripted assertion passed.
+$global:LASTEXITCODE = 0

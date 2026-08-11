@@ -116,3 +116,4 @@ try {
 }
 
 Write-Host "Windows runtime verification passed."
+$global:LASTEXITCODE = 0
