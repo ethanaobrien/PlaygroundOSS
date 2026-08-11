@@ -14,8 +14,14 @@
 #include <cstdio>
 #include <system_error>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <io.h>
+#else
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace playground::runtime {
 namespace {
@@ -42,6 +48,43 @@ bool readU32(FILE *file, std::uint32_t &value) {
           (static_cast<std::uint32_t>(bytes[2]) << 16) |
           (static_cast<std::uint32_t>(bytes[3]) << 24);
   return true;
+}
+
+FILE *openFile(const std::filesystem::path &path, const char *mode) {
+#if defined(_WIN32)
+  const wchar_t *wideMode = mode[0] == 'r' ? L"rb" : L"wb";
+  return _wfopen(path.c_str(), wideMode);
+#else
+  return std::fopen(path.c_str(), mode);
+#endif
+}
+
+bool flushFile(FILE *file) {
+  if (std::fflush(file) != 0)
+    return false;
+#if defined(_WIN32)
+  return _commit(_fileno(file)) == 0;
+#else
+  return fsync(fileno(file)) == 0;
+#endif
+}
+
+bool replaceFile(const std::filesystem::path &source,
+                 const std::filesystem::path &destination,
+                 std::error_code &error) {
+#if defined(_WIN32)
+  if (MoveFileExW(source.c_str(), destination.c_str(),
+                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    error.clear();
+    return true;
+  }
+  error = std::error_code(static_cast<int>(GetLastError()),
+                          std::system_category());
+  return false;
+#else
+  std::filesystem::rename(source, destination, error);
+  return !error;
+#endif
 }
 
 } // namespace
@@ -87,7 +130,7 @@ bool DesktopStateStore::erase(const std::string &key) {
 
 bool DesktopStateStore::load() {
   std::lock_guard<std::mutex> lock(m_mutex);
-  FILE *file = std::fopen(m_path.c_str(), "rb");
+  FILE *file = openFile(m_path, "rb");
   if (!file)
     return true;
 
@@ -126,10 +169,12 @@ bool DesktopStateStore::saveLocked() const {
 
   std::filesystem::path temporary = m_path;
   temporary += ".tmp";
-  FILE *file = std::fopen(temporary.c_str(), "wb");
+  FILE *file = openFile(temporary, "wb");
   if (!file)
     return false;
+#if !defined(_WIN32)
   chmod(temporary.c_str(), S_IRUSR | S_IWUSR);
+#endif
 
   bool valid = std::fwrite(StateMagic.data(), 1, StateMagic.size(), file) ==
                    StateMagic.size() &&
@@ -148,12 +193,11 @@ bool DesktopStateStore::saveLocked() const {
                 entry.second.size();
   }
   if (valid)
-    valid = std::fflush(file) == 0 && fsync(fileno(file)) == 0;
+    valid = flushFile(file);
   if (std::fclose(file) != 0)
     valid = false;
   if (valid) {
-    std::filesystem::rename(temporary, m_path, error);
-    valid = !error;
+    valid = replaceFile(temporary, m_path, error);
   }
   if (!valid)
     std::filesystem::remove(temporary, error);

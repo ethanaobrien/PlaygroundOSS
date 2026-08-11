@@ -1,12 +1,54 @@
 find_package(CURL REQUIRED)
 find_package(Freetype REQUIRED)
 find_package(OpenSSL REQUIRED)
-find_package(PkgConfig REQUIRED)
 find_package(PNG REQUIRED)
 find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
-pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
-    libavcodec libavformat libavutil libswscale)
+
+if(WIN32)
+    find_path(PLAYGROUND_FFMPEG_INCLUDE_DIR libavcodec/avcodec.h REQUIRED)
+    if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+        set(PLAYGROUND_VCPKG_LIBRARY_DIR
+            "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib")
+        set(PLAYGROUND_VCPKG_DEBUG_LIBRARY_DIR
+            "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib")
+    endif()
+    find_library(PLAYGROUND_AVCODEC_LIBRARY NAMES avcodec
+        PATHS "${PLAYGROUND_VCPKG_LIBRARY_DIR}" NO_DEFAULT_PATH REQUIRED)
+    find_library(PLAYGROUND_AVFORMAT_LIBRARY NAMES avformat
+        PATHS "${PLAYGROUND_VCPKG_LIBRARY_DIR}" NO_DEFAULT_PATH REQUIRED)
+    find_library(PLAYGROUND_AVUTIL_LIBRARY NAMES avutil
+        PATHS "${PLAYGROUND_VCPKG_LIBRARY_DIR}" NO_DEFAULT_PATH REQUIRED)
+    find_library(PLAYGROUND_SWSCALE_LIBRARY NAMES swscale
+        PATHS "${PLAYGROUND_VCPKG_LIBRARY_DIR}" NO_DEFAULT_PATH REQUIRED)
+    find_library(PLAYGROUND_AVCODEC_DEBUG_LIBRARY NAMES avcodec
+        PATHS "${PLAYGROUND_VCPKG_DEBUG_LIBRARY_DIR}" NO_DEFAULT_PATH REQUIRED)
+    find_library(PLAYGROUND_AVFORMAT_DEBUG_LIBRARY NAMES avformat
+        PATHS "${PLAYGROUND_VCPKG_DEBUG_LIBRARY_DIR}" NO_DEFAULT_PATH REQUIRED)
+    find_library(PLAYGROUND_AVUTIL_DEBUG_LIBRARY NAMES avutil
+        PATHS "${PLAYGROUND_VCPKG_DEBUG_LIBRARY_DIR}" NO_DEFAULT_PATH REQUIRED)
+    find_library(PLAYGROUND_SWSCALE_DEBUG_LIBRARY NAMES swscale
+        PATHS "${PLAYGROUND_VCPKG_DEBUG_LIBRARY_DIR}" NO_DEFAULT_PATH REQUIRED)
+    add_library(playground_ffmpeg INTERFACE)
+    target_include_directories(playground_ffmpeg INTERFACE
+        "${PLAYGROUND_FFMPEG_INCLUDE_DIR}")
+    target_link_libraries(playground_ffmpeg INTERFACE
+        optimized "${PLAYGROUND_AVCODEC_LIBRARY}"
+        optimized "${PLAYGROUND_AVFORMAT_LIBRARY}"
+        optimized "${PLAYGROUND_AVUTIL_LIBRARY}"
+        optimized "${PLAYGROUND_SWSCALE_LIBRARY}"
+        debug "${PLAYGROUND_AVCODEC_DEBUG_LIBRARY}"
+        debug "${PLAYGROUND_AVFORMAT_DEBUG_LIBRARY}"
+        debug "${PLAYGROUND_AVUTIL_DEBUG_LIBRARY}"
+        debug "${PLAYGROUND_SWSCALE_DEBUG_LIBRARY}"
+    )
+    add_library(Playground::FFmpeg ALIAS playground_ffmpeg)
+else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+        libavcodec libavformat libavutil libswscale)
+    add_library(Playground::FFmpeg ALIAS PkgConfig::FFMPEG)
+endif()
 
 file(GLOB_RECURSE playground_engine_sources CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/Engine/source/*.c"
@@ -105,20 +147,25 @@ add_library(playground_engine_runtime STATIC
     "${PROJECT_SOURCE_DIR}/Engine/libs/pugixml-1.2/src/pugixml.cpp"
     "${PROJECT_SOURCE_DIR}/Engine/porting/FileDelete.cpp"
     "${PROJECT_SOURCE_DIR}/Engine/porting/FontRendering.cpp"
+    "${PROJECT_SOURCE_DIR}/Engine/porting/dirent.c"
 )
 add_library(Playground::EngineRuntime ALIAS playground_engine_runtime)
 
-target_compile_features(playground_engine_runtime PUBLIC cxx_std_11)
-target_compile_features(playground_engine_runtime PRIVATE cxx_std_17)
+target_compile_features(playground_engine_runtime PUBLIC cxx_std_17)
 target_compile_features(playground_engine_runtime PRIVATE c_std_99)
 target_compile_definitions(playground_engine_runtime
     PRIVATE
         IOAPI_NO_64
         LUA_ANSI
         ONLY_C
-        OPENGL2
+        PLAYGROUND_MODERN_RUNTIME
         PLAYGROUND_RUNTIME_DIAGNOSTICS
+        $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS>
+        $<$<PLATFORM_ID:Windows>:_HAS_AUTO_PTR_ETC=1>
+        $<$<PLATFORM_ID:Windows>:_USE_MATH_DEFINES>
+        $<$<PLATFORM_ID:Windows>:NOMINMAX>
 )
+target_compile_definitions(playground_engine_runtime PUBLIC OPENGL2)
 
 set(playground_engine_include_directories
     Engine/include
@@ -171,34 +218,65 @@ target_link_libraries(playground_engine_runtime
         CURL::libcurl
         Freetype::Freetype
         OpenSSL::Crypto
-        PkgConfig::FFMPEG
+        Playground::FFmpeg
         PNG::PNG
         SDL3::SDL3
         Threads::Threads
         ZLIB::ZLIB
 )
 
-find_library(PLAYGROUND_GLES2_LIBRARY GLESv2 REQUIRED)
-target_link_libraries(playground_engine_runtime PUBLIC ${PLAYGROUND_GLES2_LIBRARY})
+if(WIN32)
+    find_package(unofficial-angle CONFIG REQUIRED)
+    # vcpkg defines ANGLE's imported targets in the calling directory. Promote
+    # them so the sibling SDL host can deploy the same runtime selected here.
+    set_property(TARGET unofficial::angle::libEGL PROPERTY IMPORTED_GLOBAL TRUE)
+    set_property(TARGET unofficial::angle::libGLESv2 PROPERTY IMPORTED_GLOBAL TRUE)
+    target_link_libraries(playground_engine_runtime PUBLIC
+        unofficial::angle::libEGL
+        unofficial::angle::libGLESv2
+        bcrypt
+        psapi
+    )
+else()
+    find_library(PLAYGROUND_GLES2_LIBRARY GLESv2 REQUIRED)
+    target_link_libraries(playground_engine_runtime PUBLIC
+        ${PLAYGROUND_GLES2_LIBRARY})
+endif()
 
 set_target_properties(playground_engine_runtime PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
-if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux)
+function(playground_copy_sdl_runtime target)
+    if(WIN32)
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_FILE:SDL3::SDL3>"
+                "$<TARGET_FILE_DIR:${target}>"
+            VERBATIM)
+    endif()
+endfunction()
+
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux
+   OR PLAYGROUND_TARGET_PLATFORM STREQUAL windows)
     add_executable(playground-engine-link-probe tools/runtime_link_probe.cpp)
     target_link_libraries(playground-engine-link-probe
         PRIVATE
             $<LINK_LIBRARY:WHOLE_ARCHIVE,playground_engine_runtime>
     )
+    playground_copy_sdl_runtime(playground-engine-link-probe)
     add_executable(playground-stream-probe tools/runtime_stream_probe.cpp)
     target_link_libraries(playground-stream-probe PRIVATE playground_engine_runtime)
+    playground_copy_sdl_runtime(playground-stream-probe)
     add_executable(playground-platform-services-probe
         tools/platform_services_probe.cpp)
     target_link_libraries(playground-platform-services-probe
         PRIVATE playground_engine_runtime)
+    playground_copy_sdl_runtime(playground-platform-services-probe)
     add_executable(playground-audio-probe tools/audio_probe.cpp)
     target_link_libraries(playground-audio-probe PRIVATE playground_engine_runtime)
+    playground_copy_sdl_runtime(playground-audio-probe)
     add_executable(playground-movie-probe tools/movie_probe.cpp)
     target_link_libraries(playground-movie-probe PRIVATE playground_engine_runtime)
+    playground_copy_sdl_runtime(playground-movie-probe)
 endif()

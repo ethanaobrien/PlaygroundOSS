@@ -25,7 +25,8 @@ option(
 )
 
 set(_playground_engine_runtime_default OFF)
-if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux)
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux
+   OR PLAYGROUND_TARGET_PLATFORM STREQUAL windows)
     set(_playground_engine_runtime_default ON)
 endif()
 option(

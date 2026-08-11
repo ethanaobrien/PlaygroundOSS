@@ -31,6 +31,12 @@ typedef __int64 int64_t;
 typedef unsigned __int64 uint64_t;
 #elif defined(_MSC_VER)  // && _MSC_VER >= 1600
 #include <stdint.h>
+#ifndef __cplusplus
+typedef unsigned char bool;
+#define true 1
+#define false 0
+#define inline __inline
+#endif
 #else
 #include <stdint.h>
 #include <stdbool.h>
@@ -192,4 +198,3 @@ typedef unsigned int _msgpack_atomic_counter_t;
 
 
 #endif /* msgpack/sysdep.h */
-

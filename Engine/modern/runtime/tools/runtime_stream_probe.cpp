@@ -4,15 +4,19 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <vector>
 
 int main(int argc, char** argv)
 {
     if(argc != 3) {
         std::fprintf(stderr, "usage: %s install-root virtual-path\n", argv[0]);
-        return 64;
+        std::fflush(nullptr);
+        std::_Exit(64);
     }
-    playground::runtime::DesktopPlatform platform(argv[1], "/tmp/playground-stream-probe");
+    const std::filesystem::path externalRoot =
+        std::filesystem::temp_directory_path() / "playground-stream-probe";
+    playground::runtime::DesktopPlatform platform(argv[1], externalRoot.string());
     initNMAsset(0);
     IReadStream* stream = platform.openReadStream(argv[2], true, 8);
     int result = 1;

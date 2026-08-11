@@ -16,7 +16,7 @@ original `GameSetup`, `initGame`, `frameFlip`, and `finishGame` lifecycle.
 | Platform | Existing runtime | Modern CMake status | Next host work |
 | --- | --- | --- | --- |
 | Android | Reconstructed JNI/GLES/OpenSL runtime | Configures for all four ABIs | Move the proven source graph behind CMake |
-| Windows | Legacy Visual Studio/Win32 runtime | Native MSVC preset and SDL3 host | Connect the engine adapter |
+| Windows | Modern SDL3/ANGLE desktop runtime | Complete engine graph, desktop services, audio, widgets, and movies | Continue official-asset gameplay validation alongside Linux |
 | Linux | Modern SDL3/GLES desktop runtime | Complete engine graph, desktop services, audio, widgets, movies, community login, package updates, and on-demand assets | Continue ordinary gameplay validation as new flows are exercised |
 | macOS | Legacy Xcode/Cocoa runtime | Native Clang preset and SDL3 host | Connect the engine adapter |
 
@@ -79,7 +79,9 @@ Set `PLAYGROUND_LANGUAGE`, `PLAYGROUND_COUNTRY`, `PLAYGROUND_LOCATION` (as
 `latitude,longitude`), or `PLAYGROUND_MOTION` (as `azimuth,elevation`) to
 override deterministic desktop defaults. The implementation inventory and its
 validation evidence are maintained in
-[LinuxPlatformGapAnalysis.md](LinuxPlatformGapAnalysis.md).
+[LinuxPlatformGapAnalysis.md](LinuxPlatformGapAnalysis.md). Native MSVC build,
+deployment, and official-data evidence is recorded separately in
+[WindowsRuntimeValidation.md](WindowsRuntimeValidation.md).
 
 `playground-engine-link-probe` links every engine object with whole-archive
 semantics. The SDL engine executable does the same because Lua API libraries
@@ -95,6 +97,37 @@ FFmpeg decoder independently of game Lua.
 Linux engine builds require development packages for SDL3 (or the pinned fetch
 fallback), GLES2, curl, FreeType, OpenSSL, PNG, zlib, and FFmpeg's avcodec,
 avformat, avutil, and swscale libraries.
+
+Windows builds use Visual Studio 2022 and a pinned vcpkg manifest. Bootstrap a
+vcpkg checkout, set `VCPKG_ROOT`, and build the native preset from a Windows
+PowerShell prompt:
+
+```powershell
+cmake --preset windows-msvc
+cmake --build --preset windows-msvc
+./scripts/test_windows_runtime.ps1 -SkipBuild
+```
+
+The Windows runtime uses SDL3 with ANGLE's EGL/OpenGL ES 2 implementation, not
+desktop WGL. CMake deploys SDL3, `libEGL`, `libGLESv2`, and the vcpkg runtime
+dependency closure beside the executables. The verification script fails if
+that graphics closure is incomplete and then exercises the whole-archive
+engine link, headless SDL lifecycle, and persistent desktop services. It can
+also validate immutable official assets and optional audio/movie inputs:
+
+```powershell
+./scripts/test_windows_runtime.ps1 -SkipBuild `
+    -InstallRoot C:\path\to\AppAssets `
+    -AudioAsset asset://assets/sound/voice/sticker/vo_st_109_0001 `
+    -MoviePath C:\path\to\probe.mp4
+```
+
+When invoking the native toolchain through WSL interop, prefer a Windows-local
+source checkout and build directory. MSBuild lowercases dependency paths in a
+few generated records; a case-sensitive `\\wsl.localhost` source tree can
+therefore cause harmless but expensive rebuilds. Runtime paths may still be
+UNC paths, so an immutable AppAssets directory under WSL can be tested without
+copying or modifying it.
 
 `PLAYGROUND_SDL_PROVIDER` accepts `auto`, `system`, or `fetch`. The default
 first uses an installed SDL 3.4 package and otherwise fetches the pinned SDL
@@ -112,10 +145,12 @@ cmake --build --preset android-arm64-v8a
 
 Equivalent presets exist for `armeabi-v7a`, `x86`, and `x86_64`.
 
-The `modernization-platform` workflow compile-checks the SDL3 host on Linux,
-Windows, and macOS, runs its headless lifecycle smoke check on Linux, and checks
-the portable contract on all four Android ABIs. This is a build boundary gate,
-not the deferred engine gameplay test suite.
+The `modernization-platform` workflow builds the complete engine on Linux and
+Windows, bootstraps the pinned Windows dependency graph, exercises the Windows
+engine/link/platform probes, compile-checks the SDL3 host on macOS, and checks
+the portable contract on all four Android ABIs. This is a reproducible platform
+and runtime boundary gate, not a replacement for interactive official-asset
+gameplay validation.
 
 ## Compatibility policy
 

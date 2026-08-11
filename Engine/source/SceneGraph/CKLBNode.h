@@ -85,7 +85,9 @@
 #include "CKLBRendering.h"
 
 
+#ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
+#endif
 #include <stdlib.h>
 #include <math.h>
 

@@ -1,0 +1,14 @@
+{
+  "name": "playgroundoss-modernization",
+  "version-string": "1.0.0",
+  "builtin-baseline": "dc31f86a441067d6c2e9e4ad52988eb41ef4f442",
+  "dependencies": [
+    "angle",
+    "curl",
+    "ffmpeg",
+    "freetype",
+    "libpng",
+    "openssl",
+    "zlib"
+  ]
+}

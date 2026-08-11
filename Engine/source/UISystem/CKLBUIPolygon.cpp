@@ -138,13 +138,13 @@ private:
 typedef char PolygonClientDataMustMatchTargetLayout[
 	(sizeof(p2t::PointClientData) == 0x8) ? 1 : -1];
 typedef char PolygonPointMustMatchTargetLayout[
-	((__SIZEOF_POINTER__ != 8) || (sizeof(p2t::Point) == 0x30)) ? 1 : -1];
+	((KLB_SKIP_SHIPPED_ABI_ASSERTS) || (__SIZEOF_POINTER__ != 8) || (sizeof(p2t::Point) == 0x30)) ? 1 : -1];
 typedef char PolygonPointStorageMustBeNaturallyAligned[
-	((__SIZEOF_POINTER__ != 8) || (offsetof(PolygonPointBlock, points) == 0x10)) ? 1 : -1];
+	((KLB_SKIP_SHIPPED_ABI_ASSERTS) || (__SIZEOF_POINTER__ != 8) || (offsetof(PolygonPointBlock, points) == 0x10)) ? 1 : -1];
 typedef char PolygonPointBlockMustMatchTargetLayout[
-	((__SIZEOF_POINTER__ != 8) || (sizeof(PolygonPointBlock) == 0x5fb0)) ? 1 : -1];
+	((KLB_SKIP_SHIPPED_ABI_ASSERTS) || (__SIZEOF_POINTER__ != 8) || (sizeof(PolygonPointBlock) == 0x5fb0)) ? 1 : -1];
 typedef char PolygonBuilderMustMatchTargetLayout[
-	((__SIZEOF_POINTER__ != 8) || (sizeof(CKLBPolygonBuilder) == 0x60f0)) ? 1 : -1];
+	((KLB_SKIP_SHIPPED_ABI_ASSERTS) || (__SIZEOF_POINTER__ != 8) || (sizeof(CKLBPolygonBuilder) == 0x60f0)) ? 1 : -1];
 
 CKLBLuaPropTask::PROP_V2 CKLBUIPolygon::ms_propItems[] = {
 	UI_BASE_PROP

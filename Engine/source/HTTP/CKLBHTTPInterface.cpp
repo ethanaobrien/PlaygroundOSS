@@ -236,7 +236,7 @@ private:
 	u8* m_innerMessage;
 };
 
-typedef char CHMAC_SHA1_shipped_layout[((__SIZEOF_POINTER__ != 8) || (sizeof(CHMAC_SHA1) == 0x180)) ? 1 : -1];
+typedef char CHMAC_SHA1_shipped_layout[((KLB_SKIP_SHIPPED_ABI_ASSERTS) || (__SIZEOF_POINTER__ != 8) || (sizeof(CHMAC_SHA1) == 0x180)) ? 1 : -1];
 
 bool
 CHMAC_SHA1::HMAC_SHA1(u8* text, int textLength, u8* key, int keyLength, u8* digest)

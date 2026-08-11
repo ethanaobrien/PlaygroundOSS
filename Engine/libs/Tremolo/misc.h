@@ -17,7 +17,13 @@
 
 #ifndef _V_RANDOM_H_
 #define _V_RANDOM_H_
+#ifndef _WIN32
 #include <endian.h>
+#else
+#define LITTLE_ENDIAN 1234
+#define BIG_ENDIAN 4321
+#define BYTE_ORDER LITTLE_ENDIAN
+#endif
 #include "ivorbiscodec.h"
 #include "os_types.h"
 
@@ -187,7 +193,5 @@ static inline ogg_int32_t CLIP_TO_15(ogg_int32_t x) {
 #endif
 
 #endif
-
-
 
 

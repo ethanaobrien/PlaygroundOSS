@@ -35,6 +35,25 @@ jobs:
           ffmpeg libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
           libcurl4-openssl-dev libfreetype-dev libgles2-mesa-dev libpng-dev
           libssl-dev ninja-build pkg-config
+      - name: Restore Windows vcpkg binary cache
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-cache
+          key: windows-vcpkg-${{ hashFiles('vcpkg.json') }}
+      - name: Bootstrap pinned Windows dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "vcpkg"
+          $cache = Join-Path $env:RUNNER_TEMP "vcpkg-cache"
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git $root
+          git -C $root checkout dc31f86a441067d6c2e9e4ad52988eb41ef4f442
+          & (Join-Path $root "bootstrap-vcpkg.bat") -disableMetrics
+          New-Item -ItemType Directory -Force -Path $cache | Out-Null
+          "VCPKG_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VCPKG_BINARY_SOURCES=clear;files,$cache,readwrite" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
       - name: Build
@@ -57,6 +76,14 @@ jobs:
             -i testsrc=size=64x48:rate=10 -t 1 -c:v mpeg4 /tmp/playground-movie.mp4
           ./out/build/linux-release/Engine/modern/runtime/playground-movie-probe \
             /tmp/playground-movie.mp4
+      - name: Exercise Windows engine and platform services
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          ./scripts/test_windows_runtime.ps1
+          -BuildDirectory out/build/windows-msvc
+          -Configuration Release
+          -SkipBuild
 
   android:
     name: Android ${{ matrix.abi }}

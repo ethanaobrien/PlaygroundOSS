@@ -26,7 +26,8 @@ int main(int argc, char **argv) {
         stderr,
         "usage: %s install-root external-root asset-without-extension\n",
         argv[0]);
-    return 64;
+    std::fflush(nullptr);
+    std::_Exit(64);
   }
   if (!SDL_Init(SDL_INIT_AUDIO))
     fail(SDL_GetError());

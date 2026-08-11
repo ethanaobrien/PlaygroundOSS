@@ -20,7 +20,11 @@ typedef unsigned char boolean;
 #define TRUE 1
 
 #ifdef JPEG_INTERNALS
+#ifdef _MSC_VER
+#define INLINE __inline
+#else
 #define INLINE __inline__
+#endif
 #endif
 
 #endif

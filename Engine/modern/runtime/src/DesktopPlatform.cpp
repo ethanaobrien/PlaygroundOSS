@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -36,9 +37,15 @@
 #include <thread>
 #include <vector>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <psapi.h>
+#else
 #include <pthread.h>
 #include <sys/utsname.h>
 #include <unistd.h>
+#endif
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -76,6 +83,101 @@ template <class T> void copyText(const T &text, char *buffer, int size) {
   if (!buffer || size <= 0)
     return;
   std::snprintf(buffer, static_cast<size_t>(size), "%s", text.c_str());
+}
+
+struct DesktopHostInfo {
+  std::string system;
+  std::string release;
+  std::string machine;
+  std::string hostname;
+};
+
+bool getLocalTime(std::time_t time, std::tm &result) {
+#if defined(_WIN32)
+  return localtime_s(&result, &time) == 0;
+#else
+  return localtime_r(&time, &result) != nullptr;
+#endif
+}
+
+DesktopHostInfo getDesktopHostInfo() {
+  DesktopHostInfo result;
+#if defined(_WIN32)
+  result.system = "Windows";
+  OSVERSIONINFOW version{};
+  version.dwOSVersionInfoSize = sizeof(version);
+  using RtlGetVersionFunction = LONG(WINAPI *)(OSVERSIONINFOW *);
+  HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  auto rtlGetVersion = ntdll ? reinterpret_cast<RtlGetVersionFunction>(
+                                  GetProcAddress(ntdll, "RtlGetVersion"))
+                             : nullptr;
+  if (rtlGetVersion && rtlGetVersion(&version) == 0) {
+    result.release = std::to_string(version.dwMajorVersion) + "." +
+                     std::to_string(version.dwMinorVersion) + "." +
+                     std::to_string(version.dwBuildNumber);
+  } else {
+    result.release = "unknown";
+  }
+  SYSTEM_INFO systemInfo{};
+  GetNativeSystemInfo(&systemInfo);
+  switch (systemInfo.wProcessorArchitecture) {
+  case PROCESSOR_ARCHITECTURE_AMD64:
+    result.machine = "x86_64";
+    break;
+  case PROCESSOR_ARCHITECTURE_ARM64:
+    result.machine = "arm64";
+    break;
+  case PROCESSOR_ARCHITECTURE_INTEL:
+    result.machine = "x86";
+    break;
+  default:
+    result.machine = "unknown";
+    break;
+  }
+  char hostname[MAX_COMPUTERNAME_LENGTH + 1]{};
+  DWORD hostnameLength = sizeof(hostname);
+  if (GetComputerNameA(hostname, &hostnameLength))
+    result.hostname.assign(hostname, hostnameLength);
+  else
+    result.hostname = "windows-desktop";
+#else
+  struct utsname system{};
+  if (uname(&system) == 0) {
+    result.system = system.sysname;
+    result.release = system.release;
+    result.machine = system.machine;
+  } else {
+    result.system = "Linux";
+    result.release = "unknown";
+    result.machine = "unknown";
+  }
+  char hostname[256]{};
+  if (gethostname(hostname, sizeof(hostname) - 1) == 0)
+    result.hostname = hostname;
+  else
+    result.hostname = "linux-desktop";
+#endif
+  return result;
+}
+
+std::string getExecutablePath() {
+#if defined(_WIN32)
+  std::vector<char> path(4096);
+  while (true) {
+    DWORD length = GetModuleFileNameA(nullptr, path.data(),
+                                     static_cast<DWORD>(path.size()));
+    if (!length)
+      return {};
+    if (length < path.size() - 1)
+      return std::string(path.data(), length);
+    path.resize(path.size() * 2);
+  }
+#else
+  char path[4096]{};
+  const ssize_t length = readlink("/proc/self/exe", path, sizeof(path) - 1);
+  return length > 0 ? std::string(path, static_cast<size_t>(length))
+                    : std::string();
+#endif
 }
 
 class DesktopReadStream final : public IReadStream {
@@ -608,10 +710,23 @@ bool DesktopPlatform::icreateEmptyFile(const char *n) {
 int DesktopPlatform::irename(const char *a, const char *b) {
   const std::string source = resolvePath(a, nullptr);
   const std::string destination = resolvePath(b, nullptr);
+#if defined(_WIN32)
+  const bool moved = MoveFileExA(source.c_str(), destination.c_str(),
+                                 MOVEFILE_REPLACE_EXISTING |
+                                     MOVEFILE_WRITE_THROUGH) != 0;
+  const DWORD moveError = moved ? ERROR_SUCCESS : GetLastError();
+  const int result = moved ? 0 : -1;
+  if (result)
+    std::fprintf(stderr,
+                 "asset download: cannot publish %s -> %s: Windows error %lu\n",
+                 source.c_str(), destination.c_str(),
+                 static_cast<unsigned long>(moveError));
+#else
   const int result = std::rename(source.c_str(), destination.c_str());
   if (result)
     std::fprintf(stderr, "asset download: cannot publish %s -> %s: %s\n",
                  source.c_str(), destination.c_str(), std::strerror(errno));
+#endif
   return result;
 }
 const char *DesktopPlatform::getBundleVersion() { return "9.11-desktop"; }
@@ -706,6 +821,13 @@ void DesktopPlatform::copyToClipboard(const char *text) {
     logging("clipboard write failed: %s", SDL_GetError());
 }
 double DesktopPlatform::getUsedMemorySize() {
+#if defined(_WIN32)
+  PROCESS_MEMORY_COUNTERS counters{};
+  return GetProcessMemoryInfo(GetCurrentProcess(), &counters,
+                              sizeof(counters))
+             ? static_cast<double>(counters.WorkingSetSize)
+             : 0.0;
+#else
   std::ifstream status("/proc/self/statm");
   uint64_t pages = 0;
   uint64_t resident = 0;
@@ -713,19 +835,28 @@ double DesktopPlatform::getUsedMemorySize() {
     return 0.0;
   return static_cast<double>(resident) *
          static_cast<double>(sysconf(_SC_PAGESIZE));
+#endif
 }
 double DesktopPlatform::getFreeMemorySize() {
+#if defined(_WIN32)
+  MEMORYSTATUSEX status{};
+  status.dwLength = sizeof(status);
+  return GlobalMemoryStatusEx(&status)
+             ? static_cast<double>(status.ullAvailPhys)
+             : 0.0;
+#else
   const long pages = sysconf(_SC_AVPHYS_PAGES);
   const long pageSize = sysconf(_SC_PAGESIZE);
   return pages < 0 || pageSize < 0
              ? 0.0
              : static_cast<double>(pages) * static_cast<double>(pageSize);
+#endif
 }
 bool DesktopPlatform::getSMode() { return false; }
 void DesktopPlatform::getDateTimeNow(char *b, int n) {
   std::time_t t = std::time(nullptr);
   std::tm tm{};
-  localtime_r(&t, &tm);
+  getLocalTime(t, tm);
   std::strftime(b, n, "%Y-%m-%d %H:%M:%S", &tm);
 }
 double DesktopPlatform::getUNIXTimeNow() {
@@ -800,21 +931,18 @@ u32 DesktopPlatform::getPhysicalMemKB() {
                    static_cast<uint64_t>(megabytes) * 1024, UINT32_MAX));
 }
 char *DesktopPlatform::getDeviceIntegrityInfo(const char *request) {
-  struct utsname system{};
-  uname(&system);
-  char hostname[256]{};
-  gethostname(hostname, sizeof(hostname) - 1);
+  const DesktopHostInfo system = getDesktopHostInfo();
 
   std::map<std::string, std::string> properties;
   properties["ro.build.version.release"] = system.release;
   properties["ro.product.name"] = "PlaygroundOSS Desktop";
   properties["ro.product.manufacturer"] = "Community";
   properties["ro.product.brand"] = "PlaygroundOSS";
-  properties["ro.product.device"] = hostname;
+  properties["ro.product.device"] = system.hostname;
   properties["ro.product.model"] = system.machine;
   properties["ro.product.board"] = system.machine;
   properties["ro.build.fingerprint"] =
-      std::string(system.sysname) + "/" + system.release + "/" + system.machine;
+      system.system + "/" + system.release + "/" + system.machine;
   properties["ro.build.tags"] = "desktop-release";
   properties["Hardware"] = system.machine;
   properties["basePath"] = m_installRoot;
@@ -827,14 +955,10 @@ char *DesktopPlatform::getDeviceIntegrityInfo(const char *request) {
   CKLBUtility::sha1File(unitDatabase.c_str(), databaseHash, 40);
   properties["db_sha1"] = databaseHash[0] ? databaseHash : "NOT_FOUND";
 
-  char executable[4096]{};
-  const ssize_t executableLength =
-      readlink("/proc/self/exe", executable, sizeof(executable) - 1);
+  const std::string executable = getExecutablePath();
   char executableHash[64]{};
-  if (executableLength > 0) {
-    executable[executableLength] = '\0';
-    CKLBUtility::sha1File(executable, executableHash, 40);
-  }
+  if (!executable.empty())
+    CKLBUtility::sha1File(executable.c_str(), executableHash, 40);
   properties["GreatStockOption"] =
       executableHash[0] ? executableHash : "NOT_FOUND";
   properties["signature"] = sha512Hex(m_deviceId.data(), m_deviceId.size());
@@ -902,20 +1026,18 @@ const char *DesktopPlatform::getFullPath(const char *p, bool *ro) {
 }
 const char *DesktopPlatform::getPlatform() {
   static const std::string platform = [] {
-    struct utsname system{};
+    const DesktopHostInfo system = getDesktopHostInfo();
     std::time_t now = std::time(nullptr);
     std::tm localTime{};
     char timeZone[64] = "UTC";
-    if (localtime_r(&now, &localTime))
+    if (getLocalTime(now, localTime))
       std::strftime(timeZone, sizeof(timeZone), "%Z", &localTime);
     // The SIF network protocol only defines platform types for iOS and
     // Android. Keep the real desktop kernel in the version field while
     // presenting the compatible Android OS family to game scripts and HTTP
     // header construction.
-    if (uname(&system) != 0)
-      return std::string("Android;Desktop Linux unknown;") + timeZone;
-    return std::string("Android;Desktop Linux ") + system.machine + " " +
-           system.release + ";" + timeZone;
+    return std::string("Android;Desktop ") + system.system + " " +
+           system.machine + " " + system.release + ";" + timeZone;
   }();
   return platform.c_str();
 }
@@ -1088,9 +1210,14 @@ void DesktopPlatform::breakThread(void *handle) {
   if (!handle)
     return;
   auto *thread = static_cast<DesktopThread *>(handle);
+#if defined(_WIN32)
+  if (!TerminateThread(thread->thread.native_handle(), 0))
+    logging("desktop worker cancellation failed: %lu", GetLastError());
+#else
   const int result = pthread_cancel(thread->thread.native_handle());
   if (result != 0)
     logging("desktop worker cancellation failed: %d", result);
+#endif
 }
 int DesktopPlatform::genUserID(char *b, int n) {
   const std::string id = randomIdentifier();

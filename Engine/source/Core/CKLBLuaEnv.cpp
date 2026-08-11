@@ -32,11 +32,13 @@ extern void KLBRegisterObjectName(void* object, const char* className, int flags
 #ifdef _WIN32
 #include <Windows.h>
 
+#ifndef PLAYGROUND_MODERN_RUNTIME
 #ifdef DEBUG_LUAEDIT
 #include "RemoteDebugger.hpp"
 #pragma comment(lib, "rdbglua52dll.lib")
 #else
 #pragma comment(lib, "lua52.lib")
+#endif
 #endif
 
 #endif
@@ -556,9 +558,9 @@ CKLBLuaEnv::loadScript(const char *scriptUrl)
 	const char * installPrefix = "file://install/";
 	const size_t installPrefixLength = 15;
 	int prefixComparison = strncmp(scriptUrl, installPrefix, installPrefixLength);
-	CPFInterface& interface = CPFInterface::getInstance();
+	CPFInterface& platformInterface = CPFInterface::getInstance();
 	const bool isInstalledScript = (prefixComparison == 0);
-	interface.platform().leaveBreadcrumb(
+	platformInterface.platform().leaveBreadcrumb(
 		scriptUrl + (isInstalledScript ? installPrefixLength : 0));
 	CPFInterface::getInstance().platform().registerScriptSource(
 		(const char *)buf, ssize, scriptUrl);

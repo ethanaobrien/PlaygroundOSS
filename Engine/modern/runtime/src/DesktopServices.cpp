@@ -15,6 +15,8 @@
 #include "NotificationManager.h"
 #include "assert_klb.h"
 
+#include <SDL3/SDL_messagebox.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -27,13 +29,15 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <spawn.h>
 #include <string>
 #include <thread>
 
+#if !defined(_WIN32)
+#include <spawn.h>
 #include <sys/wait.h>
 
 extern char **environ;
+#endif
 
 namespace {
 
@@ -104,6 +108,10 @@ struct DesktopNotification {
 
 void showDesktopNotification(const std::string &title,
                              const std::string &message) {
+#if defined(_WIN32)
+  SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, title.c_str(),
+                           message.c_str(), nullptr);
+#else
   pid_t process = 0;
   char *arguments[] = {const_cast<char *>("notify-send"),
                        const_cast<char *>(title.c_str()),
@@ -113,6 +121,7 @@ void showDesktopNotification(const std::string &title,
     int status;
     waitpid(process, &status, 0);
   }
+#endif
 }
 
 class DesktopNotificationManager final : public INotificationManager {
@@ -169,7 +178,11 @@ public:
     notify(1, 1, "desktop notifications enabled");
   }
   bool getEnableNotification() override {
+#if defined(_WIN32)
+    return true;
+#else
     return std::filesystem::exists("/usr/bin/notify-send");
+#endif
   }
   void getRemoteToken(char *buffer, int bufferLength) override {
     if (!buffer || bufferLength <= 0)

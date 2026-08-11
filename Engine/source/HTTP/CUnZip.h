@@ -21,7 +21,9 @@
 
 #include "zlib.h"
 #include "unzip.h"
+#if defined(_WIN32) && !defined(PLAYGROUND_MODERN_RUNTIME)
 #pragma comment(lib, "zlib.lib")
+#endif
 
 #include "BaseType.h"
 #include "ITmpFile.h"

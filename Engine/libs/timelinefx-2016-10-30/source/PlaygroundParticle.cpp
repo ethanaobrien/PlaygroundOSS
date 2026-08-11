@@ -12,7 +12,11 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#ifdef _WIN32
+#define strcasecmp _stricmp
+#else
 #include <strings.h>
+#endif
 
 // Particle atlases use the target's embedded MaxRects implementation. Keep
 // this in the particle translation unit: the shipped binary emits the packer

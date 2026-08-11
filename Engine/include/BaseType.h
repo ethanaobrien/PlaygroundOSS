@@ -22,6 +22,16 @@
 
 #ifdef _WIN32
 #pragma warning(disable:4996)
+#ifndef __SIZEOF_POINTER__
+#ifdef _WIN64
+#define __SIZEOF_POINTER__ 8
+#else
+#define __SIZEOF_POINTER__ 4
+#endif
+#endif
+#define KLB_SKIP_SHIPPED_ABI_ASSERTS 1
+#else
+#define KLB_SKIP_SHIPPED_ABI_ASSERTS 0
 #endif
 
 //

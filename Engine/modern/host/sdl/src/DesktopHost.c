@@ -331,6 +331,9 @@ int playgroundDesktopHostRun(
     host.running = true;
 
     initFlags = SDL_INIT_EVENTS;
+    if (config->graphicsProfile == PLAYGROUND_DESKTOP_GRAPHICS_OPENGL_ES) {
+        SDL_SetHint(SDL_HINT_VIDEO_FORCE_EGL, "1");
+    }
     if (config->audio) {
         initFlags |= SDL_INIT_AUDIO;
     }

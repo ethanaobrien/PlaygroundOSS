@@ -18,10 +18,12 @@
 #include <string.h>
 #ifdef _WIN32
 #include <Windows.h>
+#include <io.h>
+#else
+#include <unistd.h>
 #endif
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <unistd.h>
 #include <fcntl.h>
 
 #define IsShiftJIS(x) ((BYTE)((x ^ 0x20) - 0xA1) <= 0x3B)

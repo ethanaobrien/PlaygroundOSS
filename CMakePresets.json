@@ -48,10 +48,15 @@
       "binaryDir": "${sourceDir}/out/build/${presetName}",
       "generator": "Visual Studio 17 2022",
       "architecture": "x64",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
         "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "PLAYGROUND_BUILD_ENGINE_RUNTIME": "ON",
+        "VCPKG_TARGET_TRIPLET": "x64-windows"
       }
     },
     {

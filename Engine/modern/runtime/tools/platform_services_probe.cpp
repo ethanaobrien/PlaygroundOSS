@@ -35,7 +35,8 @@ s32 probeThread(void *, void *) {
 int main(int argc, char **argv) {
   if (argc != 2) {
     std::fprintf(stderr, "usage: %s external-root\n", argv[0]);
-    return 64;
+    std::fflush(nullptr);
+    std::_Exit(64);
   }
 
   std::string firstDeviceId;

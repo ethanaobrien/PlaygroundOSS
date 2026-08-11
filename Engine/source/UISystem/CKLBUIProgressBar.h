@@ -18,6 +18,13 @@
 
 #include "CKLBUITask.h"
 
+#if defined(_MSC_VER)
+#include <float.h>
+#define KLB_ISNANF(value) (_isnan(value) != 0)
+#else
+#define KLB_ISNANF(value) __isnanf(value)
+#endif
+
 /*!
 * \class CKLBUIProgressBar
 * \brief Progress Bar Task Class
@@ -127,7 +134,7 @@ public:
 				start = 0.0f;
 			} else if (start > 1.0f) {
 				start = 1.0f;
-			} else if (__isnanf(start)) {
+			} else if (KLB_ISNANF(start)) {
 				start = 0.0f;
 			}
 			m_fStart = start;
@@ -143,7 +150,7 @@ public:
 				end = 0.0f;
 			} else if (end > 1.0f) {
 				end = 1.0f;
-			} else if (__isnanf(end)) {
+			} else if (KLB_ISNANF(end)) {
 				end = 0.0f;
 			}
 			m_fEnd = end;
@@ -171,7 +178,7 @@ public:
 				value = 0.0f;
 			} else if (value > 1.0f) {
 				value = 1.0f;
-			} else if (__isnanf(value)) {
+			} else if (KLB_ISNANF(value)) {
 				value = 0.0f;
 			}
 			m_fValue = value;
@@ -271,5 +278,7 @@ private:
 	static PROP_V2		ms_propItems[];
 	static const u16	ms_indices[];
 };
+
+#undef KLB_ISNANF
 
 #endif // CKLBUIProgressBar_h

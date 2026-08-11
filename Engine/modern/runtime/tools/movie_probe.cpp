@@ -6,15 +6,18 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <thread>
 
 int main(int argc, char **argv) {
   if (argc != 2) {
     std::fprintf(stderr, "usage: %s movie-path\n", argv[0]);
-    return 64;
+    std::fflush(nullptr);
+    std::_Exit(64);
   }
-  playground::runtime::DesktopPlatform platform(".",
-                                                "/tmp/playground-movie-probe");
+  const std::filesystem::path externalRoot =
+      std::filesystem::temp_directory_path() / "playground-movie-probe";
+  playground::runtime::DesktopPlatform platform(".", externalRoot.string());
   CPFInterface::getInstance().setPlatformRequest(&platform);
   IMovieInterface *movie = platform.createMoviePlayer(argv[1], -1, -1);
   if (!movie || !movie->isInfoReady()) {
