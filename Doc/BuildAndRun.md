@@ -18,7 +18,8 @@ configuration may download the SDL 3.4.12 source archive pinned in
 
 ## Application assets
 
-The full Linux and Windows game requires an extracted `AppAssets.zip`. Official
+The full Linux development build and explicit-root Windows development run
+require an extracted `AppAssets.zip`. Official
 application assets are immutable inputs and are not included in this repository.
 Extract them outside the source and build trees. The path supplied as
 `--install-root` must directly contain `start.lua`, `assets`, `db`, `m_boot`,
@@ -206,6 +207,12 @@ New-Item -ItemType Directory -Force $external | Out-Null
     --install-root C:\path\to\AppAssets `
     --external-root $external
 ```
+
+For distribution, build the Inno Setup package described in
+[`WindowsInstaller.md`](WindowsInstaller.md). An installed copy launches with
+no arguments: it verifies and atomically extracts its bundled `AppAssets.zip`
+to `%LOCALAPPDATA%\PlaygroundOSS-SIF\install`, and uses the persistent sibling
+`external` directory for downloaded/runtime data.
 
 WSL interoperability can launch the native Windows binaries and may pass a UNC
 AppAssets path such as `\\wsl.localhost\FedoraLinux-43\tmp\sif-appassets`.

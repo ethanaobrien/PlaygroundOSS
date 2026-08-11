@@ -1,6 +1,10 @@
 #include "Playground/Host/DesktopHost.h"
 #include "Playground/Runtime/DesktopPlatform.h"
 
+#if defined(_WIN32)
+#include "WindowsAssetBootstrap.h"
+#endif
+
 #include "CPFInterface.h"
 
 #include <SDL3/SDL_keycode.h>
@@ -129,7 +133,11 @@ void onResize(void* opaque, PlaygroundDesktopHost*, int width, int height)
 
 int main(int argc, char** argv)
 {
+#if defined(_WIN32)
+    playground::windows::attachParentConsole();
+#endif
     EngineContext context;
+    bool installRootSpecified = false;
     PlaygroundDesktopHostConfig config = playgroundDesktopHostDefaultConfig();
     PlaygroundDesktopHostCallbacks callbacks{};
     callbacks.onStart = onStart;
@@ -148,6 +156,7 @@ int main(int argc, char** argv)
     for(int i = 1; i < argc; ++i) {
         if(!std::strcmp(argv[i], "--install-root") && i + 1 < argc) {
             context.installRoot = argv[++i];
+            installRootSpecified = true;
         } else if(!std::strcmp(argv[i], "--external-root") && i + 1 < argc) {
             context.externalRoot = argv[++i];
         } else if(!std::strcmp(argv[i], "--frames") && i + 1 < argc) {
@@ -157,6 +166,20 @@ int main(int argc, char** argv)
             return 64;
         }
     }
+#if defined(_WIN32)
+    if(!installRootSpecified) {
+        playground::windows::BootstrapOptions options;
+        playground::windows::RuntimePaths paths;
+        std::string error;
+        if(!playground::windows::getDefaultBootstrapOptions(options, error) ||
+           !playground::windows::prepareBundledAssets(options, paths, error)) {
+            playground::windows::showBootstrapError(error);
+            return 1;
+        }
+        context.installRoot = paths.installRoot;
+        if(context.externalRoot == "playground-user") context.externalRoot = paths.externalRoot;
+    }
+#endif
     int result = playgroundDesktopHostRun(&config, &callbacks, &context);
     std::fflush(nullptr);
     // Several legacy static destructors assume a live registered client and

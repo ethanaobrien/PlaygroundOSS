@@ -29,8 +29,23 @@ if(WIN32)
 endif()
 
 if(TARGET playground_engine_runtime)
-    add_executable(playground-sdl-engine tools/sdl_engine_main.cpp)
+    set(playground_sdl_engine_sources tools/sdl_engine_main.cpp)
+    if(WIN32)
+        # mt.exe cannot consume a manifest through a WSL UNC source path. Copy
+        # it into the native build tree before Visual Studio embeds it.
+        set(playground_windows_manifest
+            "${CMAKE_CURRENT_BINARY_DIR}/windows-runtime.manifest")
+        configure_file(windows-runtime.manifest
+            "${playground_windows_manifest}" COPYONLY)
+        list(APPEND playground_sdl_engine_sources
+            src/WindowsAssetBootstrap.cpp
+            "${playground_windows_manifest}"
+        )
+    endif()
+    add_executable(playground-sdl-engine ${playground_sdl_engine_sources})
     target_compile_features(playground-sdl-engine PRIVATE cxx_std_17)
+    target_include_directories(playground-sdl-engine PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
     target_link_libraries(playground-sdl-engine
         PRIVATE
             Playground::DesktopHost
@@ -38,6 +53,9 @@ if(TARGET playground_engine_runtime)
             Playground::PlatformContract
     )
     if(WIN32)
+        set_target_properties(playground-sdl-engine PROPERTIES WIN32_EXECUTABLE TRUE)
+        target_link_options(playground-sdl-engine PRIVATE /ENTRY:mainCRTStartup)
+        target_link_libraries(playground-sdl-engine PRIVATE ole32 shell32)
         add_custom_command(TARGET playground-sdl-engine POST_BUILD
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "$<TARGET_FILE:SDL3::SDL3>"
@@ -46,5 +64,16 @@ if(TARGET playground_engine_runtime)
                 "$<TARGET_FILE:unofficial::angle::libEGL>"
                 "$<TARGET_FILE_DIR:playground-sdl-engine>"
             VERBATIM)
+
+        add_executable(playground-windows-bootstrap-probe
+            tools/windows_bootstrap_probe.cpp
+            src/WindowsAssetBootstrap.cpp
+            "${playground_windows_manifest}"
+        )
+        target_compile_features(playground-windows-bootstrap-probe PRIVATE cxx_std_17)
+        target_include_directories(playground-windows-bootstrap-probe PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        target_link_libraries(playground-windows-bootstrap-probe PRIVATE
+            playground_engine_runtime ole32 shell32)
     endif()
 endif()

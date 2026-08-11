@@ -19,10 +19,29 @@ function Invoke-Checked {
         [string[]]$Arguments
     )
 
-    Write-Host "+ $Program $($Arguments -join ' ')"
-    & $Program @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code ${LASTEXITCODE}: $Program"
+    $resolvedProgram = $Program
+    if (-not [System.IO.Path]::IsPathRooted($Program) -and
+        -not $Program.Contains([System.IO.Path]::DirectorySeparatorChar) -and
+        -not $Program.Contains([System.IO.Path]::AltDirectorySeparatorChar)) {
+        $resolvedProgram = (Get-Command $Program -ErrorAction Stop).Source
+    }
+
+    Write-Host "+ $resolvedProgram $($Arguments -join ' ')"
+    $quotedArguments = @($Arguments | Where-Object { $null -ne $_ } | ForEach-Object {
+        '"' + $_.Replace('"', '\"') + '"'
+    })
+    $startParameters = @{
+        FilePath = $resolvedProgram
+        NoNewWindow = $true
+        Wait = $true
+        PassThru = $true
+    }
+    if ($quotedArguments.Count -gt 0) {
+        $startParameters.ArgumentList = $quotedArguments
+    }
+    $process = Start-Process @startParameters
+    if ($process.ExitCode -ne 0) {
+        throw "Command failed with exit code $($process.ExitCode): $Program"
     }
 }
 
@@ -44,6 +63,7 @@ $requiredFiles = @(
     (Join-Path $runtime "playground-platform-services-probe.exe"),
     (Join-Path $hostDirectory "playground-desktop-host.exe"),
     (Join-Path $hostDirectory "playground-sdl-engine.exe"),
+    (Join-Path $hostDirectory "playground-windows-bootstrap-probe.exe"),
     (Join-Path $hostDirectory "SDL3.dll"),
     (Join-Path $hostDirectory "libEGL.dll"),
     (Join-Path $hostDirectory "libGLESv2.dll")
@@ -53,6 +73,9 @@ foreach ($file in $requiredFiles) {
         throw "Required Windows runtime artifact is missing: $file"
     }
 }
+
+& (Join-Path $PSScriptRoot "test_windows_bootstrap.ps1") `
+    -BuildDirectory $build -Configuration $Configuration -SkipBuild
 
 $scratch = Join-Path ([System.IO.Path]::GetTempPath()) (
     "playground-windows-probe-" + [Guid]::NewGuid().ToString("N"))
