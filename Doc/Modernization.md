@@ -17,7 +17,7 @@ original `GameSetup`, `initGame`, `frameFlip`, and `finishGame` lifecycle.
 | --- | --- | --- | --- |
 | Android | Reconstructed JNI/GLES/OpenSL runtime | Configures for all four ABIs | Move the proven source graph behind CMake |
 | Windows | Legacy Visual Studio/Win32 runtime | Native MSVC preset and SDL3 host | Connect the engine adapter |
-| Linux | Modern SDL3/GLES desktop runtime | Complete engine graph, desktop services, audio, widgets, and movies build; official assets reach `m_login/start.lua` | Interactive network/gameplay validation against available community services |
+| Linux | Modern SDL3/GLES desktop runtime | Complete engine graph, desktop services, audio, widgets, movies, community login, package updates, and on-demand assets | Continue ordinary gameplay validation as new flows are exercised |
 | macOS | Legacy Xcode/Cocoa runtime | Native Clang preset and SDL3 host | Connect the engine adapter |
 
 ## Configure and build
@@ -66,6 +66,15 @@ configurable location/motion data. Purchases and rewarded ads cannot honestly
 succeed on a desktop community build; those adapters issue the engine's normal
 failure callbacks instead of silently succeeding or disappearing.
 
+The immutable official application assets have also been exercised
+interactively against NPPS4. The desktop runtime presents the protocol's
+Android platform family, completes the Android-compatible ATT callback used by
+the login chain, downloads the initial package set, and publishes on-demand
+assets atomically from their trailing-underscore temporary files. Virtual
+paths are resolved on both sides of that rename, so downloaded external assets
+immediately override their install-root counterparts exactly as ordinary
+`asset://` reads expect.
+
 Set `PLAYGROUND_LANGUAGE`, `PLAYGROUND_COUNTRY`, `PLAYGROUND_LOCATION` (as
 `latitude,longitude`), or `PLAYGROUND_MOTION` (as `azimuth,elevation`) to
 override deterministic desktop defaults. The implementation inventory and its
@@ -78,7 +87,8 @@ register through static constructors and must not be discarded as apparently
 unreferenced archive members. `playground-stream-probe` provides a focused
 encrypted-read diagnostic. `playground-platform-services-probe` covers durable
 identity/state, RSA/AES, request headers, encrypted-write round trips, memory,
-threads, and text input. `playground-audio-probe` decodes an engine audio asset
+threads, text input, and temporary-to-final on-demand asset publication.
+`playground-audio-probe` decodes an engine audio asset
 through the real SDL output path, and `playground-movie-probe` validates the
 FFmpeg decoder independently of game Lua.
 

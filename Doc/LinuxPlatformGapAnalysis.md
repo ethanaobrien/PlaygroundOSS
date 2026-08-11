@@ -7,6 +7,11 @@ contract. The complete graph links, the SDL3/GLES2 lifecycle runs, encrypted
 official assets load, and fresh 6,000-frame Debug and Release runs advance
 through `start.lua`, `m_boot/start.lua`, and `m_login/start.lua`. Both runs exit
 normally and create the expected SQLite files in an isolated external root.
+Interactive runs using the same immutable archive and NPPS4 now pass the title
+transition, login/bootstrap downloads, menu navigation exercised by the user,
+and concurrent on-demand texture downloads. HTTP 200 responses are written to
+the external root, closed at their complete byte counts, and atomically
+published from `name_` to `name` before the completion callback.
 
 `DesktopPlatform` implements the complete 120-method platform-request surface.
 The size of that interface is misleading: most methods are small adapters, and
@@ -28,7 +33,8 @@ The modern Linux boundary provides:
 - SDL3 windowing, GLES2 context creation, high-DPI framebuffer sizing,
   pointer/back-key/activity/resize delivery, and orderly shutdown;
 - install/external/asset virtual paths, ordinary and temporary files,
-  directory creation, free-space reporting, and shipped asset decryption;
+  directory creation, free-space reporting, shipped asset decryption, and
+  virtual-path-aware atomic publication of downloaded assets;
 - FreeType-backed engine fonts and text metrics;
 - libcurl initialization, request setup, callbacks, form data, execution, and
   status retrieval;
@@ -59,6 +65,8 @@ not block the login scene.
 | Official encrypted Ogg through SDL mixer | Pass | Pass |
 | Synthetic FFmpeg MPEG-4 movie | Pass | Pass |
 | Immutable official assets, 6,000 frames | `m_login/start.lua`, clean exit | `m_login/start.lua`, clean exit |
+| NPPS4 title/login/package flow | Same code path; not separately rerun | Interactive pass |
+| Concurrent on-demand textures | Publication probe pass | HTTP/write/publish pass |
 
 ## Honest platform distinctions
 
@@ -70,6 +78,6 @@ not block the login scene.
   variables; they do not fabricate host sensors.
 - Desktop notifications use `notify-send` when installed. The generated remote
   token is a stable local identifier, not a push-provider registration.
-- Further login, download, story, and live-show validation depends on reachable
-  community network endpoints and user interaction. It is integration testing,
-  not unfinished platform implementation.
+- Additional story, live-show, and less common menu validation depends on
+  reachable community endpoints and user interaction. It is ongoing
+  integration coverage, not unfinished platform implementation.
