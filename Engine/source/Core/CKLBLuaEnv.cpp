@@ -759,7 +759,12 @@ CKLBLuaEnv::exitMaintenance()
 void
 CKLBLuaEnv::errMsg(const char *str)
 {
+#if defined(PLAYGROUND_RUNTIME_DIAGNOSTICS)
+	CPFInterface::getInstance().platform().logging(
+		"Lua runtime error: %s", str ? str : "<no error message>");
+#else
 	(void)str;
+#endif
     lua_Debug dbg;
     if(lua_getstack(m_L, 1, &dbg)) {
         lua_getinfo(m_L, "Sl", &dbg);

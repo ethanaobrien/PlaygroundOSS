@@ -224,6 +224,14 @@ CKLBDownloadManager::finishCheck(CKLBDLTask* task)
 		return true;
 	}
 
+	fprintf(stderr,
+		"download batch failed: type=%d http=%d curl=%d expected=%lld "
+		"received=%lld url=%s local=%s\n",
+		error->m_errorType, error->m_httpStatus, error->m_curlStatus,
+		(long long)error->m_size, (long long)error->m_received,
+		error->m_url ? error->m_url : "<unknown URL>",
+		error->m_localPath ? error->m_localPath : "<unknown path>");
+
 	m_client->callback(
 		DL_ERROR, error->m_errorType, error->m_httpStatus, error->m_curlStatus,
 		0.0, 0.0);

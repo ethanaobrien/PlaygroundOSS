@@ -5,6 +5,7 @@
 
 #include <SDL3/SDL_keycode.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -47,6 +48,15 @@ int main(int argc, char **argv) {
                "device ID is not a UUID"))
       return 1;
     firstDeviceId = buffer.data();
+
+    const std::string platformDescription = platform.getPlatform();
+    if (!check(platformDescription.rfind("Android;", 0) == 0,
+               "platform description does not use the SIF Android family"))
+      return 1;
+    if (!check(std::count(platformDescription.begin(),
+                          platformDescription.end(), ';') == 2,
+               "platform description does not contain OS/version/timezone"))
+      return 1;
 
     char encryptedPayload[] = "encrypted desktop stream";
     const char expectedPayload[] = "encrypted desktop stream";

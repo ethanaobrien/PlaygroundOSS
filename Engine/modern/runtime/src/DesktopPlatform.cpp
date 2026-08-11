@@ -254,8 +254,12 @@ public:
 
 class DesktopTmpFile final : public ITmpFile {
 public:
-  explicit DesktopTmpFile(const std::string &path)
-      : m_file(std::fopen(path.c_str(), "wb")) {}
+  explicit DesktopTmpFile(const std::string &path) {
+    std::error_code error;
+    std::filesystem::create_directories(
+        std::filesystem::path(path).parent_path(), error);
+    m_file = error ? nullptr : std::fopen(path.c_str(), "wb");
+  }
   ~DesktopTmpFile() override { closeTmp(); }
   size_t writeTmp(void *p, size_t n) override {
     return m_file ? std::fwrite(p, 1, n, m_file) : 0;
@@ -292,10 +296,10 @@ std::string withSeparator(std::string path) {
 
 constexpr char PublicKey[] =
     "-----BEGIN PUBLIC KEY-----\n"
-    "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDBpUMUVjHWNI5q3ZRjF1vPnh+m\n"
-    "aEGdbZkeosVvzLytBy9eYJ9qLYyFXxOY1LiggWyOLS+xEVMpV3A6frI3VewkVuCw\n"
-    "na52ssCZcQSBA03Ykeb/cfHk5ChsDUP1vmAbloMb9f++Dow6Z4yubFWmBVMCHA6l\n"
-    "fiUDPHjI8JqG56XJKQIDAQAB\n"
+    "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDE0RNd6047aeBirzVb61DolatY\n"
+    "YWpaEUIPugOIkobHDc9qVR5iliMLyC0ErXO1siLBwN+U3zaDVOa5uhXbiS7uYq5c\n"
+    "cpxComxTnZtcn/b+mKDpYWLaC0Gv7UoiT8rpNqN3Vko645usz9OFc4VciijsHGRP\n"
+    "XmmmoP6qykfI/vba8wIDAQAB\n"
     "-----END PUBLIC KEY-----\n";
 
 std::string randomIdentifier() {
@@ -708,10 +712,12 @@ void DesktopPlatform::getDateTimeNow(char *b, int n) {
 double DesktopPlatform::getUNIXTimeNow() {
   return static_cast<double>(std::time(nullptr));
 }
-void DesktopPlatform::requestExtensionEvent(const char *,
-                                            ExtensionEventArgs *) {
-  logging("desktop extension event requested; no matching desktop extension is "
-          "registered");
+void DesktopPlatform::requestExtensionEvent(const char *eventName,
+                                            ExtensionEventArgs *arguments) {
+  logging("desktop extension event requested: %s (%zu arguments); no matching "
+          "desktop extension is registered",
+          eventName ? eventName : "<unnamed>",
+          arguments ? arguments->size() : 0U);
 }
 void DesktopPlatform::savePng2Album(const char *path) {
   if (!path || !path[0])
@@ -878,9 +884,19 @@ const char *DesktopPlatform::getFullPath(const char *p, bool *ro) {
 const char *DesktopPlatform::getPlatform() {
   static const std::string platform = [] {
     struct utsname system{};
+    std::time_t now = std::time(nullptr);
+    std::tm localTime{};
+    char timeZone[64] = "UTC";
+    if (localtime_r(&now, &localTime))
+      std::strftime(timeZone, sizeof(timeZone), "%Z", &localTime);
+    // The SIF network protocol only defines platform types for iOS and
+    // Android. Keep the real desktop kernel in the version field while
+    // presenting the compatible Android OS family to game scripts and HTTP
+    // header construction.
     if (uname(&system) != 0)
-      return std::string("Linux");
-    return std::string("Linux;") + system.machine + " " + system.release;
+      return std::string("Android;Desktop Linux unknown;") + timeZone;
+    return std::string("Android;Desktop Linux ") + system.machine + " " +
+           system.release + ";" + timeZone;
   }();
   return platform.c_str();
 }
@@ -962,8 +978,17 @@ bool DesktopPlatform::callApplication(APP_TYPE type, ...) {
     va_end(arguments);
     return true;
   }
+  case APP_ATT: {
+    const char *callback = va_arg(arguments, const char *);
+    const bool request = va_arg(arguments, int) != 0;
+    // Android reports the unsupported ATT state synchronously with status 0.
+    // Desktop has no App Tracking Transparency prompt, but the script still
+    // requires the callback to continue the login chain.
+    beforeAssertFunction(callback, request);
+    va_end(arguments);
+    return true;
+  }
   case APP_SETTINGS:
-  case APP_ATT:
   default:
     break;
   }
@@ -1121,13 +1146,33 @@ bool DesktopPlatform::publicKeyVerify(unsigned char *message, int messageLength,
   EVP_PKEY *key = loadPublicKey();
   if (!key)
     return false;
-  EVP_MD_CTX *context = EVP_MD_CTX_new();
-  bool valid =
-      context &&
-      EVP_DigestVerifyInit(context, nullptr, EVP_sha1(), nullptr, key) == 1 &&
-      EVP_DigestVerifyUpdate(context, message, messageLength) == 1 &&
-      EVP_DigestVerifyFinal(context, signature, signatureLength) == 1;
-  EVP_MD_CTX_free(context);
+
+  // SIF signs SHA-1 digests using PKCS#1 v1.5. Fedora's system crypto policy
+  // rejects EVP_DigestVerifyInit for SHA-1 signatures, although hashing and
+  // RSA public-key recovery remain available. Recover the encoded DigestInfo
+  // and compare it explicitly so the legacy protocol remains verifiable.
+  static const unsigned char sha1DigestInfoPrefix[] = {
+      0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e,
+      0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14};
+  unsigned char digest[SHA_DIGEST_LENGTH];
+  SHA1(message, static_cast<size_t>(messageLength), digest);
+
+  EVP_PKEY_CTX *context = EVP_PKEY_CTX_new(key, nullptr);
+  size_t recoveredLength = 0;
+  bool valid = context && EVP_PKEY_verify_recover_init(context) > 0 &&
+               EVP_PKEY_CTX_set_rsa_padding(context, RSA_PKCS1_PADDING) > 0 &&
+               EVP_PKEY_verify_recover(context, nullptr, &recoveredLength,
+                                       signature, signatureLength) > 0;
+  std::vector<unsigned char> recovered(recoveredLength);
+  valid = valid &&
+          EVP_PKEY_verify_recover(context, recovered.data(), &recoveredLength,
+                                  signature, signatureLength) > 0 &&
+          recoveredLength == sizeof(sha1DigestInfoPrefix) + sizeof(digest) &&
+          std::memcmp(recovered.data(), sha1DigestInfoPrefix,
+                      sizeof(sha1DigestInfoPrefix)) == 0 &&
+          std::memcmp(recovered.data() + sizeof(sha1DigestInfoPrefix), digest,
+                      sizeof(digest)) == 0;
+  EVP_PKEY_CTX_free(context);
   EVP_PKEY_free(key);
   return valid;
 }

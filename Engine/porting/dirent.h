@@ -1,3 +1,12 @@
+#ifndef _WIN32
+
+// This directory is on the shared engine include path.  Unix hosts must use
+// their native DIR and dirent layouts; this file only supplies the Win32
+// compatibility implementation below.
+#include_next <dirent.h>
+
+#else
+
 #ifndef DIRENT_INCLUDED
 #define DIRENT_INCLUDED
 
@@ -48,3 +57,5 @@ void          rewinddir(DIR *);
 #endif
 
 #endif
+
+#endif // _WIN32

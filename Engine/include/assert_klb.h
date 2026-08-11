@@ -27,16 +27,20 @@ extern "C" {
 	void assertFunction(int line, const char* file, const char* msg,...);
 #ifdef _WIN32
 #define klb_assert(cond,msg,...)		if (!(cond)) { assertFunction(__LINE__, __FILE__, msg, __VA_ARGS__); }
-#define klb_assertNull(cond, msg, ...)	;
+#define klb_assertNull(cond, msg, ...)	do { (void)(cond); } while (0)
 #define klb_assertAlways(msg,...)		{ assertFunction(__LINE__, __FILE__, msg, __VA_ARGS__); }
 #else
-#if (DEBUG == 1)
+#if defined(PLAYGROUND_RUNTIME_DIAGNOSTICS)
+#define klb_assert(cond,msg...)			do { if(!(cond)) { assertFunction(__LINE__, __FILE__, msg); } } while (0)
+#define klb_assertNull(cond,msg...)		do { if(!(cond)) { assertFunction(0, "", msg); } } while (0)
+#define klb_assertAlways(msg...)		do { assertFunction(__LINE__, __FILE__, msg); } while (0)
+#elif (DEBUG == 1)
 #define klb_assert(cond,msg...)			if(!(cond)) { assertFunction(__LINE__, __FILE__, msg); __builtin_trap(); }
 #define klb_assertNull(cond,msg...)		if(!(cond)) { assertFunction(0, "", msg); __builtin_trap(); }
 #define klb_assertAlways(msg...)		{ assertFunction(__LINE__, __FILE__, msg); __builtin_trap(); }
 #else
-#define klb_assert(cond,msg...)			;
-#define klb_assertNull(cond, msg, ...)	;
+#define klb_assert(cond,msg...)			do { (void)(cond); } while (0)
+#define klb_assertNull(cond, msg, ...)	do { (void)(cond); } while (0)
 #define klb_assertAlways(msg...)		;
 #endif
 #endif

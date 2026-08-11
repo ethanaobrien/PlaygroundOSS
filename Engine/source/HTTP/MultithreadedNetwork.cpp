@@ -217,7 +217,22 @@ CurlObjectInternal::cleanup()
 int
 CurlObjectInternal::perform()
 {
-	return curl_easy_perform(m_curl);
+	int result = curl_easy_perform(m_curl);
+	char* effectiveURL = NULL;
+	curl_easy_getinfo(m_curl, CURLINFO_EFFECTIVE_URL, &effectiveURL);
+	if(result) {
+		fprintf(stderr, "network request failed: %s (%d): %s\n",
+			effectiveURL ? effectiveURL : "<unknown URL>", result,
+			curl_easy_strerror((CURLcode)result));
+	} else {
+		long responseCode = 0;
+		curl_easy_getinfo(m_curl, CURLINFO_RESPONSE_CODE, &responseCode);
+		if(responseCode >= 400) {
+			fprintf(stderr, "network request returned HTTP %ld: %s\n",
+				responseCode, effectiveURL ? effectiveURL : "<unknown URL>");
+		}
+	}
+	return result;
 }
 
 void

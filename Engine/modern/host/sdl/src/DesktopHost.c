@@ -12,7 +12,50 @@ struct PlaygroundDesktopHost {
     int pixelWidth;
     int pixelHeight;
     bool running;
+    bool mouseDown;
+    float mouseX;
+    float mouseY;
+    SDL_FingerID touchFingerIds[10];
+    bool touchFingerUsed[10];
 };
+
+static void sendPointer(
+    PlaygroundDesktopHost* host,
+    int64_t pointerId,
+    PlaygroundPointerPhase phase,
+    float pixelX,
+    float pixelY
+);
+
+static int touchSlot(PlaygroundDesktopHost* host, SDL_FingerID finger, bool create)
+{
+    int slot;
+    for (slot = 1; slot < 10; ++slot) {
+        if (host->touchFingerUsed[slot] && host->touchFingerIds[slot] == finger) {
+            return slot;
+        }
+    }
+    if (create) {
+        for (slot = 1; slot < 10; ++slot) {
+            if (!host->touchFingerUsed[slot]) {
+                host->touchFingerUsed[slot] = true;
+                host->touchFingerIds[slot] = finger;
+                return slot;
+            }
+        }
+    }
+    return -1;
+}
+
+static void cancelMousePointer(PlaygroundDesktopHost* host)
+{
+    if (!host->mouseDown) {
+        return;
+    }
+    host->mouseDown = false;
+    SDL_CaptureMouse(false);
+    sendPointer(host, 0, PLAYGROUND_POINTER_CANCEL, host->mouseX, host->mouseY);
+}
 
 static void refreshPixelSize(PlaygroundDesktopHost* host)
 {
@@ -82,9 +125,13 @@ static void processEvent(PlaygroundDesktopHost* host, const SDL_Event* event)
         }
         break;
     case SDL_EVENT_WINDOW_MINIMIZED:
+        cancelMousePointer(host);
         if (host->callbacks.onActivity) {
             host->callbacks.onActivity(host->callbackContext, host, false);
         }
+        break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+        cancelMousePointer(host);
         break;
     case SDL_EVENT_WINDOW_RESTORED:
         if (host->callbacks.onActivity) {
@@ -93,13 +140,29 @@ static void processEvent(PlaygroundDesktopHost* host, const SDL_Event* event)
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN:
     case SDL_EVENT_MOUSE_BUTTON_UP:
-        if (event->button.which == SDL_TOUCH_MOUSEID) {
+        if (event->button.which == SDL_TOUCH_MOUSEID ||
+            event->button.button != SDL_BUTTON_LEFT) {
             break;
         }
         logicalToPixels(host, event->button.x, event->button.y, &pixelX, &pixelY);
+        host->mouseX = pixelX;
+        host->mouseY = pixelY;
+        if (event->type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+            if (host->mouseDown) {
+                break;
+            }
+            host->mouseDown = true;
+            SDL_CaptureMouse(true);
+        } else {
+            if (!host->mouseDown) {
+                break;
+            }
+            host->mouseDown = false;
+            SDL_CaptureMouse(false);
+        }
         sendPointer(
             host,
-            (int64_t)event->button.which,
+            0,
             event->type == SDL_EVENT_MOUSE_BUTTON_DOWN
                 ? PLAYGROUND_POINTER_DOWN
                 : PLAYGROUND_POINTER_UP,
@@ -108,13 +171,16 @@ static void processEvent(PlaygroundDesktopHost* host, const SDL_Event* event)
         );
         break;
     case SDL_EVENT_MOUSE_MOTION:
-        if (event->motion.which == SDL_TOUCH_MOUSEID) {
+        if (event->motion.which == SDL_TOUCH_MOUSEID || !host->mouseDown ||
+            !(event->motion.state & SDL_BUTTON_LMASK)) {
             break;
         }
         logicalToPixels(host, event->motion.x, event->motion.y, &pixelX, &pixelY);
+        host->mouseX = pixelX;
+        host->mouseY = pixelY;
         sendPointer(
             host,
-            (int64_t)event->motion.which,
+            0,
             PLAYGROUND_POINTER_MOVE,
             pixelX,
             pixelY
@@ -124,11 +190,20 @@ static void processEvent(PlaygroundDesktopHost* host, const SDL_Event* event)
     case SDL_EVENT_FINGER_MOTION:
     case SDL_EVENT_FINGER_UP:
     case SDL_EVENT_FINGER_CANCELED:
+    {
+        int slot = touchSlot(
+            host,
+            event->tfinger.fingerID,
+            event->type == SDL_EVENT_FINGER_DOWN
+        );
+        if (slot < 0) {
+            break;
+        }
         pixelX = event->tfinger.x * (float)host->pixelWidth;
         pixelY = event->tfinger.y * (float)host->pixelHeight;
         sendPointer(
             host,
-            (int64_t)event->tfinger.fingerID,
+            slot,
             event->type == SDL_EVENT_FINGER_DOWN
                 ? PLAYGROUND_POINTER_DOWN
                 : event->type == SDL_EVENT_FINGER_MOTION
@@ -139,7 +214,12 @@ static void processEvent(PlaygroundDesktopHost* host, const SDL_Event* event)
             pixelX,
             pixelY
         );
+        if (event->type == SDL_EVENT_FINGER_UP ||
+            event->type == SDL_EVENT_FINGER_CANCELED) {
+            host->touchFingerUsed[slot] = false;
+        }
         break;
+    }
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP:
         if (host->callbacks.onKey) {

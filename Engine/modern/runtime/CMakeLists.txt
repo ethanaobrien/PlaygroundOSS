@@ -117,6 +117,7 @@ target_compile_definitions(playground_engine_runtime
         LUA_ANSI
         ONLY_C
         OPENGL2
+        PLAYGROUND_RUNTIME_DIAGNOSTICS
 )
 
 set(playground_engine_include_directories
