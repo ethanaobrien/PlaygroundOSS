@@ -34,6 +34,8 @@ constexpr const char *CacheRoot = "/playground-opfs/cache/appassets";
 constexpr const char *StateRoot = "/playground-opfs/user";
 constexpr const char *Archive = "/playground-opfs/cache/AppAssets.zip";
 constexpr const char *Metadata = "/playground-opfs/cache/AppAssets.metadata";
+constexpr const char *StateGeneration =
+    "/playground-opfs/user/.appassets-generation";
 
 void setStatus(const char *phase, const std::string &detail, double progress) {
   MAIN_THREAD_EM_ASM({
@@ -285,6 +287,53 @@ bool readText(const std::filesystem::path &path, std::string &text) {
   return input.good() || input.eof();
 }
 
+bool reconcileMutableConfiguration(const std::string &generation,
+                                   std::string &error) {
+  std::string previousGeneration;
+  if (readText(StateGeneration, previousGeneration) &&
+      previousGeneration == generation + "\n")
+    return true;
+
+  // server_info and client_info are mutable bootstrap configuration, not user
+  // progress. They may have been downloaded by a previous AppAssets
+  // distribution and otherwise outrank the new install copy by their embedded
+  // date. Reset only these files when the immutable bundle changes; preserve
+  // account state, databases, packages, and downloaded assets.
+  const std::filesystem::path stateRoot(StateRoot);
+  const std::filesystem::path mutableConfiguration[] = {
+      stateRoot / "config/server_info.json",
+      stateRoot / "config/client_info.json",
+  };
+  for (const auto &path : mutableConfiguration) {
+    std::error_code removeError;
+    std::filesystem::remove(path, removeError);
+    if (removeError) {
+      error = "Could not invalidate stale browser configuration: " +
+              removeError.message();
+      return false;
+    }
+  }
+
+  const std::string temporary = std::string(StateGeneration) + ".part";
+  {
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    if (!output || !(output << generation << '\n') || !output.flush()) {
+      error = "Could not record the browser AppAssets generation";
+      return false;
+    }
+  }
+  std::error_code publishError;
+  std::filesystem::remove(StateGeneration, publishError);
+  publishError.clear();
+  std::filesystem::rename(temporary, StateGeneration, publishError);
+  if (publishError) {
+    error = "Could not publish the browser AppAssets generation: " +
+            publishError.message();
+    return false;
+  }
+  return true;
+}
+
 bool hashFile(const std::filesystem::path &path, std::string &digest,
               std::string &error) {
   std::ifstream input(path, std::ios::binary);
@@ -350,6 +399,7 @@ bool prepareBrowserStorage(RuntimePaths &paths, std::string &error) {
       error = "Downloaded AppAssets metadata could not be read";
     return false;
   }
+  const std::string generationDigest = metadata.sha256;
 
   const auto generation = std::filesystem::path(CacheRoot) /
       ("install-" + metadata.sha256);
@@ -386,6 +436,8 @@ bool prepareBrowserStorage(RuntimePaths &paths, std::string &error) {
   };
   playground::bootstrap::AssetBootstrapResult result;
   if (!playground::bootstrap::prepareAssetBundle(options, result, error))
+    return false;
+  if (!reconcileMutableConfiguration(generationDigest, error))
     return false;
   std::filesystem::remove(Archive, fsError);
   std::filesystem::remove(Metadata, fsError);

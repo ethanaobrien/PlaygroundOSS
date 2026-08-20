@@ -15,6 +15,16 @@
 #include <utility>
 #include <vector>
 
+EM_JS(int, playgroundWebPageUsesHttps, (), {
+  const currentLocation = globalThis.location;
+  if (!currentLocation)
+    return 0;
+  return currentLocation.protocol === "https:" ||
+                 currentLocation.origin.startsWith("https://")
+             ? 1
+             : 0;
+});
+
 namespace {
 
 std::mutex CookieMutex;
@@ -147,6 +157,13 @@ void CurlObjectInternal::setupConnection(const char *url, const char *proxy,
                                          void *headerCallback,
                                          void *writeCallback) {
   m_web->url = url ? url : "";
+  // An HTTPS page cannot issue active HTTP requests: browsers reject them as
+  // mixed content before Fetch reaches the network. Upgrade absolute HTTP
+  // URLs at this platform boundary so legacy configuration and server-provided
+  // links use the transport already required by the Web host. Never downgrade
+  // HTTPS when developing from an HTTP localhost page.
+  if (playgroundWebPageUsesHttps() && m_web->url.compare(0, 7, "http://") == 0)
+    m_web->url.replace(0, 7, "https://");
   // The legacy second argument is a User-Agent string despite its old proxy
   // name. Browsers forbid setting User-Agent; preserve it as an application
   // header that servers may inspect without violating Fetch's forbidden list.

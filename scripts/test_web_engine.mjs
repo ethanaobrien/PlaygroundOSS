@@ -121,6 +121,7 @@ async function waitForEngine(socket) {
 try {
   const page = await target();
   const socket = await connect(page.webSocketDebuggerUrl);
+  const insecureRequests = [];
   socket.addEventListener("message", event => {
     const message = JSON.parse(event.data);
     if (message.method === "Runtime.exceptionThrown")
@@ -130,8 +131,13 @@ try {
         argument.value ?? argument.description).join(" ");
       console.error(`browser ${message.params.type}: ${output}`);
     }
+    if (message.method === "Network.requestWillBeSent" &&
+        url.startsWith("https://") &&
+        message.params.request.url.startsWith("http://"))
+      insecureRequests.push(message.params.request.url);
   });
   await command(socket, "Runtime.enable");
+  await command(socket, "Network.enable");
   const state = await waitForEngine(socket);
   console.log(`web engine reached the frame loop at ` +
               `${state.engine.width}x${state.engine.height}`);
@@ -152,6 +158,9 @@ try {
     if (fatal)
       throw new Error(fatal);
   }
+  if (insecureRequests.length !== 0)
+    throw new Error(`HTTPS page emitted insecure requests:\n${
+      insecureRequests.join("\n")}`);
   socket.close();
 } finally {
   chromium.kill("SIGTERM");

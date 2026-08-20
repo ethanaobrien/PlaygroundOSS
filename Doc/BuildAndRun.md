@@ -394,11 +394,22 @@ quota eviction under storage pressure.
 The browser owns cookies and codec support. Remote game/API endpoints must
 permit browser CORS requests; under COEP their responses must also be
 CORS-enabled or served through a same-origin reverse proxy. Serve the page over
-HTTPS in production (localhost is treated as a secure context). Geolocation,
+HTTPS in production (localhost is treated as a secure context). When the page
+uses HTTPS, the Emscripten transport upgrades absolute `http://` request URLs
+to `https://` before Fetch so legacy configuration cannot trigger active
+mixed-content rejection. It never downgrades HTTPS URLs when the page is served
+over HTTP; every upgraded endpoint must therefore support TLS. Geolocation,
 device orientation, notifications, clipboard, SDL audio, HTML video decoding,
 and WebGL are connected to browser APIs. Remote push, purchases, and rewarded
 ads need application providers and therefore report unavailable/failure rather
 than fabricating success.
+
+The Web bootstrap records the installed AppAssets SHA-256 in OPFS. When a new
+AppAssets generation is installed, it removes only the mutable external
+`config/server_info.json` and `config/client_info.json` overrides before the
+engine starts. This prevents an older downloaded endpoint configuration from
+out-ranking the new bundled configuration while preserving account state,
+databases, packages, and downloaded assets.
 
 Run the storage/thread/SQLite qualification and full-engine boot checks with
 Chromium as follows:
