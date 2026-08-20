@@ -404,13 +404,6 @@ and WebGL are connected to browser APIs. Remote push, purchases, and rewarded
 ads need application providers and therefore report unavailable/failure rather
 than fabricating success.
 
-The Web bootstrap records the installed AppAssets SHA-256 in OPFS. When a new
-AppAssets generation is installed, it removes only the mutable external
-`config/server_info.json` and `config/client_info.json` overrides before the
-engine starts. This prevents an older downloaded endpoint configuration from
-out-ranking the new bundled configuration while preserving account state,
-databases, packages, and downloaded assets.
-
 Run the storage/thread/SQLite qualification and full-engine boot checks with
 Chromium as follows:
 
