@@ -1,4 +1,4 @@
-#include "Playground/Runtime/DesktopPlatform.h"
+#include "Playground/Runtime/RuntimePlatform.h"
 
 #include "CKLBTextureMovie.h"
 #include "CPFInterface.h"
@@ -17,7 +17,7 @@ int main(int argc, char **argv) {
   }
   const std::filesystem::path externalRoot =
       std::filesystem::temp_directory_path() / "playground-movie-probe";
-  playground::runtime::DesktopPlatform platform(".", externalRoot.string());
+  playground::runtime::RuntimePlatform platform(".", externalRoot.string());
   CPFInterface::getInstance().setPlatformRequest(&platform);
   IMovieInterface *movie = platform.createMoviePlayer(argv[1], -1, -1);
   if (!movie || !movie->isInfoReady()) {

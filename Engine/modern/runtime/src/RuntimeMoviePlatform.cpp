@@ -1,4 +1,4 @@
-#include "Playground/Runtime/DesktopPlatform.h"
+#include "Playground/Runtime/RuntimePlatform.h"
 
 #include "CKLBTextureMovie.h"
 
@@ -207,7 +207,7 @@ private:
 
 } // namespace
 
-IMovieInterface *DesktopPlatform::createMoviePlayer(const char *url, int width,
+IMovieInterface *RuntimePlatform::createMoviePlayer(const char *url, int width,
                                                     int height) {
   auto *movie = new DesktopMovie;
   if (!movie->initialize(url, width, height)) {
@@ -217,7 +217,7 @@ IMovieInterface *DesktopPlatform::createMoviePlayer(const char *url, int width,
   return movie;
 }
 
-void DesktopPlatform::destroyMoviePlayer(IMovieInterface *movie) {
+void RuntimePlatform::destroyMoviePlayer(IMovieInterface *movie) {
   delete movie;
 }
 

@@ -14,6 +14,9 @@
    limitations under the License.
 */
 #include "CKLBLuaDB.h"
+#if defined(__SWITCH__)
+#include "Playground/Switch/SwitchSqlite.h"
+#endif
 #include "CPFInterface.h"
 #include "CKLBUtility.h"
 
@@ -125,7 +128,14 @@ CKLBLuaDB::open(const char * db_asset, int flags)
 	}*/
 
 	// int rc = sqlite3_open(fullpath, &m_db);
-	int rc = sqlite3_open_v2(fullpath, &m_db, flags, NULL);
+	#if defined(__SWITCH__)
+	const char* sqliteVfs =
+		playground::switch_runtime::selectSwitchDatabaseVfs(
+			db_asset, fullpath, isReadOnly);
+	#else
+	const char* sqliteVfs = NULL;
+	#endif
+	int rc = sqlite3_open_v2(fullpath, &m_db, flags, sqliteVfs);
     if (!isReadOnly) {
         CPFInterface::getInstance().platform().excludePathFromBackup(fullpath);
     }
@@ -139,11 +149,21 @@ CKLBLuaDB::open(const char * db_asset, int flags)
 
 	char * errMsg;
 	m_pragmaJournal = true;
+	#if defined(__SWITCH__)
+	const char* journalPolicy = isReadOnly
+		? "PRAGMA journal_mode = OFF;"
+		: "PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL;";
+	rc = sqlite3_exec(m_db, journalPolicy, CKLBLuaDB::row_callback, this, &errMsg);
+	#else
 	rc = sqlite3_exec(m_db, "PRAGMA journal_mode = OFF;", CKLBLuaDB::row_callback, this, &errMsg);
+	#endif
 	m_pragmaJournal = false;
 
 	if (rc) {
-		platform.logging("Impossible to disable journal");
+		platform.logging("Impossible to configure journal for %s: rc=%d error=%s",
+			db_asset ? db_asset : "(temporary)", rc,
+			errMsg ? errMsg : sqlite3_errmsg(m_db));
+		sqlite3_free(errMsg);
 	}
 
 	return true;

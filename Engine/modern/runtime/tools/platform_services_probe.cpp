@@ -1,6 +1,6 @@
 #include "BaseType.h"
 #include "FileSystem.h"
-#include "Playground/Runtime/DesktopPlatform.h"
+#include "Playground/Runtime/RuntimePlatform.h"
 #include "encryptFile.h"
 
 #include <SDL3/SDL_keycode.h>
@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
 
   std::string firstDeviceId;
   {
-    playground::runtime::DesktopPlatform platform(".", argv[1]);
+    playground::runtime::RuntimePlatform platform(".", argv[1]);
     initNMAsset(0);
     std::array<char, 256> buffer{};
     if (!check(platform.readyDevID(), "device ID unavailable") ||
@@ -199,7 +199,7 @@ int main(int argc, char **argv) {
   }
 
   {
-    playground::runtime::DesktopPlatform platform(".", argv[1]);
+    playground::runtime::RuntimePlatform platform(".", argv[1]);
     std::array<char, 256> buffer{};
     platform.getDevID(buffer.data(), buffer.size());
     if (!check(firstDeviceId == buffer.data(), "device ID did not persist") ||

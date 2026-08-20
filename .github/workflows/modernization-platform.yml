@@ -61,6 +61,9 @@ jobs:
         run: cmake --preset ${{ matrix.preset }}
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
+      - name: Run Linux bootstrap, durability, path, packaging, and cookie tests
+        if: runner.os == 'Linux'
+        run: ctest --test-dir out/build/linux-release --output-on-failure
       - name: Smoke test SDL3 host lifecycle
         if: runner.os == 'Linux'
         run: >-

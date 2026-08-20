@@ -1,7 +1,9 @@
 # PlaygroundOSS modernization
 
 For prerequisites and exact build/run commands on Linux, Windows, macOS, and
-Android, start with [BuildAndRun.md](BuildAndRun.md).
+Android, start with [BuildAndRun.md](BuildAndRun.md). Nintendo Switch uses a
+separate installed-title/storage model documented in
+[SwitchPort.md](SwitchPort.md).
 
 The `mostly-exact` branch at commit `c67d46e` is the protected compatibility
 reference. Modern infrastructure work is developed on `modernization`; the
@@ -22,6 +24,7 @@ original `GameSetup`, `initGame`, `frameFlip`, and `finishGame` lifecycle.
 | Windows | Modern SDL3/ANGLE desktop runtime | Complete engine graph, desktop services, audio, widgets, and movies | Continue official-asset gameplay validation alongside Linux |
 | Linux | Modern SDL3/GLES desktop runtime | Complete engine graph, desktop services, audio, widgets, movies, community login, package updates, and on-demand assets | Continue ordinary gameplay validation as new flows are exercised |
 | macOS | Legacy Xcode/Cocoa runtime | Native Clang preset and SDL3 host | Connect the engine adapter |
+| Nintendo Switch | Clean libnx modernization port | Complete engine NRO, transactional bundled assets, account SaveData, CacheStorage, audout, NIFM/curl, EGL/GLES2, lifecycle, album export, and audited NSP staging | Run and record the installed-title hardware acceptance matrix |
 
 ## Configure and build
 

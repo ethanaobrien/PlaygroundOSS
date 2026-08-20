@@ -17,6 +17,9 @@ for every supported target are in
 [`Doc/BuildAndRun.md`](Doc/BuildAndRun.md). The historical platform
 projects remain available as compatibility references while the modern CMake
 and SDL3-based host layers are introduced incrementally.
+Nintendo Switch/libnx development, installed-title packaging, storage policy,
+and hardware acceptance are documented in
+[`Doc/SwitchPort.md`](Doc/SwitchPort.md).
 
 The dev team.
 

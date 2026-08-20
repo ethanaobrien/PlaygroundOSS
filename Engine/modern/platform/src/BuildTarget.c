@@ -10,7 +10,8 @@ const PlaygroundBuildTarget* playgroundGetBuildTarget(void)
         PLAYGROUND_PLATFORM_ANDROID,
         PLAYGROUND_PLATFORM_WINDOWS,
         PLAYGROUND_PLATFORM_LINUX,
-        PLAYGROUND_PLATFORM_MACOS
+        PLAYGROUND_PLATFORM_MACOS,
+        PLAYGROUND_PLATFORM_SWITCH
     };
     return &target;
 }

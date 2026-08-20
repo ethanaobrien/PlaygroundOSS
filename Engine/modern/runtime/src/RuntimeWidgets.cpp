@@ -1,11 +1,14 @@
-#include "DesktopWidgets.h"
+#include "RuntimeWidgets.h"
 
-#include "Playground/Runtime/DesktopPlatform.h"
+#include "Playground/Runtime/RuntimePlatform.h"
 
 #include "CPFInterface.h"
 
+#if defined(__SWITCH__)
+#include "Playground/Switch/SwitchSystem.h"
+#else
 #include <SDL3/SDL_keycode.h>
-#include <SDL3/SDL_misc.h>
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -158,7 +161,7 @@ private:
 
 class DesktopMovieWidget final : public DesktopWidget {
 public:
-  DesktopMovieWidget(DesktopPlatform *platform, IWidget::CONTROL type, int id,
+  DesktopMovieWidget(RuntimePlatform *platform, IWidget::CONTROL type, int id,
                      const char *caption, int x, int y, int width, int height)
       : DesktopWidget(type, id, caption, x, y, width, height),
         m_platform(platform) {}
@@ -172,7 +175,7 @@ public:
           url = std::string("file://") + (resolved ? resolved : "");
           delete[] resolved;
         }
-        if (!SDL_OpenURL(url.c_str()))
+        if (!m_platform->openExternalUrl(url.c_str()))
           m_status = MV_FINISHED;
       }
     } else if (command == MV_STOP) {
@@ -183,7 +186,7 @@ public:
   }
 
 private:
-  DesktopPlatform *m_platform;
+  RuntimePlatform *m_platform;
 };
 
 class DesktopActivityWidget final : public DesktopWidget {
@@ -213,9 +216,9 @@ struct WidgetEvent {
 
 } // namespace
 
-class DesktopWidgetManager::Impl {
+class RuntimeWidgetManager::Impl {
 public:
-  explicit Impl(DesktopPlatform *platform) : platform(platform) {}
+  explicit Impl(RuntimePlatform *platform) : platform(platform) {}
 
   void notifyText(DesktopWidget *widget) {
     if (!CPFInterface::getInstance().isClient())
@@ -227,20 +230,20 @@ public:
         nullptr);
   }
 
-  DesktopPlatform *platform;
+  RuntimePlatform *platform;
   std::vector<DesktopWidget *> widgets;
   DesktopWidget *activeText{};
   std::deque<WidgetEvent> events;
 };
 
-DesktopWidgetManager::DesktopWidgetManager(DesktopPlatform *platform)
+RuntimeWidgetManager::RuntimeWidgetManager(RuntimePlatform *platform)
     : m_impl(std::make_unique<Impl>(platform)) {}
-DesktopWidgetManager::~DesktopWidgetManager() {
+RuntimeWidgetManager::~RuntimeWidgetManager() {
   for (DesktopWidget *widget : m_impl->widgets)
     delete widget;
 }
 
-IWidget *DesktopWidgetManager::create(IWidget::CONTROL type, int id,
+IWidget *RuntimeWidgetManager::create(IWidget::CONTROL type, int id,
                                       const char *caption, int x, int y,
                                       int width, int height,
                                       va_list arguments) {
@@ -250,13 +253,25 @@ IWidget *DesktopWidgetManager::create(IWidget::CONTROL type, int id,
     text->cmd(IWidget::TX_MAXLEN, va_arg(arguments, int));
     widget = text;
     m_impl->activeText = text;
+#if defined(__SWITCH__)
+    std::string entered;
+    const int maximum = text->getTextMaxLength();
+    if (switch_runtime::showSoftwareKeyboard(
+            type == IWidget::PASSWDBOX, caption,
+            maximum > 0 ? static_cast<std::uint32_t>(maximum) : 4096,
+            entered)) {
+      text->setText(entered.c_str());
+      m_impl->notifyText(text);
+    }
+#endif
   } else if (type == IWidget::WEBVIEW || type == IWidget::WEBNOJUMP) {
     for (int index = 0; index < 8; ++index)
       (void)va_arg(arguments, const char *);
     widget = new DesktopWebWidget(type, id, caption, x, y, width, height);
     m_impl->events.push_back(
         {IClientRequest::E_DIDSTARTLOADWEB, widget, caption ? caption : ""});
-    const bool opened = caption && caption[0] && SDL_OpenURL(caption);
+    const bool opened = caption && caption[0] &&
+                        m_impl->platform->openExternalUrl(caption);
     m_impl->events.push_back({opened ? IClientRequest::E_DIDLOADENDWEB
                                      : IClientRequest::E_FAILEDLOADWEB,
                               widget, caption ? caption : ""});
@@ -271,7 +286,7 @@ IWidget *DesktopWidgetManager::create(IWidget::CONTROL type, int id,
   return widget;
 }
 
-void DesktopWidgetManager::destroy(IWidget *widget) {
+void RuntimeWidgetManager::destroy(IWidget *widget) {
   auto *desktop = static_cast<DesktopWidget *>(widget);
   if (m_impl->activeText == desktop)
     m_impl->activeText = nullptr;
@@ -288,25 +303,34 @@ void DesktopWidgetManager::destroy(IWidget *widget) {
   delete desktop;
 }
 
-void DesktopWidgetManager::inputText(const char *text) {
+void RuntimeWidgetManager::inputText(const char *text) {
   if (!m_impl->activeText || !m_impl->activeText->editable())
     return;
   m_impl->activeText->append(text);
   m_impl->notifyText(m_impl->activeText);
 }
 
-bool DesktopWidgetManager::inputKey(int key, bool pressed) {
+bool RuntimeWidgetManager::inputKey(int key, bool pressed) {
   if (!pressed || !m_impl->activeText || !m_impl->activeText->editable())
     return false;
-  if (key == SDLK_BACKSPACE) {
+#if defined(__SWITCH__)
+  constexpr int Backspace = 8;
+  constexpr int Return = 13;
+  constexpr int KeypadEnter = 13;
+#else
+  constexpr int Backspace = SDLK_BACKSPACE;
+  constexpr int Return = SDLK_RETURN;
+  constexpr int KeypadEnter = SDLK_KP_ENTER;
+#endif
+  if (key == Backspace) {
     m_impl->activeText->eraseLastCodepoint();
     m_impl->notifyText(m_impl->activeText);
     return true;
   }
-  return key == SDLK_RETURN || key == SDLK_KP_ENTER;
+  return key == Return || key == KeypadEnter;
 }
 
-void DesktopWidgetManager::pumpEvents() {
+void RuntimeWidgetManager::pumpEvents() {
   if (!CPFInterface::getInstance().isClient())
     return;
   while (!m_impl->events.empty()) {

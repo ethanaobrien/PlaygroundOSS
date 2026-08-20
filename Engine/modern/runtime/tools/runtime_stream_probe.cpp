@@ -1,4 +1,4 @@
-#include "Playground/Runtime/DesktopPlatform.h"
+#include "Playground/Runtime/RuntimePlatform.h"
 #include "FileSystem.h"
 #include "encryptFile.h"
 
@@ -16,7 +16,7 @@ int main(int argc, char** argv)
     }
     const std::filesystem::path externalRoot =
         std::filesystem::temp_directory_path() / "playground-stream-probe";
-    playground::runtime::DesktopPlatform platform(argv[1], externalRoot.string());
+    playground::runtime::RuntimePlatform platform(argv[1], externalRoot.string());
     initNMAsset(0);
     IReadStream* stream = platform.openReadStream(argv[2], true, 8);
     int result = 1;

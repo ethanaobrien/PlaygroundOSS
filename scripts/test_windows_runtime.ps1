@@ -61,6 +61,7 @@ $hostDirectory = Join-Path $build "Engine/modern/host/sdl/$Configuration"
 $requiredFiles = @(
     (Join-Path $runtime "playground-engine-link-probe.exe"),
     (Join-Path $runtime "playground-platform-services-probe.exe"),
+    (Join-Path $runtime "playground-runtime-cookie-probe.exe"),
     (Join-Path $hostDirectory "playground-desktop-host.exe"),
     (Join-Path $hostDirectory "playground-sdl-engine.exe"),
     (Join-Path $hostDirectory "playground-windows-bootstrap-probe.exe"),
@@ -84,6 +85,9 @@ try {
     Invoke-Checked (Join-Path $runtime "playground-engine-link-probe.exe")
     Invoke-Checked (Join-Path $hostDirectory "playground-desktop-host.exe") --headless --frames 3
     Invoke-Checked (Join-Path $runtime "playground-platform-services-probe.exe") $scratch
+    Invoke-Checked python (Join-Path $PSScriptRoot "test_runtime_cookies.py") `
+        (Join-Path $runtime "playground-runtime-cookie-probe.exe") `
+        (Join-Path $scratch "cookies")
 
     if ($InstallRoot) {
         $resolvedInstallRoot =

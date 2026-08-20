@@ -1,7 +1,8 @@
-#include "Playground/Runtime/DesktopPlatform.h"
+#include "Playground/Runtime/RuntimePlatform.h"
 
-#include "DesktopStateStore.h"
-#include "DesktopWidgets.h"
+#include "RuntimeCrypto.h"
+#include "RuntimeStateStore.h"
+#include "RuntimeWidgets.h"
 
 #include "CKLBCrypto.h"
 #include "CKLBScriptEnv.h"
@@ -13,10 +14,16 @@
 #include "MultithreadedNetwork.h"
 #include "encryptFile.h"
 
+#if defined(__SWITCH__)
+#include "Playground/Switch/SwitchAlbum.h"
+#include "Playground/Switch/SwitchNetwork.h"
+#include "Playground/Switch/SwitchSystem.h"
+#else
 #include <SDL3/SDL_clipboard.h>
 #include <SDL3/SDL_cpuinfo.h>
 #include <SDL3/SDL_misc.h>
 #include <SDL3/SDL_video.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -37,21 +44,21 @@
 #include <thread>
 #include <vector>
 
-#if defined(_WIN32)
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
+
+#if defined(__SWITCH__)
+#include <pthread.h>
+#elif defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
 #include <psapi.h>
+#include <windows.h>
 #else
 #include <pthread.h>
 #include <sys/utsname.h>
 #include <unistd.h>
 #endif
-
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/rand.h>
-#include <openssl/rsa.h>
-#include <openssl/sha.h>
 
 extern bool g_decompressBGM;
 
@@ -102,14 +109,22 @@ bool getLocalTime(std::time_t time, std::tm &result) {
 
 DesktopHostInfo getDesktopHostInfo() {
   DesktopHostInfo result;
-#if defined(_WIN32)
+#if defined(__SWITCH__)
+  const auto version = switch_runtime::systemVersion();
+  result.system = "Horizon";
+  result.release = std::to_string(version.major) + "." +
+                   std::to_string(version.minor) + "." +
+                   std::to_string(version.micro);
+  result.machine = "aarch64";
+  result.hostname = "nintendo-switch";
+#elif defined(_WIN32)
   result.system = "Windows";
   OSVERSIONINFOW version{};
   version.dwOSVersionInfoSize = sizeof(version);
   using RtlGetVersionFunction = LONG(WINAPI *)(OSVERSIONINFOW *);
   HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
   auto rtlGetVersion = ntdll ? reinterpret_cast<RtlGetVersionFunction>(
-                                  GetProcAddress(ntdll, "RtlGetVersion"))
+                                   GetProcAddress(ntdll, "RtlGetVersion"))
                              : nullptr;
   if (rtlGetVersion && rtlGetVersion(&version) == 0) {
     result.release = std::to_string(version.dwMajorVersion) + "." +
@@ -161,11 +176,15 @@ DesktopHostInfo getDesktopHostInfo() {
 }
 
 std::string getExecutablePath() {
-#if defined(_WIN32)
+#if defined(__SWITCH__)
+  // Horizon does not expose a stable filesystem path for an installed NSO.
+  // The package identity is covered by NACP/NPDM and the content archive.
+  return {};
+#elif defined(_WIN32)
   std::vector<char> path(4096);
   while (true) {
     DWORD length = GetModuleFileNameA(nullptr, path.data(),
-                                     static_cast<DWORD>(path.size()));
+                                      static_cast<DWORD>(path.size()));
     if (!length)
       return {};
     if (length < path.size() - 1)
@@ -177,6 +196,18 @@ std::string getExecutablePath() {
   const ssize_t length = readlink("/proc/self/exe", path, sizeof(path) - 1);
   return length > 0 ? std::string(path, static_cast<size_t>(length))
                     : std::string();
+#endif
+}
+
+std::filesystem::path cookieStoragePath(const std::string &stateRoot) {
+  return std::filesystem::path(stateRoot) / ".playground-cookies";
+}
+
+void restrictStateFile(const std::filesystem::path &path) {
+#if !defined(_WIN32)
+  chmod(path.c_str(), S_IRUSR | S_IWUSR);
+#else
+  (void)path;
 #endif
 }
 
@@ -271,8 +302,9 @@ private:
 
 class DesktopWriteStream final : public IWriteStream {
 public:
-  DesktopWriteStream(const std::string &path, const char *key, bool encrypt)
-      : m_decrypter(0), m_encrypt(encrypt) {
+  DesktopWriteStream(const std::string &path, const char *key, bool encrypt,
+                     RuntimePlatform::StorageCommit commit)
+      : m_decrypter(0), m_encrypt(encrypt), m_commit(std::move(commit)) {
     std::error_code error;
     std::filesystem::create_directories(
         std::filesystem::path(path).parent_path(), error);
@@ -292,8 +324,12 @@ public:
     }
   }
   ~DesktopWriteStream() override {
-    if (m_file)
-      std::fclose(m_file);
+    if (m_file) {
+      const bool closed = std::fclose(m_file) == 0;
+      m_file = nullptr;
+      if ((!closed || (m_commit && !m_commit())) && !m_failed)
+        m_failed = true;
+    }
   }
   ESTATUS getStatus() override {
     return m_file && !m_failed ? NORMAL : CAN_NOT_WRITE;
@@ -325,6 +361,7 @@ private:
   CDecryptBaseClass m_decrypter;
   bool m_encrypt{};
   bool m_failed{};
+  RuntimePlatform::StorageCommit m_commit;
 };
 
 class DesktopFontSystem final : public IFontIF {
@@ -356,13 +393,16 @@ public:
 
 class DesktopTmpFile final : public ITmpFile {
 public:
-  explicit DesktopTmpFile(const std::string &path) : m_path(path) {
+  DesktopTmpFile(const std::string &path, RuntimePlatform::StorageCommit commit)
+      : m_path(path), m_commit(std::move(commit)),
+        m_started(std::chrono::steady_clock::now()) {
     std::error_code error;
     std::filesystem::create_directories(
         std::filesystem::path(path).parent_path(), error);
     m_file = error ? nullptr : std::fopen(path.c_str(), "wb");
     if (!m_file)
-      std::fprintf(stderr, "asset download: cannot open temporary file %s: %s\n",
+      std::fprintf(stderr,
+                   "asset download: cannot open temporary file %s: %s\n",
                    m_path.c_str(),
                    error ? error.message().c_str() : std::strerror(errno));
   }
@@ -371,6 +411,7 @@ public:
     if (!m_file)
       return 0;
     const size_t written = std::fwrite(p, 1, n, m_file);
+    m_bytesWritten += written;
     if (written != n)
       std::fprintf(stderr,
                    "asset download: short write to %s: requested=%zu "
@@ -383,6 +424,15 @@ public:
       return 0;
     int r = std::fclose(m_file);
     m_file = nullptr;
+    if (!r && m_commit && !m_commit())
+      r = -1;
+    const double seconds = std::chrono::duration<double>(
+                               std::chrono::steady_clock::now() - m_started)
+                               .count();
+    std::fprintf(stderr,
+                 "asset download write: path=%s bytes=%zu elapsed=%.3fs "
+                 "result=%d\n",
+                 m_path.c_str(), m_bytesWritten, seconds, r);
     return r;
   }
   bool ready() const { return m_file != nullptr; }
@@ -390,6 +440,9 @@ public:
 private:
   std::string m_path;
   FILE *m_file;
+  RuntimePlatform::StorageCommit m_commit;
+  std::chrono::steady_clock::time_point m_started;
+  std::size_t m_bytesWritten{};
 };
 
 struct DesktopThread {
@@ -409,17 +462,34 @@ std::string withSeparator(std::string path) {
   return path;
 }
 
-constexpr char PublicKey[] =
-    "-----BEGIN PUBLIC KEY-----\n"
-    "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDE0RNd6047aeBirzVb61DolatY\n"
-    "YWpaEUIPugOIkobHDc9qVR5iliMLyC0ErXO1siLBwN+U3zaDVOa5uhXbiS7uYq5c\n"
-    "cpxComxTnZtcn/b+mKDpYWLaC0Gv7UoiT8rpNqN3Vko645usz9OFc4VciijsHGRP\n"
-    "XmmmoP6qykfI/vba8wIDAQAB\n"
-    "-----END PUBLIC KEY-----\n";
+std::string joinUriPath(const std::string &root, const std::string &relative) {
+  if (relative.empty())
+    return root;
+  if (relative.front() == '/' || relative.front() == '\\' ||
+      relative.find('\\') != std::string::npos ||
+      relative.find(':') != std::string::npos)
+    return {};
+  size_t begin = 0;
+  while (begin <= relative.size()) {
+    const size_t end = relative.find('/', begin);
+    const std::string component = relative.substr(
+        begin, end == std::string::npos ? std::string::npos : end - begin);
+    if (component == "." || component == "..")
+      return {};
+    for (unsigned char byte : component) {
+      if (byte < 0x20 || byte == 0x7f)
+        return {};
+    }
+    if (end == std::string::npos)
+      break;
+    begin = end + 1;
+  }
+  return root + relative;
+}
 
 std::string randomIdentifier() {
   unsigned char bytes[16];
-  if (RAND_bytes(bytes, sizeof(bytes)) != 1)
+  if (!cryptoRandom(bytes, sizeof(bytes)))
     return {};
   bytes[6] = static_cast<unsigned char>((bytes[6] & 0x0f) | 0x40);
   bytes[8] = static_cast<unsigned char>((bytes[8] & 0x3f) | 0x80);
@@ -431,15 +501,6 @@ std::string randomIdentifier() {
       bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13],
       bytes[14], bytes[15]);
   return output;
-}
-
-EVP_PKEY *loadPublicKey() {
-  BIO *input = BIO_new_mem_buf(PublicKey, sizeof(PublicKey) - 1);
-  if (!input)
-    return nullptr;
-  EVP_PKEY *key = PEM_read_bio_PUBKEY(input, nullptr, nullptr, nullptr);
-  BIO_free(input);
-  return key;
 }
 
 std::string stateKey(const char *category, const char *name,
@@ -455,8 +516,9 @@ std::string stateKey(const char *category, const char *name,
 }
 
 std::string sha1Hex(const char *data, size_t size) {
-  unsigned char hash[SHA_DIGEST_LENGTH];
-  SHA1(reinterpret_cast<const unsigned char *>(data), size, hash);
+  unsigned char hash[20];
+  if (!cryptoSha1(data, size, hash))
+    return {};
   std::ostringstream output;
   output << std::hex << std::setfill('0');
   for (unsigned char byte : hash)
@@ -465,8 +527,9 @@ std::string sha1Hex(const char *data, size_t size) {
 }
 
 std::string sha512Hex(const char *data, size_t size) {
-  unsigned char hash[SHA512_DIGEST_LENGTH];
-  SHA512(reinterpret_cast<const unsigned char *>(data), size, hash);
+  unsigned char hash[64];
+  if (!cryptoSha512(data, size, hash))
+    return {};
   std::ostringstream output;
   output << std::hex << std::setfill('0');
   for (unsigned char byte : hash)
@@ -625,18 +688,30 @@ char *DesktopScriptRegistry::createHeader() {
   return encoded;
 }
 
-DesktopPlatform::DesktopPlatform(std::string installRoot,
-                                 std::string externalRoot,
+RuntimePlatform::RuntimePlatform(std::string installRoot,
+                                 std::string contentRoot,
                                  GLProcResolver resolver)
+    : RuntimePlatform(std::move(installRoot), contentRoot, contentRoot,
+                      resolver) {}
+
+RuntimePlatform::RuntimePlatform(std::string installRoot,
+                                 std::string contentRoot, std::string stateRoot,
+                                 GLProcResolver resolver,
+                                 StorageCommit commitState,
+                                 StorageCommit commitContent)
     : m_installRoot(withSeparator(std::move(installRoot))),
-      m_externalRoot(withSeparator(std::move(externalRoot))),
-      m_glResolver(resolver) {
+      m_contentRoot(withSeparator(std::move(contentRoot))),
+      m_stateRoot(withSeparator(std::move(stateRoot))),
+      m_commitState(std::move(commitState)),
+      m_commitContent(std::move(commitContent)), m_glResolver(resolver) {
   std::error_code error;
-  std::filesystem::create_directories(m_externalRoot, error);
-  m_state = std::make_unique<DesktopStateStore>(
-      std::filesystem::path(m_externalRoot) / ".playground-state");
+  std::filesystem::create_directories(m_contentRoot, error);
+  if (!error)
+    std::filesystem::create_directories(m_stateRoot, error);
+  m_state = std::make_unique<RuntimeStateStore>(
+      std::filesystem::path(m_stateRoot) / ".playground-state", m_commitState);
   m_scriptRegistry = std::make_unique<DesktopScriptRegistry>();
-  m_widgetManager = std::make_unique<DesktopWidgetManager>(this);
+  m_widgetManager = std::make_unique<RuntimeWidgetManager>(this);
   m_deviceId = m_state->get("system/device-id");
   if (m_deviceId.empty()) {
     m_deviceId = randomIdentifier();
@@ -644,25 +719,25 @@ DesktopPlatform::DesktopPlatform(std::string installRoot,
       m_state->set("system/device-id", m_deviceId);
   }
 }
-DesktopPlatform::~DesktopPlatform() = default;
+RuntimePlatform::~RuntimePlatform() = default;
 
-bool DesktopPlatform::init() {
+bool RuntimePlatform::init() {
   m_audio = getNewAudioImplementation();
   return m_audio && m_audio->init();
 }
 
-bool DesktopPlatform::useEncryption() { return true; }
-void DesktopPlatform::validateEnvironment() {
+bool RuntimePlatform::useEncryption() { return true; }
+void RuntimePlatform::validateEnvironment() {
   std::error_code error;
   if (!std::filesystem::is_directory(m_installRoot, error))
-    logging("desktop install root is unavailable: %s", m_installRoot.c_str());
+    logging("platform install root is unavailable: %s", m_installRoot.c_str());
   error.clear();
-  std::filesystem::create_directories(m_externalRoot, error);
+  std::filesystem::create_directories(m_contentRoot, error);
   if (error)
-    logging("desktop external root is unavailable: %s (%s)",
-            m_externalRoot.c_str(), error.message().c_str());
+    logging("platform content root is unavailable: %s (%s)",
+            m_contentRoot.c_str(), error.message().c_str());
 }
-void DesktopPlatform::detailedLogging(const char *file, const char *fn,
+void RuntimePlatform::detailedLogging(const char *file, const char *fn,
                                       int line, const char *fmt, ...) {
   std::fprintf(stderr, "%s:%d %s: ", file, line, fn);
   va_list a;
@@ -671,49 +746,56 @@ void DesktopPlatform::detailedLogging(const char *file, const char *fn,
   va_end(a);
   std::fputc('\n', stderr);
 }
-void DesktopPlatform::logging(const char *fmt, ...) {
+void RuntimePlatform::logging(const char *fmt, ...) {
   va_list a;
   va_start(a, fmt);
   std::vfprintf(stderr, fmt, a);
   va_end(a);
   std::fputc('\n', stderr);
 }
-void *DesktopPlatform::ifopen(const char *n, const char *m) {
+void *RuntimePlatform::ifopen(const char *n, const char *m) {
   return std::fopen(n, m);
 }
-void DesktopPlatform::ifclose(void *f) {
+void RuntimePlatform::ifclose(void *f) {
   if (f)
     std::fclose(static_cast<FILE *>(f));
 }
-int DesktopPlatform::ifseek(void *f, long o, int w) {
+int RuntimePlatform::ifseek(void *f, long o, int w) {
   return std::fseek(static_cast<FILE *>(f), o, w);
 }
-u32 DesktopPlatform::ifread(void *p, u32 s, u32 n, void *f) {
+u32 RuntimePlatform::ifread(void *p, u32 s, u32 n, void *f) {
   return static_cast<u32>(std::fread(p, s, n, static_cast<FILE *>(f)));
 }
-u32 DesktopPlatform::ifwrite(const void *p, u32 s, u32 n, void *f) {
+u32 RuntimePlatform::ifwrite(const void *p, u32 s, u32 n, void *f) {
   return static_cast<u32>(std::fwrite(p, s, n, static_cast<FILE *>(f)));
 }
-int DesktopPlatform::ifflush(void *f) {
+int RuntimePlatform::ifflush(void *f) {
   return std::fflush(static_cast<FILE *>(f));
 }
-long DesktopPlatform::iftell(void *f) {
+long RuntimePlatform::iftell(void *f) {
   return std::ftell(static_cast<FILE *>(f));
 }
-bool DesktopPlatform::icreateEmptyFile(const char *n) {
+bool RuntimePlatform::icreateEmptyFile(const char *n) {
   FILE *f = std::fopen(n, "wb");
   if (!f)
     return false;
   std::fclose(f);
   return true;
 }
-int DesktopPlatform::irename(const char *a, const char *b) {
+int RuntimePlatform::irename(const char *a, const char *b) {
+  const auto started = std::chrono::steady_clock::now();
+  const bool stateSource = a && !std::strncmp(a, "file://state/", 13);
+  const bool stateDestination = b && !std::strncmp(b, "file://state/", 13);
+  if (stateSource != stateDestination) {
+    errno = EXDEV;
+    return -1;
+  }
   const std::string source = resolvePath(a, nullptr);
   const std::string destination = resolvePath(b, nullptr);
 #if defined(_WIN32)
-  const bool moved = MoveFileExA(source.c_str(), destination.c_str(),
-                                 MOVEFILE_REPLACE_EXISTING |
-                                     MOVEFILE_WRITE_THROUGH) != 0;
+  const bool moved =
+      MoveFileExA(source.c_str(), destination.c_str(),
+                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
   const DWORD moveError = moved ? ERROR_SUCCESS : GetLastError();
   const int result = moved ? 0 : -1;
   if (result)
@@ -727,55 +809,82 @@ int DesktopPlatform::irename(const char *a, const char *b) {
     std::fprintf(stderr, "asset download: cannot publish %s -> %s: %s\n",
                  source.c_str(), destination.c_str(), std::strerror(errno));
 #endif
+  StorageCommit &commit = stateDestination ? m_commitState : m_commitContent;
+  if (!result && commit && !commit()) {
+    std::fprintf(stderr, "asset download: storage commit failed after %s\n",
+                 destination.c_str());
+    return -1;
+  }
+  if (!result) {
+    const double seconds = std::chrono::duration<double>(
+                               std::chrono::steady_clock::now() - started)
+                               .count();
+    std::fprintf(stderr,
+                 "asset download publication: source=%s destination=%s "
+                 "elapsed=%.3fs\n",
+                 source.c_str(), destination.c_str(), seconds);
+  }
   return result;
 }
-const char *DesktopPlatform::getBundleVersion() { return "9.11-desktop"; }
-const char *DesktopPlatform::getBundleId() {
+const char *RuntimePlatform::getBundleVersion() { return "9.11-desktop"; }
+const char *RuntimePlatform::getBundleId() {
   return "klb.android.lovelive.desktop";
 }
-s64 DesktopPlatform::nanotime() {
+s64 RuntimePlatform::nanotime() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
              std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
 
-std::string DesktopPlatform::resolvePath(const char *input,
+std::string RuntimePlatform::resolvePath(const char *input,
                                          bool *readOnly) const {
   if (readOnly)
     *readOnly = false;
   if (!input)
     return {};
   std::string path(input);
+  bool matched = false;
   auto map = [&](const char *prefix, const std::string &root,
                  bool ro) -> std::string {
     size_t n = std::strlen(prefix);
     if (path.compare(0, n, prefix) == 0) {
+      matched = true;
       if (readOnly)
         *readOnly = ro;
-      return root + path.substr(n);
+      return joinUriPath(root, path.substr(n));
     }
     return {};
   };
-  if (auto v = map("file://external/", m_externalRoot, false); !v.empty())
-    return v;
-  if (auto v = map("file://install/", m_installRoot, true); !v.empty())
-    return v;
+  auto mapped = map("file://external/", m_contentRoot, false);
+  if (matched)
+    return mapped;
+  mapped = map("file://state/", m_stateRoot, false);
+  if (matched)
+    return mapped;
+  mapped = map("file://install/", m_installRoot, true);
+  if (matched)
+    return mapped;
   const char *assetPrefixes[]{"file://asset/", "asset://"};
   for (const char *prefix : assetPrefixes) {
     size_t n = std::strlen(prefix);
     if (path.compare(0, n, prefix) == 0) {
       std::string relative = path.substr(n);
-      std::string external = m_externalRoot + relative;
+      std::string external = joinUriPath(m_contentRoot, relative);
+      if (external.empty())
+        return {};
       if (std::filesystem::exists(external))
         return external;
+      std::string install = joinUriPath(m_installRoot, relative);
+      if (install.empty() || !std::filesystem::exists(install))
+        return {};
       if (readOnly)
         *readOnly = true;
-      return m_installRoot + relative;
+      return install;
     }
   }
   return path;
 }
-IReadStream *DesktopPlatform::openReadStream(const char *n, bool decrypt,
+IReadStream *RuntimePlatform::openReadStream(const char *n, bool decrypt,
                                              u32 mode) {
   if (!n)
     return nullptr;
@@ -786,20 +895,21 @@ IReadStream *DesktopPlatform::openReadStream(const char *n, bool decrypt,
     key = n + 8;
   return new DesktopReadStream(resolvePath(n, nullptr), key, decrypt, mode);
 }
-IReadStream *DesktopPlatform::openWriteStream(const char *n, bool encrypt,
+IReadStream *RuntimePlatform::openWriteStream(const char *n, bool encrypt,
                                               u32) {
   if (!n)
     return nullptr;
   const char *key = !std::strncmp(n, "file://", 7) ? n + 7 : n;
-  return reinterpret_cast<IReadStream *>(
-      new DesktopWriteStream(resolvePath(n, nullptr), key, encrypt));
+  return reinterpret_cast<IReadStream *>(new DesktopWriteStream(
+      resolvePath(n, nullptr), key, encrypt,
+      !std::strncmp(n, "file://state/", 13) ? m_commitState : m_commitContent));
 }
-void DesktopPlatform::beforeAssertFunction(const char *function, bool) {
+void RuntimePlatform::beforeAssertFunction(const char *function, bool) {
   logging("assert callback: %s", function ? function : "");
   if (function && function[0])
     CKLBScriptEnv::getInstance().call_cbInt(function, 0);
 }
-void DesktopPlatform::addExtMsg(const char *key, const char *value,
+void RuntimePlatform::addExtMsg(const char *key, const char *value,
                                 bool sendImmediately) {
   if (!key || !key[0])
     return;
@@ -807,24 +917,32 @@ void DesktopPlatform::addExtMsg(const char *key, const char *value,
   if (sendImmediately)
     logging("diagnostic %s=%s", key, value ? value : "");
 }
-void DesktopPlatform::sendException(const char *m) {
+void RuntimePlatform::sendException(const char *m) {
   logging("exception: %s", m ? m : "");
 }
-void DesktopPlatform::leaveBreadcrumb(const char *message) {
+void RuntimePlatform::leaveBreadcrumb(const char *message) {
   logging("script: %s", message ? message : "");
 }
-char *DesktopPlatform::createRequestIdHeader() {
+char *RuntimePlatform::createRequestIdHeader() {
   return m_scriptRegistry->createHeader();
 }
-void DesktopPlatform::copyToClipboard(const char *text) {
+void RuntimePlatform::copyToClipboard(const char *text) {
+#if defined(__SWITCH__)
+  logging("clipboard unavailable on Nintendo Switch: %s", text ? text : "");
+#else
   if (!SDL_SetClipboardText(text ? text : ""))
     logging("clipboard write failed: %s", SDL_GetError());
+#endif
 }
-double DesktopPlatform::getUsedMemorySize() {
-#if defined(_WIN32)
+double RuntimePlatform::getUsedMemorySize() {
+#if defined(__SWITCH__)
+  std::uint64_t used = 0;
+  std::uint64_t total = 0;
+  return switch_runtime::processMemory(used, total) ? static_cast<double>(used)
+                                                    : 0.0;
+#elif defined(_WIN32)
   PROCESS_MEMORY_COUNTERS counters{};
-  return GetProcessMemoryInfo(GetCurrentProcess(), &counters,
-                              sizeof(counters))
+  return GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))
              ? static_cast<double>(counters.WorkingSetSize)
              : 0.0;
 #else
@@ -837,8 +955,14 @@ double DesktopPlatform::getUsedMemorySize() {
          static_cast<double>(sysconf(_SC_PAGESIZE));
 #endif
 }
-double DesktopPlatform::getFreeMemorySize() {
-#if defined(_WIN32)
+double RuntimePlatform::getFreeMemorySize() {
+#if defined(__SWITCH__)
+  std::uint64_t total = 0;
+  std::uint64_t used = 0;
+  if (!switch_runtime::processMemory(used, total))
+    return 0.0;
+  return static_cast<double>(total > used ? total - used : 0);
+#elif defined(_WIN32)
   MEMORYSTATUSEX status{};
   status.dwLength = sizeof(status);
   return GlobalMemoryStatusEx(&status)
@@ -852,29 +976,35 @@ double DesktopPlatform::getFreeMemorySize() {
              : static_cast<double>(pages) * static_cast<double>(pageSize);
 #endif
 }
-bool DesktopPlatform::getSMode() { return false; }
-void DesktopPlatform::getDateTimeNow(char *b, int n) {
+bool RuntimePlatform::getSMode() { return false; }
+void RuntimePlatform::getDateTimeNow(char *b, int n) {
   std::time_t t = std::time(nullptr);
   std::tm tm{};
   getLocalTime(t, tm);
   std::strftime(b, n, "%Y-%m-%d %H:%M:%S", &tm);
 }
-double DesktopPlatform::getUNIXTimeNow() {
+double RuntimePlatform::getUNIXTimeNow() {
   return static_cast<double>(std::time(nullptr));
 }
-void DesktopPlatform::requestExtensionEvent(const char *eventName,
+void RuntimePlatform::requestExtensionEvent(const char *eventName,
                                             ExtensionEventArgs *arguments) {
-  logging("desktop extension event requested: %s (%zu arguments); no matching "
-          "desktop extension is registered",
+  logging("platform extension event requested: %s (%zu arguments); no matching "
+          "extension is registered",
           eventName ? eventName : "<unnamed>",
           arguments ? arguments->size() : 0U);
 }
-void DesktopPlatform::savePng2Album(const char *path) {
+void RuntimePlatform::savePng2Album(const char *path) {
   if (!path || !path[0])
     return;
   const std::filesystem::path source(resolvePath(path, nullptr));
+#if defined(__SWITCH__)
+  std::string error;
+  if (!switch_runtime::savePngToAlbum(source.string(), error))
+    logging("screenshot album export failed: %s", error.c_str());
+  return;
+#else
   const std::filesystem::path destinationDirectory =
-      std::filesystem::path(m_externalRoot) / "Pictures";
+      std::filesystem::path(m_contentRoot) / "Pictures";
   std::error_code error;
   std::filesystem::create_directories(destinationDirectory, error);
   if (error) {
@@ -890,47 +1020,71 @@ void DesktopPlatform::savePng2Album(const char *path) {
     logging("screenshot export failed: %s", error.message().c_str());
   else
     logging("screenshot exported to %s", destination.c_str());
+#endif
 }
-void DesktopPlatform::setIdleTimerActivity(bool active) {
+void RuntimePlatform::setIdleTimerActivity(bool active) {
+#if defined(__SWITCH__)
+  if (!switch_runtime::setAutoSleepDisabled(active))
+    logging("failed to change Switch auto-sleep state");
+#else
   if (active)
     SDL_DisableScreenSaver();
   else
     SDL_EnableScreenSaver();
+#endif
 }
-ITmpFile *DesktopPlatform::openTmpFile(const char *p) {
-  auto *f = new DesktopTmpFile(resolvePath(p, nullptr));
+ITmpFile *RuntimePlatform::openTmpFile(const char *p) {
+  auto *f = new DesktopTmpFile(resolvePath(p, nullptr),
+                               p && !std::strncmp(p, "file://state/", 13)
+                                   ? m_commitState
+                                   : m_commitContent);
   if (!f->ready()) {
     delete f;
     return nullptr;
   }
   return f;
 }
-int DesktopPlatform::removeTmpFile(const char *p) {
-  return std::remove(resolvePath(p, nullptr).c_str());
+int RuntimePlatform::removeTmpFile(const char *p) {
+  int result = std::remove(resolvePath(p, nullptr).c_str());
+  StorageCommit &commit = p && !std::strncmp(p, "file://state/", 13)
+                              ? m_commitState
+                              : m_commitContent;
+  return !result && commit && !commit() ? -1 : result;
 }
-bool DesktopPlatform::removeFileOrFolder(const char *p) {
+bool RuntimePlatform::removeFileOrFolder(const char *p) {
   std::error_code e;
   std::filesystem::remove_all(resolvePath(p, nullptr), e);
-  return !e;
+  StorageCommit &commit = p && !std::strncmp(p, "file://state/", 13)
+                              ? m_commitState
+                              : m_commitContent;
+  return !e && (!commit || commit());
 }
-void DesktopPlatform::excludePathFromBackup(const char *) {
+void RuntimePlatform::excludePathFromBackup(const char *) {
   // Desktop save data is not managed by a mobile cloud-backup service.
 }
-u32 DesktopPlatform::getFreeSpaceExternalKB() {
+u32 RuntimePlatform::getFreeSpaceExternalKB() {
   std::error_code e;
-  auto s = std::filesystem::space(m_externalRoot, e);
+  auto s = std::filesystem::space(m_contentRoot, e);
   return e ? 0
            : static_cast<u32>(
                  std::min<uintmax_t>(s.available / 1024, UINT32_MAX));
 }
-u32 DesktopPlatform::getPhysicalMemKB() {
+u32 RuntimePlatform::getPhysicalMemKB() {
+#if defined(__SWITCH__)
+  std::uint64_t total = 0;
+  std::uint64_t used = 0;
+  return switch_runtime::processMemory(used, total)
+             ? static_cast<u32>(std::min<u64>(total / 1024, UINT32_MAX))
+             : 0;
+#else
   const int megabytes = SDL_GetSystemRAM();
   return megabytes <= 0
              ? 0
              : static_cast<u32>(std::min<uint64_t>(
                    static_cast<uint64_t>(megabytes) * 1024, UINT32_MAX));
+#endif
 }
-char *DesktopPlatform::getDeviceIntegrityInfo(const char *request) {
+char *RuntimePlatform::getDeviceIntegrityInfo(const char *request) {
   const DesktopHostInfo system = getDesktopHostInfo();
 
   std::map<std::string, std::string> properties;
@@ -1001,30 +1155,37 @@ char *DesktopPlatform::getDeviceIntegrityInfo(const char *request) {
   std::memcpy(output, result.c_str(), result.size() + 1);
   return output;
 }
-void DesktopPlatform::decompressBGM(bool decompress) {
+void RuntimePlatform::decompressBGM(bool decompress) {
   g_decompressBGM = decompress;
 }
-s64 DesktopPlatform::getElapsedTime() { return nanotime() / 1000000; }
-void *DesktopPlatform::getFontSystem() {
+s64 RuntimePlatform::getElapsedTime() { return nanotime() / 1000000; }
+void *RuntimePlatform::getFontSystem() {
   static DesktopFontSystem fontSystem;
   return &fontSystem;
 }
-void DesktopPlatform::deleteFontSystem(void *font) {
+void RuntimePlatform::deleteFontSystem(void *font) {
   FontObject::destroyFont(static_cast<FontObject *>(font));
 }
-void *DesktopPlatform::getFont(int s, const char *n) {
+void *RuntimePlatform::getFont(int s, const char *n) {
   return FontObject::createFont(n, static_cast<u32>(s));
 }
-void DesktopPlatform::deleteFont(void *f) {
+void RuntimePlatform::deleteFont(void *f) {
   FontObject::destroyFont(static_cast<FontObject *>(f));
 }
-const char *DesktopPlatform::getFullPath(const char *p, bool *ro) {
+const char *RuntimePlatform::getFullPath(const char *p, bool *ro) {
   std::string v = resolvePath(p, ro);
+  // Match CKLBPathConv on Android: an asset which exists in neither the
+  // writable content root nor the installed bundle has no native path.  In
+  // particular, CKLBLuaDB passes this nullptr to SQLite, whose documented
+  // temporary-database behavior is how the original client tolerates master
+  // databases that are supplied by the initial package download.
+  if (v.empty())
+    return nullptr;
   char *out = new char[v.size() + 1];
   std::memcpy(out, v.c_str(), v.size() + 1);
   return out;
 }
-const char *DesktopPlatform::getPlatform() {
+const char *RuntimePlatform::getPlatform() {
   static const std::string platform = [] {
     const DesktopHostInfo system = getDesktopHostInfo();
     std::time_t now = std::time(nullptr);
@@ -1041,18 +1202,18 @@ const char *DesktopPlatform::getPlatform() {
   }();
   return platform.c_str();
 }
-void *DesktopPlatform::getGLExtension(const char *n) {
+void *RuntimePlatform::getGLExtension(const char *n) {
   return m_glResolver ? m_glResolver(n) : nullptr;
 }
-const char *DesktopPlatform::getShaderExtension(int) { return ""; }
-bool DesktopPlatform::setFrameRate(int n) {
+const char *RuntimePlatform::getShaderExtension(int) { return ""; }
+bool RuntimePlatform::setFrameRate(int n) {
   if (n <= 0)
     return false;
   m_frameRate = n;
   return true;
 }
-int DesktopPlatform::getMaxFrameRate() { return 240; }
-IWidget *DesktopPlatform::createControl(IWidget::CONTROL type, int id,
+int RuntimePlatform::getMaxFrameRate() { return 240; }
+IWidget *RuntimePlatform::createControl(IWidget::CONTROL type, int id,
                                         const char *caption, int x, int y,
                                         int width, int height, ...) {
   va_list arguments;
@@ -1062,10 +1223,10 @@ IWidget *DesktopPlatform::createControl(IWidget::CONTROL type, int id,
   va_end(arguments);
   return widget;
 }
-void DesktopPlatform::destroyControl(IWidget *widget) {
+void RuntimePlatform::destroyControl(IWidget *widget) {
   m_widgetManager->destroy(widget);
 }
-bool DesktopPlatform::callApplication(APP_TYPE type, ...) {
+bool RuntimePlatform::callApplication(APP_TYPE type, ...) {
   va_list arguments;
   va_start(arguments, type);
   std::string url;
@@ -1134,54 +1295,71 @@ bool DesktopPlatform::callApplication(APP_TYPE type, ...) {
     break;
   }
   va_end(arguments);
-  return !url.empty() && SDL_OpenURL(url.c_str());
+  return !url.empty() && openExternalUrl(url.c_str());
 }
-void DesktopPlatform::clearCookies() {
+
+bool RuntimePlatform::openExternalUrl(const char *url) {
+#if defined(__SWITCH__)
+  const bool shown = switch_runtime::showWebPage(url);
+  if (!shown)
+    logging("Switch web applet failed");
+  return shown;
+#else
+  return url && url[0] && SDL_OpenURL(url);
+#endif
+}
+void RuntimePlatform::clearCookies() {
+  const std::filesystem::path path = cookieStoragePath(m_stateRoot);
+  const bool clearedInMemory = CurlObjectInternal::clearCookieStorage();
   std::error_code error;
-  std::filesystem::remove(
-      std::filesystem::path(m_externalRoot) / ".playground-cookies", error);
+  if (!clearedInMemory)
+    std::filesystem::remove(path, error);
+  else
+    restrictStateFile(path);
+  if (!error && m_commitState && !m_commitState())
+    logging("cookie SaveData clear commit failed");
 }
-bool DesktopPlatform::readyDevID() { return !m_deviceId.empty(); }
-int DesktopPlatform::getDevID(char *b, int n) {
+bool RuntimePlatform::readyDevID() { return !m_deviceId.empty(); }
+int RuntimePlatform::getDevID(char *b, int n) {
   copyText(m_deviceId, b, n);
   return b && n > 0 ? static_cast<int>(std::strlen(b)) : 0;
 }
-void DesktopPlatform::exitGame() { m_quitRequested = true; }
-bool DesktopPlatform::setSecureDataID(const char *s, const char *v) {
+void RuntimePlatform::exitGame() { m_quitRequested = true; }
+bool RuntimePlatform::setSecureDataID(const char *s, const char *v) {
   return m_state->set(stateKey("secure", s, "user_id"), v ? v : "");
 }
-bool DesktopPlatform::setSecureDataPW(const char *s, const char *v) {
+bool RuntimePlatform::setSecureDataPW(const char *s, const char *v) {
   return m_state->set(stateKey("secure", s, "passwd"), v ? v : "");
 }
-int DesktopPlatform::getSecureDataID(const char *s, char *b, int n) {
+int RuntimePlatform::getSecureDataID(const char *s, char *b, int n) {
   const auto v = m_state->get(stateKey("secure", s, "user_id"));
   copyText(v, b, n);
   return static_cast<int>(v.size());
 }
-int DesktopPlatform::getSecureDataPW(const char *s, char *b, int n) {
+int RuntimePlatform::getSecureDataPW(const char *s, char *b, int n) {
   const auto v = m_state->get(stateKey("secure", s, "passwd"));
   copyText(v, b, n);
   return static_cast<int>(v.size());
 }
-bool DesktopPlatform::delSecureDataID(const char *s) {
+bool RuntimePlatform::delSecureDataID(const char *s) {
   return m_state->erase(stateKey("secure", s, "user_id"));
 }
-bool DesktopPlatform::delSecureDataPW(const char *s) {
+bool RuntimePlatform::delSecureDataPW(const char *s) {
   return m_state->erase(stateKey("secure", s, "passwd"));
 }
-void DesktopPlatform::setUserDefaults(const char *k, bool v) {
+void RuntimePlatform::setUserDefaults(const char *k, bool v) {
   m_state->set(stateKey("default", k), v ? "TRUE" : "FALSE");
 }
-bool DesktopPlatform::getUserDefaults(const char *k) {
+bool RuntimePlatform::getUserDefaults(const char *k) {
   return m_state->get(stateKey("default", k)) == "TRUE";
 }
-void DesktopPlatform::setUserDefaults(const char *k, const char *v) {
+void RuntimePlatform::setUserDefaults(const char *k, const char *v) {
   m_state->set(stateKey("default", k), v ? v : "");
 }
-void DesktopPlatform::getUserDefaults(const char *k, char *b, int n) {
+void RuntimePlatform::getUserDefaults(const char *k, char *b, int n) {
   copyText(m_state->get(stateKey("default", k)), b, n);
 }
-void *DesktopPlatform::createThread(s32 (*fn)(void *, void *), void *data) {
+void *RuntimePlatform::createThread(s32 (*fn)(void *, void *), void *data) {
   auto *t = new DesktopThread;
   t->thread = std::thread([t, fn, data] {
     t->result = fn(t, data);
@@ -1189,10 +1367,10 @@ void *DesktopPlatform::createThread(s32 (*fn)(void *, void *), void *data) {
   });
   return t;
 }
-void DesktopPlatform::exitThread(void *h, s32 s) {
+void RuntimePlatform::exitThread(void *h, s32 s) {
   static_cast<DesktopThread *>(h)->result = s;
 }
-bool DesktopPlatform::watchThread(void *h, s32 *s) {
+bool RuntimePlatform::watchThread(void *h, s32 *s) {
   auto *t = static_cast<DesktopThread *>(h);
   if (!t->done)
     return true;
@@ -1200,13 +1378,13 @@ bool DesktopPlatform::watchThread(void *h, s32 *s) {
     *s = t->result;
   return false;
 }
-void DesktopPlatform::deleteThread(void *h) {
+void RuntimePlatform::deleteThread(void *h) {
   auto *t = static_cast<DesktopThread *>(h);
   if (t->thread.joinable())
     t->thread.join();
   delete t;
 }
-void DesktopPlatform::breakThread(void *handle) {
+void RuntimePlatform::breakThread(void *handle) {
   if (!handle)
     return;
   auto *thread = static_cast<DesktopThread *>(handle);
@@ -1219,25 +1397,25 @@ void DesktopPlatform::breakThread(void *handle) {
     logging("desktop worker cancellation failed: %d", result);
 #endif
 }
-int DesktopPlatform::genUserID(char *b, int n) {
+int RuntimePlatform::genUserID(char *b, int n) {
   const std::string id = randomIdentifier();
   copyText(id, b, n);
   return b && n > 0 ? static_cast<int>(std::strlen(b)) : 0;
 }
-int DesktopPlatform::genUserPW(const char *s, char *b, int n) {
+int RuntimePlatform::genUserPW(const char *s, char *b, int n) {
   unsigned char randomBytes[4];
-  if (RAND_bytes(randomBytes, sizeof(randomBytes)) != 1)
+  if (!cryptoRandom(randomBytes, sizeof(randomBytes)))
     return 0;
   u32 randomValue;
   std::memcpy(&randomValue, randomBytes, sizeof(randomValue));
   char input[1200];
   std::snprintf(input, sizeof(input), "%u.%u.%s", randomValue,
                 static_cast<u32>(std::time(nullptr)), s ? s : "");
-  unsigned char digest[SHA512_DIGEST_LENGTH];
-  SHA512(reinterpret_cast<const unsigned char *>(input), std::strlen(input),
-         digest);
+  unsigned char digest[64];
+  if (!cryptoSha512(input, std::strlen(input), digest))
+    return 0;
   std::string value;
-  value.reserve(SHA512_DIGEST_LENGTH * 2);
+  value.reserve(sizeof(digest) * 2);
   char hex[3];
   for (unsigned char byte : digest) {
     std::snprintf(hex, sizeof(hex), "%02x", byte);
@@ -1246,229 +1424,240 @@ int DesktopPlatform::genUserPW(const char *s, char *b, int n) {
   copyText(value, b, n);
   return b && n > 0 ? static_cast<int>(std::strlen(b)) : 0;
 }
-void DesktopPlatform::registerScriptSource(const char *source, int sourceSize,
+void RuntimePlatform::registerScriptSource(const char *source, int sourceSize,
                                            const char *sourceName) {
   m_scriptRegistry->registerSource(source, sourceSize, sourceName);
 }
-void DesktopPlatform::initStoreTransactionObserver() {
-  logging("desktop store observer initialized; purchases report unavailable");
+void RuntimePlatform::initStoreTransactionObserver() {
+  logging("store observer initialized; purchases report unavailable");
 }
-void DesktopPlatform::releaseStoreTransactionObserver() {}
-void DesktopPlatform::buyStoreItems(const char *item) {
+void RuntimePlatform::releaseStoreTransactionObserver() {}
+void RuntimePlatform::buyStoreItems(const char *item) {
   if (!CPFInterface::getInstance().isClient())
     return;
-  const char *message = "Purchases are unavailable on desktop";
+  const char *message = "Purchases are unavailable on this platform";
   CPFInterface::getInstance().client().controlEvent(
       IClientRequest::E_STORE_FAILED, nullptr,
       item && item[0] ? std::strlen(item) + 1 : 0,
       item && item[0] ? const_cast<char *>(item) : nullptr,
       std::strlen(message) + 1, const_cast<char *>(message));
 }
-void DesktopPlatform::getStoreProducts(const char *items, bool) {
+void RuntimePlatform::getStoreProducts(const char *items, bool) {
   if (!CPFInterface::getInstance().isClient())
     return;
-  const char *message = "Store products are unavailable on desktop";
+  const char *message = "Store products are unavailable on this platform";
   CPFInterface::getInstance().client().controlEvent(
       IClientRequest::E_STORE_GET_PRODUCTS_FAILED, nullptr,
       items && items[0] ? std::strlen(items) + 1 : 0,
       items && items[0] ? const_cast<char *>(items) : nullptr,
       std::strlen(message) + 1, const_cast<char *>(message));
 }
-void DesktopPlatform::finishStoreTransaction(const char *transaction) {
+void RuntimePlatform::finishStoreTransaction(const char *transaction) {
   if (!CPFInterface::getInstance().isClient())
     return;
-  const char *message = "Store restoration is unavailable on desktop";
+  const char *message = "Store restoration is unavailable on this platform";
   CPFInterface::getInstance().client().controlEvent(
       IClientRequest::E_STORE_RESTORE_FAILED, nullptr,
       transaction && transaction[0] ? std::strlen(transaction) + 1 : 0,
       transaction && transaction[0] ? const_cast<char *>(transaction) : nullptr,
       std::strlen(message) + 1, const_cast<char *>(message));
 }
-bool DesktopPlatform::publicKeyVerify(unsigned char *message, int messageLength,
+bool RuntimePlatform::publicKeyVerify(unsigned char *message, int messageLength,
                                       unsigned char *signature,
                                       int signatureLength) {
   if (!message || messageLength < 0 || !signature || signatureLength < 0)
     return false;
-  EVP_PKEY *key = loadPublicKey();
-  if (!key)
-    return false;
-
-  // SIF signs SHA-1 digests using PKCS#1 v1.5. Fedora's system crypto policy
-  // rejects EVP_DigestVerifyInit for SHA-1 signatures, although hashing and
-  // RSA public-key recovery remain available. Recover the encoded DigestInfo
-  // and compare it explicitly so the legacy protocol remains verifiable.
-  static const unsigned char sha1DigestInfoPrefix[] = {
-      0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e,
-      0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14};
-  unsigned char digest[SHA_DIGEST_LENGTH];
-  SHA1(message, static_cast<size_t>(messageLength), digest);
-
-  EVP_PKEY_CTX *context = EVP_PKEY_CTX_new(key, nullptr);
-  size_t recoveredLength = 0;
-  bool valid = context && EVP_PKEY_verify_recover_init(context) > 0 &&
-               EVP_PKEY_CTX_set_rsa_padding(context, RSA_PKCS1_PADDING) > 0 &&
-               EVP_PKEY_verify_recover(context, nullptr, &recoveredLength,
-                                       signature, signatureLength) > 0;
-  std::vector<unsigned char> recovered(recoveredLength);
-  valid = valid &&
-          EVP_PKEY_verify_recover(context, recovered.data(), &recoveredLength,
-                                  signature, signatureLength) > 0 &&
-          recoveredLength == sizeof(sha1DigestInfoPrefix) + sizeof(digest) &&
-          std::memcmp(recovered.data(), sha1DigestInfoPrefix,
-                      sizeof(sha1DigestInfoPrefix)) == 0 &&
-          std::memcmp(recovered.data() + sizeof(sha1DigestInfoPrefix), digest,
-                      sizeof(digest)) == 0;
-  EVP_PKEY_CTX_free(context);
-  EVP_PKEY_free(key);
-  return valid;
+  return cryptoPublicKeyVerify(message, static_cast<size_t>(messageLength),
+                               signature, static_cast<size_t>(signatureLength));
 }
-int DesktopPlatform::publicKeyEncrypt(unsigned char *input, int inputLength,
+int RuntimePlatform::publicKeyEncrypt(unsigned char *input, int inputLength,
                                       unsigned char *output, int outputLength) {
   if (!input || inputLength < 0 || !output || outputLength < 0)
     return -1;
-  EVP_PKEY *key = loadPublicKey();
-  if (!key)
-    return -1;
-  EVP_PKEY_CTX *context = EVP_PKEY_CTX_new(key, nullptr);
-  size_t required = 0;
-  bool valid =
-      context && EVP_PKEY_encrypt_init(context) > 0 &&
-      EVP_PKEY_CTX_set_rsa_padding(context, RSA_PKCS1_PADDING) > 0 &&
-      EVP_PKEY_encrypt(context, nullptr, &required, input, inputLength) > 0 &&
-      required <= static_cast<size_t>(outputLength) &&
-      EVP_PKEY_encrypt(context, output, &required, input, inputLength) > 0;
-  EVP_PKEY_CTX_free(context);
-  EVP_PKEY_free(key);
-  return valid ? static_cast<int>(required) : -1;
+  return cryptoPublicKeyEncrypt(input, static_cast<size_t>(inputLength), output,
+                                static_cast<size_t>(outputLength));
 }
-bool DesktopPlatform::randomBytes(unsigned char *o, int n) {
-  return o && n >= 0 && (n == 0 || RAND_bytes(o, n) == 1);
+bool RuntimePlatform::randomBytes(unsigned char *o, int n) {
+  return o && n >= 0 && cryptoRandom(o, static_cast<size_t>(n));
 }
-int DesktopPlatform::encryptAES128CBC(unsigned char *output, int outputLength,
+int RuntimePlatform::encryptAES128CBC(unsigned char *output, int outputLength,
                                       const char *input, int inputLength,
                                       const char *key, int keyLength) {
   if (!output || outputLength < 0 || !input || inputLength < 0 || !key ||
       keyLength < 16)
     return -1;
-  if (outputLength < inputLength + 32)
-    return -8;
-  if (RAND_bytes(output, 16) != 1)
-    return -1;
-  EVP_CIPHER_CTX *context = EVP_CIPHER_CTX_new();
-  int first = 0, last = 0;
-  bool valid = context &&
-               EVP_EncryptInit_ex(context, EVP_aes_128_cbc(), nullptr,
-                                  reinterpret_cast<const unsigned char *>(key),
-                                  output) == 1 &&
-               EVP_EncryptUpdate(context, output + 16, &first,
-                                 reinterpret_cast<const unsigned char *>(input),
-                                 inputLength) == 1 &&
-               EVP_EncryptFinal_ex(context, output + 16 + first, &last) == 1;
-  EVP_CIPHER_CTX_free(context);
-  return valid ? 16 + first + last : -7;
+  return cryptoEncryptAes128Cbc(output, static_cast<size_t>(outputLength),
+                                reinterpret_cast<const unsigned char *>(input),
+                                static_cast<size_t>(inputLength),
+                                reinterpret_cast<const unsigned char *>(key));
 }
-int DesktopPlatform::decryptAES128CBC(unsigned char *output, int outputLength,
+int RuntimePlatform::decryptAES128CBC(unsigned char *output, int outputLength,
                                       const char *input, int inputLength,
                                       const char *key, int keyLength) {
   if (!output || outputLength < 0 || !input || inputLength < 16 || !key ||
       keyLength < 16)
     return -1;
-  if (outputLength < inputLength - 16)
-    return -8;
-  EVP_CIPHER_CTX *context = EVP_CIPHER_CTX_new();
-  int first = 0, last = 0;
-  bool valid =
-      context &&
-      EVP_DecryptInit_ex(context, EVP_aes_128_cbc(), nullptr,
-                         reinterpret_cast<const unsigned char *>(key),
-                         reinterpret_cast<const unsigned char *>(input)) == 1 &&
-      EVP_DecryptUpdate(context, output, &first,
-                        reinterpret_cast<const unsigned char *>(input) + 16,
-                        inputLength - 16) == 1 &&
-      EVP_DecryptFinal_ex(context, output + first, &last) == 1;
-  EVP_CIPHER_CTX_free(context);
-  return valid ? first + last : -7;
+  return cryptoDecryptAes128Cbc(output, static_cast<size_t>(outputLength),
+                                reinterpret_cast<const unsigned char *>(input),
+                                static_cast<size_t>(inputLength),
+                                reinterpret_cast<const unsigned char *>(key));
 }
-bool DesktopPlatform::initNetwork() {
-  return CurlObjectInternal::initializeLibrary();
+bool RuntimePlatform::initNetwork() {
+#if defined(__SWITCH__)
+  std::string error;
+  if (!switch_runtime::sharedSwitchNetwork().initialize(error)) {
+    logging("Switch network initialization failed: %s", error.c_str());
+    return false;
+  }
+#endif
+  const bool initialized = CurlObjectInternal::initializeLibrary();
+  if (initialized && !CurlObjectInternal::configureCookieStorage(
+                         cookieStoragePath(m_stateRoot).string().c_str())) {
+    logging("persistent cookie storage initialization failed");
+    CurlObjectInternal::shutdownLibrary();
+#if defined(__SWITCH__)
+    switch_runtime::sharedSwitchNetwork().shutdown();
+#endif
+    return false;
+  }
+#if defined(__SWITCH__)
+  if (!initialized)
+    switch_runtime::sharedSwitchNetwork().shutdown();
+#endif
+  return initialized;
 }
-void DesktopPlatform::shutdownNetwork() {
+void RuntimePlatform::shutdownNetwork() {
+  bool changed = false;
+  if (CurlObjectInternal::flushCookieStorage(&changed) && changed) {
+    restrictStateFile(cookieStoragePath(m_stateRoot));
+    if (m_commitState && !m_commitState())
+      logging("cookie SaveData shutdown commit failed");
+  }
   CurlObjectInternal::shutdownLibrary();
+#if defined(__SWITCH__)
+  switch_runtime::sharedSwitchNetwork().shutdown();
+#endif
 }
-CurlObjectInternal *DesktopPlatform::createNetworkOperation() {
+CurlObjectInternal *RuntimePlatform::createNetworkOperation() {
   return CurlObjectInternal::create();
 }
-void DesktopPlatform::resetNetworkOperation(CurlObjectInternal *o) {
+void RuntimePlatform::resetNetworkOperation(CurlObjectInternal *o) {
   o->reset();
 }
-void DesktopPlatform::cleanupNetworkOperation(CurlObjectInternal *o) {
+void RuntimePlatform::cleanupNetworkOperation(CurlObjectInternal *o) {
   o->cleanup();
+  bool changed = false;
+  if (CurlObjectInternal::flushCookieStorage(&changed) && changed) {
+    restrictStateFile(cookieStoragePath(m_stateRoot));
+    if (m_commitState && !m_commitState())
+      logging("cookie SaveData request commit failed");
+  }
 }
-int DesktopPlatform::performNetworkOperation(CurlObjectInternal *o) {
+int RuntimePlatform::performNetworkOperation(CurlObjectInternal *o) {
+#if defined(__SWITCH__)
+  std::string error;
+  auto transfer = switch_runtime::sharedSwitchNetwork().beginTransfer(error);
+  if (!transfer) {
+    logging("Switch network transfer rejected: %s", error.c_str());
+    return 2; // CURLE_FAILED_INIT without pulling curl types into this API.
+  }
+  o->setAbortPredicate(
+      [](void *context) {
+        return static_cast<switch_runtime::SwitchNetwork::Transfer *>(context)
+            ->cancellationRequested();
+      },
+      &transfer);
+  const int result = o->perform();
+  const CurlTransferMetrics metrics = o->getTransferMetrics();
+  transfer.complete(metrics.downloadedBytes > 0.0
+                        ? static_cast<std::size_t>(metrics.downloadedBytes)
+                        : 0);
+  logging("network metrics: result=%d attempt=%llu queue=%.3fs dns=%.3fs "
+          "connect=%.3fs "
+          "first-byte=%.3fs total=%.3fs bytes=%.0f speed=%.0fB/s "
+          "connections=%ld redirects=%ld",
+          result, static_cast<unsigned long long>(metrics.attemptNumber),
+          metrics.queueSeconds, metrics.dnsSeconds, metrics.connectSeconds,
+          metrics.firstByteSeconds, metrics.totalSeconds,
+          metrics.downloadedBytes, metrics.averageBytesPerSecond,
+          metrics.connectionCount, metrics.redirectCount);
+  return result;
+#else
   return o->perform();
+#endif
 }
-void DesktopPlatform::freeNetworkFormHeaders(CurlObjectInternal *o) {
+void RuntimePlatform::freeNetworkFormHeaders(CurlObjectInternal *o) {
   o->freeFormHeaders();
 }
-void DesktopPlatform::destroyNetworkOperation(CurlObjectInternal *o) {
+void RuntimePlatform::destroyNetworkOperation(CurlObjectInternal *o) {
   CurlObjectInternal::destroy(o);
 }
-void DesktopPlatform::appendNetworkHeader(CurlObjectInternal *o,
+void RuntimePlatform::appendNetworkHeader(CurlObjectInternal *o,
                                           const char *h) {
   o->appendHeader(h);
 }
-void DesktopPlatform::setNetworkPostFields(CurlObjectInternal *o) {
+void RuntimePlatform::setNetworkPostFields(CurlObjectInternal *o) {
   o->setPostFields();
 }
-void DesktopPlatform::setNetworkPostData(CurlObjectInternal *o, long n,
+void RuntimePlatform::setNetworkPostData(CurlObjectInternal *o, long n,
                                          const void *p) {
   o->setPostData(n, p);
 }
-void DesktopPlatform::addNetworkFormData(CurlObjectInternal *o, const char *n,
+void RuntimePlatform::addNetworkFormData(CurlObjectInternal *o, const char *n,
                                          long s, const void *p) {
   o->addFormData(n, s, p);
 }
-void DesktopPlatform::setupNetworkConnection(CurlObjectInternal *o,
+void RuntimePlatform::setupNetworkConnection(CurlObjectInternal *o,
                                              const char *u, const char *p,
                                              void *c, void *a, void *h,
                                              void *w) {
   o->setupConnection(u, p, c, a, h, w);
+#if defined(__SWITCH__)
+  // Match SocketInitConfig's eight BSD sessions and fail a disconnected
+  // transfer instead of leaving the engine's worker asleep indefinitely.
+  o->configureTransportLimits(8, 20, 1024, 30);
+#endif
 }
-long DesktopPlatform::getNetworkHttpCode(CurlObjectInternal *o) {
+long RuntimePlatform::getNetworkHttpCode(CurlObjectInternal *o) {
   return o->getHttpCode();
 }
-void DesktopPlatform::startAlertDialog(const char *t, const char *m) {
+void RuntimePlatform::startAlertDialog(const char *t, const char *m) {
   logging("%s: %s", t ? t : "Alert", m ? m : "");
 }
-void DesktopPlatform::forbidSleep(bool forbidden) {
+void RuntimePlatform::forbidSleep(bool forbidden) {
+#if defined(__SWITCH__)
+  if (!switch_runtime::setAutoSleepDisabled(forbidden))
+    logging("failed to change Switch auto-sleep state");
+#else
   if (forbidden)
     SDL_DisableScreenSaver();
   else
     SDL_EnableScreenSaver();
+#endif
 }
-float DesktopPlatform::getDeviceScale() { return 1.0f; }
-void DesktopPlatform::quitGame() { m_quitRequested = true; }
-void *DesktopPlatform::allocMutex() { return new std::mutex; }
-void DesktopPlatform::freeMutex(void *p) {
+float RuntimePlatform::getDeviceScale() { return 1.0f; }
+void RuntimePlatform::quitGame() { m_quitRequested = true; }
+void *RuntimePlatform::allocMutex() { return new std::mutex; }
+void RuntimePlatform::freeMutex(void *p) {
   delete static_cast<std::mutex *>(p);
 }
-void DesktopPlatform::mutexLock(void *p) {
+void RuntimePlatform::mutexLock(void *p) {
   static_cast<std::mutex *>(p)->lock();
 }
-void DesktopPlatform::mutexUnlock(void *p) {
+void RuntimePlatform::mutexUnlock(void *p) {
   static_cast<std::mutex *>(p)->unlock();
 }
-void *DesktopPlatform::allocEventLock() { return new DesktopEvent; }
-void DesktopPlatform::freeEventLock(void *p) {
+void *RuntimePlatform::allocEventLock() { return new DesktopEvent; }
+void RuntimePlatform::freeEventLock(void *p) {
   delete static_cast<DesktopEvent *>(p);
 }
-void DesktopPlatform::eventSleep(void *p) {
+void RuntimePlatform::eventSleep(void *p) {
   auto *e = static_cast<DesktopEvent *>(p);
   std::unique_lock<std::mutex> l(e->mutex);
   e->condition.wait(l, [e] { return e->signaled; });
   e->signaled = false;
 }
-void DesktopPlatform::eventWakeup(void *p) {
+void RuntimePlatform::eventWakeup(void *p) {
   auto *e = static_cast<DesktopEvent *>(p);
   {
     std::lock_guard<std::mutex> l(e->mutex);
@@ -1476,48 +1665,48 @@ void DesktopPlatform::eventWakeup(void *p) {
   }
   e->condition.notify_one();
 }
-const char *DesktopPlatform::getLangCodeRAW() {
+const char *RuntimePlatform::getLangCodeRAW() {
   const char *configured = std::getenv("PLAYGROUND_LANGUAGE");
   return configured && configured[0] ? configured : "ja";
 }
-const char *DesktopPlatform::getCountryCodeRAW() {
+const char *RuntimePlatform::getCountryCodeRAW() {
   const char *configured = std::getenv("PLAYGROUND_COUNTRY");
   return configured && configured[0] ? configured : "JP";
 }
-const char *DesktopPlatform::getPreferredLangCodeRAW() {
+const char *RuntimePlatform::getPreferredLangCodeRAW() {
   return getLangCodeRAW();
 }
-bool DesktopPlatform::getGyroPolar(float *a, float *e) {
+bool RuntimePlatform::getGyroPolar(float *a, float *e) {
   if (a)
     *a = 0;
   if (e)
     *e = 0;
   return false;
 }
-void *DesktopPlatform::getFont(int s, const char *n, float *a) {
+void *RuntimePlatform::getFont(int s, const char *n, float *a) {
   auto *f = static_cast<FontObject *>(getFont(s, n));
   if (a)
     *a = f ? f->getAscent() : 0;
   return f;
 }
-void *DesktopPlatform::getFontSystem(int s, const char *n) {
+void *RuntimePlatform::getFontSystem(int s, const char *n) {
   return getFont(s, n);
 }
-bool DesktopPlatform::getTextInfo(const char *t, void *f, STextInfo *i) {
+bool RuntimePlatform::getTextInfo(const char *t, void *f, STextInfo *i) {
   if (!f || !i)
     return false;
   static_cast<FontObject *>(f)->getTextInfo(t, i, 1, 1);
   return true;
 }
 
-void DesktopPlatform::handleTextInput(const char *text) {
+void RuntimePlatform::handleTextInput(const char *text) {
   m_widgetManager->inputText(text);
 }
 
-bool DesktopPlatform::handleEditingKey(int key, bool pressed) {
+bool RuntimePlatform::handleEditingKey(int key, bool pressed) {
   return m_widgetManager->inputKey(key, pressed);
 }
 
-void DesktopPlatform::pumpPlatformEvents() { m_widgetManager->pumpEvents(); }
+void RuntimePlatform::pumpPlatformEvents() { m_widgetManager->pumpEvents(); }
 
 } // namespace playground::runtime

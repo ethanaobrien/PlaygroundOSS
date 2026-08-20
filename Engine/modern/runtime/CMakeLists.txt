@@ -1,9 +1,19 @@
-find_package(CURL REQUIRED)
-find_package(Freetype REQUIRED)
-find_package(OpenSSL REQUIRED)
-find_package(PNG REQUIRED)
-find_package(Threads REQUIRED)
-find_package(ZLIB REQUIRED)
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PLAYGROUND_CURL REQUIRED IMPORTED_TARGET libcurl)
+    pkg_check_modules(PLAYGROUND_FREETYPE REQUIRED IMPORTED_TARGET freetype2)
+    pkg_check_modules(PLAYGROUND_PNG REQUIRED IMPORTED_TARGET libpng)
+    pkg_check_modules(PLAYGROUND_ZLIB REQUIRED IMPORTED_TARGET zlib)
+    pkg_check_modules(PLAYGROUND_EGL REQUIRED IMPORTED_TARGET egl)
+    pkg_check_modules(PLAYGROUND_GLES2 REQUIRED IMPORTED_TARGET glesv2)
+else()
+    find_package(CURL REQUIRED)
+    find_package(Freetype REQUIRED)
+    find_package(OpenSSL REQUIRED)
+    find_package(PNG REQUIRED)
+    find_package(Threads REQUIRED)
+    find_package(ZLIB REQUIRED)
+endif()
 
 if(WIN32)
     find_path(PLAYGROUND_FFMPEG_INCLUDE_DIR libavcodec/avcodec.h REQUIRED)
@@ -122,14 +132,32 @@ list(TRANSFORM playground_chipmunk_sources
     PREPEND "${PROJECT_SOURCE_DIR}/Engine/libs/Chipmunk2D-7.0.3/src/"
 )
 
+set(playground_runtime_platform_sources src/RuntimeStateStore.cpp)
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
+    list(APPEND playground_runtime_platform_sources
+        switch/src/SwitchCrypto.cpp
+        switch/src/SwitchSystem.cpp
+        switch/src/SwitchServices.cpp
+        switch/src/SwitchAudioOutput.cpp
+        switch/src/SwitchAudioPlatform.cpp
+        "${PROJECT_SOURCE_DIR}/Engine/porting/Android/jni/Android/KLBOpenSLNewEngine.cpp"
+        src/RuntimePlatform.cpp
+        src/RuntimeWidgets.cpp
+        src/RuntimeMoviePlatform.cpp
+    )
+else()
+    list(APPEND playground_runtime_platform_sources
+        src/DesktopCrypto.cpp
+        src/RuntimePlatform.cpp
+        src/RuntimeWidgets.cpp
+        src/DesktopServices.cpp
+        src/DesktopAudioPlatform.cpp
+        src/RuntimeMoviePlatform.cpp
+        "${PROJECT_SOURCE_DIR}/Engine/porting/Android/jni/Android/KLBOpenSLNewEngine.cpp")
+endif()
+
 add_library(playground_engine_runtime STATIC
-    src/DesktopPlatform.cpp
-    src/DesktopStateStore.cpp
-    src/DesktopWidgets.cpp
-    src/DesktopServices.cpp
-    src/DesktopAudioPlatform.cpp
-    src/DesktopMoviePlatform.cpp
-    "${PROJECT_SOURCE_DIR}/Engine/porting/Android/jni/Android/KLBOpenSLNewEngine.cpp"
+    ${playground_runtime_platform_sources}
     ${playground_engine_sources}
     ${playground_json_sources}
     ${playground_lua_sources}
@@ -151,6 +179,27 @@ add_library(playground_engine_runtime STATIC
 )
 add_library(Playground::EngineRuntime ALIAS playground_engine_runtime)
 
+if(BUILD_TESTING AND PLAYGROUND_PLATFORM_CAN_RUN_HOST_TOOLS)
+    add_executable(playground-switch-storage-provision-probe
+        tools/switch_storage_provision_probe.cpp)
+    target_compile_features(playground-switch-storage-provision-probe
+        PRIVATE cxx_std_17)
+    target_include_directories(playground-switch-storage-provision-probe PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/switch/include")
+    add_test(NAME playground-switch-storage-provision
+        COMMAND playground-switch-storage-provision-probe)
+
+    add_executable(playground-runtime-state-store-probe
+        tools/runtime_state_store_probe.cpp
+        src/RuntimeStateStore.cpp)
+    target_compile_features(playground-runtime-state-store-probe
+        PRIVATE cxx_std_17)
+    target_include_directories(playground-runtime-state-store-probe PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    add_test(NAME playground-runtime-state-store
+        COMMAND playground-runtime-state-store-probe)
+endif()
+
 target_compile_features(playground_engine_runtime PUBLIC cxx_std_17)
 target_compile_features(playground_engine_runtime PRIVATE c_std_99)
 target_compile_definitions(playground_engine_runtime
@@ -165,6 +214,12 @@ target_compile_definitions(playground_engine_runtime
         $<$<PLATFORM_ID:Windows>:_USE_MATH_DEFINES>
         $<$<PLATFORM_ID:Windows>:NOMINMAX>
 )
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
+    set_source_files_properties(
+        "${PROJECT_SOURCE_DIR}/Engine/libs/SQLite/sqlite3.c"
+        PROPERTIES COMPILE_DEFINITIONS
+            "SQLITE_OMIT_LOAD_EXTENSION;SQLITE_OMIT_MMAP;SQLITE_OMIT_WAL")
+endif()
 target_compile_definitions(playground_engine_runtime PUBLIC OPENGL2)
 
 set(playground_engine_include_directories
@@ -211,10 +266,26 @@ target_include_directories(playground_engine_runtime
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
         ${playground_engine_include_directories}
     PRIVATE
-        "${CURL_INCLUDE_DIRS}/curl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
-target_link_libraries(playground_engine_runtime
-    PUBLIC
+
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
+    target_include_directories(playground_engine_runtime PRIVATE
+        "${PROJECT_SOURCE_DIR}/Engine/modern/runtime/switch/compat"
+        "${PLAYGROUND_CURL_INCLUDE_DIRS}/curl")
+    target_link_libraries(playground_engine_runtime PUBLIC
+        PkgConfig::PLAYGROUND_CURL
+        PkgConfig::PLAYGROUND_FREETYPE
+        PkgConfig::PLAYGROUND_PNG
+        PkgConfig::PLAYGROUND_ZLIB
+        PkgConfig::PLAYGROUND_EGL
+        PkgConfig::PLAYGROUND_GLES2
+        Playground::FFmpeg
+        Playground::SwitchRuntime)
+else()
+    target_include_directories(playground_engine_runtime PRIVATE
+        "${CURL_INCLUDE_DIRS}/curl")
+    target_link_libraries(playground_engine_runtime PUBLIC
         CURL::libcurl
         Freetype::Freetype
         OpenSSL::Crypto
@@ -222,8 +293,8 @@ target_link_libraries(playground_engine_runtime
         PNG::PNG
         SDL3::SDL3
         Threads::Threads
-        ZLIB::ZLIB
-)
+        ZLIB::ZLIB)
+endif()
 
 if(WIN32)
     find_package(unofficial-angle CONFIG REQUIRED)
@@ -237,7 +308,7 @@ if(WIN32)
         bcrypt
         psapi
     )
-else()
+elseif(NOT PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
     find_library(PLAYGROUND_GLES2_LIBRARY GLESv2 REQUIRED)
     target_link_libraries(playground_engine_runtime PUBLIC
         ${PLAYGROUND_GLES2_LIBRARY})
@@ -273,6 +344,31 @@ if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux
     target_link_libraries(playground-platform-services-probe
         PRIVATE playground_engine_runtime)
     playground_copy_sdl_runtime(playground-platform-services-probe)
+    add_executable(playground-runtime-path-policy-probe
+        tools/runtime_path_policy_probe.cpp)
+    target_link_libraries(playground-runtime-path-policy-probe
+        PRIVATE playground_engine_runtime)
+    playground_copy_sdl_runtime(playground-runtime-path-policy-probe)
+    if(BUILD_TESTING)
+        add_test(NAME playground-runtime-path-policy
+            COMMAND playground-runtime-path-policy-probe
+                "${CMAKE_CURRENT_BINARY_DIR}/path-policy-test")
+        find_package(Python3 COMPONENTS Interpreter)
+        if(Python3_Interpreter_FOUND)
+            add_executable(playground-runtime-cookie-probe
+                tools/runtime_cookie_probe.cpp)
+            target_link_libraries(playground-runtime-cookie-probe
+                PRIVATE playground_engine_runtime)
+            target_include_directories(playground-runtime-cookie-probe PRIVATE
+                "${CURL_INCLUDE_DIRS}/curl")
+            playground_copy_sdl_runtime(playground-runtime-cookie-probe)
+            add_test(NAME playground-runtime-cookies
+                COMMAND "${Python3_EXECUTABLE}"
+                    "${PROJECT_SOURCE_DIR}/scripts/test_runtime_cookies.py"
+                    "$<TARGET_FILE:playground-runtime-cookie-probe>"
+                    "${CMAKE_CURRENT_BINARY_DIR}/cookie-test")
+        endif()
+    endif()
     add_executable(playground-audio-probe tools/audio_probe.cpp)
     target_link_libraries(playground-audio-probe PRIVATE playground_engine_runtime)
     playground_copy_sdl_runtime(playground-audio-probe)

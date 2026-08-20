@@ -15,6 +15,65 @@
 */
 #include "MultithreadedNetwork.h"
 
+#include <chrono>
+#include <mutex>
+#include <string>
+
+namespace {
+
+CURLSH* g_cookieShare = NULL;
+CURL* g_cookieStorage = NULL;
+std::mutex g_cookieLock;
+std::mutex g_cookieStorageLock;
+std::string g_cookiePath;
+std::string g_cookieFingerprint;
+
+bool captureCookieFingerprint(std::string& fingerprint)
+{
+	curl_slist* cookies = NULL;
+	if (!g_cookieStorage ||
+	    curl_easy_getinfo(g_cookieStorage, CURLINFO_COOKIELIST, &cookies) !=
+	        CURLE_OK)
+		return false;
+	fingerprint.clear();
+	for (curl_slist* cookie = cookies; cookie; cookie = cookie->next) {
+		const char* value = cookie->data ? cookie->data : "";
+		fingerprint.append(value);
+		fingerprint.push_back('\n');
+	}
+	curl_slist_free_all(cookies);
+	return true;
+}
+
+void lockCookieShare(CURL*, curl_lock_data, curl_lock_access, void*)
+{
+	g_cookieLock.lock();
+}
+
+void unlockCookieShare(CURL*, curl_lock_data, void*)
+{
+	g_cookieLock.unlock();
+}
+
+void releaseCookieState()
+{
+	std::lock_guard<std::mutex> lock(g_cookieStorageLock);
+	if (g_cookieStorage) {
+		if (!g_cookiePath.empty())
+			curl_easy_setopt(g_cookieStorage, CURLOPT_COOKIELIST, "FLUSH");
+		curl_easy_cleanup(g_cookieStorage);
+		g_cookieStorage = NULL;
+	}
+	g_cookiePath.clear();
+	g_cookieFingerprint.clear();
+	if (g_cookieShare) {
+		curl_share_cleanup(g_cookieShare);
+		g_cookieShare = NULL;
+	}
+}
+
+} // namespace
+
 NetworkManager NetworkManager::s_manager;
 
 NetworkManager::NetworkManager()
@@ -179,6 +238,13 @@ CurlObjectInternal*
 CurlObjectInternal::create()
 {
 	CURL* curl = curl_easy_init();
+	if (curl && g_cookieShare) {
+		curl_easy_setopt(curl, CURLOPT_SHARE, g_cookieShare);
+		// Sharing the COOKIE data does not itself activate libcurl's cookie
+		// engine on a new easy handle.  An empty COOKIEFILE enables response
+		// parsing without loading a second on-disk jar.
+		curl_easy_setopt(curl, CURLOPT_COOKIEFILE, "");
+	}
 	return curl ? new CurlObjectInternal(curl) : NULL;
 }
 
@@ -191,13 +257,92 @@ CurlObjectInternal::destroy(CurlObjectInternal* operation)
 bool
 CurlObjectInternal::initializeLibrary()
 {
-	return curl_global_init(CURL_GLOBAL_ALL) == CURLE_OK;
+	if (curl_global_init(CURL_GLOBAL_ALL) != CURLE_OK)
+		return false;
+	g_cookieShare = curl_share_init();
+	if (!g_cookieShare ||
+	    curl_share_setopt(g_cookieShare, CURLSHOPT_SHARE,
+	                       CURL_LOCK_DATA_COOKIE) != CURLSHE_OK ||
+	    curl_share_setopt(g_cookieShare, CURLSHOPT_LOCKFUNC,
+	                       lockCookieShare) != CURLSHE_OK ||
+	    curl_share_setopt(g_cookieShare, CURLSHOPT_UNLOCKFUNC,
+	                       unlockCookieShare) != CURLSHE_OK) {
+		releaseCookieState();
+		curl_global_cleanup();
+		return false;
+	}
+	return true;
 }
 
 void
 CurlObjectInternal::shutdownLibrary()
 {
+	releaseCookieState();
 	curl_global_cleanup();
+}
+
+bool
+CurlObjectInternal::configureCookieStorage(const char* path)
+{
+	if (!g_cookieShare || !path || !path[0])
+		return false;
+	std::lock_guard<std::mutex> lock(g_cookieStorageLock);
+	if (g_cookieStorage) {
+		curl_easy_cleanup(g_cookieStorage);
+		g_cookieStorage = NULL;
+	}
+	g_cookiePath = path;
+	g_cookieStorage = curl_easy_init();
+	if (!g_cookieStorage)
+		return false;
+	if (curl_easy_setopt(g_cookieStorage, CURLOPT_SHARE, g_cookieShare) !=
+	        CURLE_OK ||
+	    curl_easy_setopt(g_cookieStorage, CURLOPT_COOKIEFILE,
+	                     g_cookiePath.c_str()) != CURLE_OK ||
+	    curl_easy_setopt(g_cookieStorage, CURLOPT_COOKIEJAR,
+	                     g_cookiePath.c_str()) != CURLE_OK ||
+	    curl_easy_setopt(g_cookieStorage, CURLOPT_COOKIELIST, "RELOAD") !=
+	        CURLE_OK) {
+		curl_easy_cleanup(g_cookieStorage);
+		g_cookieStorage = NULL;
+		g_cookiePath.clear();
+		return false;
+	}
+	return captureCookieFingerprint(g_cookieFingerprint);
+}
+
+bool
+CurlObjectInternal::flushCookieStorage(bool* changed)
+{
+	std::lock_guard<std::mutex> lock(g_cookieStorageLock);
+	if (changed)
+		*changed = false;
+	std::string fingerprint;
+	if (!captureCookieFingerprint(fingerprint))
+		return false;
+	if (fingerprint == g_cookieFingerprint)
+		return true;
+	if (curl_easy_setopt(g_cookieStorage, CURLOPT_COOKIELIST, "FLUSH") !=
+	    CURLE_OK)
+		return false;
+	g_cookieFingerprint.swap(fingerprint);
+	if (changed)
+		*changed = true;
+	return true;
+}
+
+bool
+CurlObjectInternal::clearCookieStorage()
+{
+	std::lock_guard<std::mutex> lock(g_cookieStorageLock);
+	const bool cleared = g_cookieStorage &&
+	       curl_easy_setopt(g_cookieStorage, CURLOPT_COOKIELIST, "ALL") ==
+	           CURLE_OK &&
+	       curl_easy_setopt(g_cookieStorage, CURLOPT_COOKIELIST, "FLUSH") ==
+	           CURLE_OK;
+	if (cleared)
+		g_cookieFingerprint.clear();
+	return cleared;
 }
 
 void
@@ -206,6 +351,7 @@ CurlObjectInternal::reset()
 	freeFormHeaders();
 	m_formEnd = NULL;
 	m_postConfigured = false;
+	m_performCount = 0;
 }
 
 void
@@ -217,6 +363,10 @@ CurlObjectInternal::cleanup()
 int
 CurlObjectInternal::perform()
 {
+	++m_performCount;
+	m_performStartedAtNanoseconds = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
 	int result = curl_easy_perform(m_curl);
 	char* effectiveURL = NULL;
 	curl_easy_getinfo(m_curl, CURLINFO_EFFECTIVE_URL, &effectiveURL);
@@ -291,8 +441,14 @@ CurlObjectInternal::setupConnection(const char* url, const char* proxy, void* ca
 	curl_easy_setopt(m_curl, CURLOPT_PROXY, proxy);
 	curl_easy_setopt(m_curl, CURLOPT_NOPROGRESS, 0L);
 	curl_easy_setopt(m_curl, CURLOPT_NOSIGNAL, 1L);
-	curl_easy_setopt(m_curl, CURLOPT_PROGRESSDATA, callbackContext);
-	curl_easy_setopt(m_curl, CURLOPT_PROGRESSFUNCTION, progressCallback);
+	m_progressContext = callbackContext;
+	m_progressCallback = progressCallback;
+	m_configuredAtNanoseconds = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+	curl_easy_setopt(m_curl, CURLOPT_PROGRESSDATA, this);
+	curl_easy_setopt(m_curl, CURLOPT_PROGRESSFUNCTION,
+	                 &CurlObjectInternal::progressDispatch);
 	curl_easy_setopt(m_curl, CURLOPT_HEADERDATA, callbackContext);
 	curl_easy_setopt(m_curl, CURLOPT_HEADERFUNCTION, headerCallback);
 	curl_easy_setopt(m_curl, CURLOPT_WRITEDATA, callbackContext);
@@ -306,4 +462,63 @@ CurlObjectInternal::getHttpCode()
 	long httpCode;
 	curl_easy_getinfo(m_curl, CURLINFO_RESPONSE_CODE, &httpCode);
 	return httpCode;
+}
+
+CurlTransferMetrics
+CurlObjectInternal::getTransferMetrics() const
+{
+	CurlTransferMetrics metrics = {};
+	if (m_performStartedAtNanoseconds >= m_configuredAtNanoseconds) {
+		metrics.queueSeconds = static_cast<double>(
+			m_performStartedAtNanoseconds - m_configuredAtNanoseconds) / 1000000000.0;
+	}
+	curl_easy_getinfo(m_curl, CURLINFO_NAMELOOKUP_TIME, &metrics.dnsSeconds);
+	curl_easy_getinfo(m_curl, CURLINFO_CONNECT_TIME, &metrics.connectSeconds);
+	curl_easy_getinfo(m_curl, CURLINFO_STARTTRANSFER_TIME, &metrics.firstByteSeconds);
+	curl_easy_getinfo(m_curl, CURLINFO_TOTAL_TIME, &metrics.totalSeconds);
+	curl_easy_getinfo(m_curl, CURLINFO_SIZE_DOWNLOAD, &metrics.downloadedBytes);
+	curl_easy_getinfo(m_curl, CURLINFO_SPEED_DOWNLOAD,
+	                  &metrics.averageBytesPerSecond);
+	curl_easy_getinfo(m_curl, CURLINFO_NUM_CONNECTS, &metrics.connectionCount);
+	curl_easy_getinfo(m_curl, CURLINFO_REDIRECT_COUNT, &metrics.redirectCount);
+	metrics.attemptNumber = m_performCount;
+	return metrics;
+}
+
+void
+CurlObjectInternal::setAbortPredicate(bool (*predicate)(void*), void* context)
+{
+	m_abortPredicate = predicate;
+	m_abortContext = context;
+}
+
+void
+CurlObjectInternal::configureTransportLimits(long maximumConnections,
+	                                          long connectTimeoutSeconds,
+	                                          long lowSpeedBytesPerSecond,
+	                                          long lowSpeedSeconds)
+{
+	curl_easy_setopt(m_curl, CURLOPT_MAXCONNECTS, maximumConnections);
+	curl_easy_setopt(m_curl, CURLOPT_CONNECTTIMEOUT, connectTimeoutSeconds);
+	curl_easy_setopt(m_curl, CURLOPT_LOW_SPEED_LIMIT, lowSpeedBytesPerSecond);
+	curl_easy_setopt(m_curl, CURLOPT_LOW_SPEED_TIME, lowSpeedSeconds);
+	curl_easy_setopt(m_curl, CURLOPT_TCP_KEEPALIVE, 1L);
+}
+
+int
+CurlObjectInternal::progressDispatch(void* context, double downloadTotal,
+	                                  double downloadNow, double uploadTotal,
+	                                  double uploadNow)
+{
+	CurlObjectInternal* operation = static_cast<CurlObjectInternal*>(context);
+	if (operation->m_abortPredicate &&
+	    operation->m_abortPredicate(operation->m_abortContext))
+		return 1;
+	if (!operation->m_progressCallback)
+		return 0;
+	typedef int (*ProgressCallback)(void*, double, double, double, double);
+	ProgressCallback callback =
+		reinterpret_cast<ProgressCallback>(operation->m_progressCallback);
+	return callback(operation->m_progressContext, downloadTotal, downloadNow,
+	                uploadTotal, uploadNow);
 }

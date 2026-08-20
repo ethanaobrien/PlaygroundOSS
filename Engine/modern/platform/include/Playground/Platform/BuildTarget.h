@@ -13,6 +13,7 @@ typedef struct PlaygroundBuildTarget {
     unsigned int isWindows;
     unsigned int isLinux;
     unsigned int isMacOS;
+    unsigned int isSwitch;
 } PlaygroundBuildTarget;
 
 const PlaygroundBuildTarget* playgroundGetBuildTarget(void);

@@ -1,5 +1,5 @@
 #include "Playground/Host/DesktopHost.h"
-#include "Playground/Runtime/DesktopPlatform.h"
+#include "Playground/Runtime/RuntimePlatform.h"
 
 #if defined(_WIN32)
 #include "WindowsAssetBootstrap.h"
@@ -22,7 +22,7 @@ namespace {
 struct EngineContext {
     std::string installRoot{"AppAssets"};
     std::string externalRoot{"playground-user"};
-    std::unique_ptr<playground::runtime::DesktopPlatform> platform;
+    std::unique_ptr<playground::runtime::RuntimePlatform> platform;
     bool initialized{};
 };
 
@@ -33,7 +33,7 @@ bool onStart(void* opaque, PlaygroundDesktopHost* host)
     int height;
     playgroundDesktopHostGetPixelSize(host, &width, &height);
 
-    context.platform = std::make_unique<playground::runtime::DesktopPlatform>(
+    context.platform = std::make_unique<playground::runtime::RuntimePlatform>(
         context.installRoot, context.externalRoot,
         playgroundDesktopHostGetGLProcAddress);
     CPFInterface& interface = CPFInterface::getInstance();

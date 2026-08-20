@@ -19,6 +19,9 @@
 #include "CKLBDatabase.h"
 #include "CPFInterface.h"
 #include "encryptFile.h"
+#if defined(__SWITCH__)
+#include "Playground/Switch/SwitchSqlite.h"
+#endif
 
 extern void KLBUnregisterObjectName(void* object, const char* className);
 extern void KLBRegisterObjectName(void* object, const char* className, int flags);
@@ -33,6 +36,10 @@ sqlite3_io_methods		gSQLiteEncryptIO;
 int						gBaseSizeOsFile;
 bool					gInitOnce = true;
 int (*gOpenDefaultSQLite)	(sqlite3_vfs*, const char *zName, sqlite3_file*,int flags, int *pOutFlags);
+#if defined(__SWITCH__)
+sqlite3_vfs			gSwitchEncryptedVfs;
+const char*			gSwitchEncryptedVfsName = "playground-encrypted-assets";
+#endif
 
 #define	getFileDecrypt(a)			(WrapperFileDecrypt*)(&(((unsigned char*)a)[gBaseSizeOsFile]))
 
@@ -450,10 +457,27 @@ static bool initEncryptedVFS() {
 
 		// 2.1 Patch the fileSystem xOpen function with custom function that wraps sqlist3_file*
 		gOpenDefaultSQLite	= gVfsList->xOpen;
-		gVfsList->xOpen		= fEncryptOpen;
 		// 2.2 Patch the fileSystem vfs->szOsFile, add our own structure. (need to keep original because we wrap open)
 		gBaseSizeOsFile		= (gVfsList->szOsFile + 7) & 0xFFFFFFF8;	// Align 8 byte.
+		#if defined(__SWITCH__)
+		// Preserve the named durability VFS unchanged. Read-only asset databases
+		// use this independently registered encrypted VFS as SQLite's default;
+		// writable state/cache databases select the durability VFS by name at the
+		// sqlite3_open_v2 call site, where logical URI ownership is still known.
+		gSwitchEncryptedVfs = *gVfsList;
+		gSwitchEncryptedVfs.pNext = NULL;
+		gSwitchEncryptedVfs.zName = gSwitchEncryptedVfsName;
+		gSwitchEncryptedVfs.xOpen = fEncryptOpen;
+		gSwitchEncryptedVfs.szOsFile =
+			((gBaseSizeOsFile + sizeof(WrapperFileDecrypt)) + 7) & 0xFFFFFFF8;
+		if (sqlite3_vfs_register(&gSwitchEncryptedVfs, 1) != SQLITE_OK) {
+			return false;
+		}
+		gVfsList = &gSwitchEncryptedVfs;
+		#else
+		gVfsList->xOpen		= fEncryptOpen;
 		gVfsList->szOsFile	= ((gBaseSizeOsFile + sizeof(WrapperFileDecrypt)) + 7) & 0xFFFFFFF8;
+		#endif
 		return true;
 	} else {
 		return false;
@@ -487,10 +511,18 @@ bool CKLBDatabase::init(const char* dbFile, int flags) {
 		m_lastDB[size] = 0;
 
 		// Convert Logical path to OS Dependant path
-		const char* fullPath = platform.getFullPath(dbFile);
+		bool isReadOnly = false;
+		const char* fullPath = platform.getFullPath(dbFile, &isReadOnly);
 
 		//int rc = sqlite3_open(fullPath, &m_dataBase);
-		int rc = sqlite3_open_v2(fullPath, &m_dataBase, flags, NULL);
+		#if defined(__SWITCH__)
+		const char* sqliteVfs =
+			playground::switch_runtime::selectSwitchDatabaseVfs(
+				dbFile, fullPath, isReadOnly);
+		#else
+		const char* sqliteVfs = NULL;
+		#endif
+		int rc = sqlite3_open_v2(fullPath, &m_dataBase, flags, sqliteVfs);
 		delete[] fullPath;
 
 		if (rc) {
@@ -501,7 +533,14 @@ bool CKLBDatabase::init(const char* dbFile, int flags) {
 
 		char * errMsg;
 		m_pragmaJournal = true;
+		#if defined(__SWITCH__)
+		const char* journalPolicy = isReadOnly
+			? "PRAGMA journal_mode = OFF;"
+			: "PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL;";
+		rc = sqlite3_exec(m_dataBase, journalPolicy, callbackFct, this, &errMsg);
+		#else
 		rc = sqlite3_exec(m_dataBase, "PRAGMA journal_mode = OFF;", callbackFct, this, &errMsg);
+		#endif
 		m_pragmaJournal = false;
 
 		if (rc) {

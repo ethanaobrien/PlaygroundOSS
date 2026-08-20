@@ -1,4 +1,4 @@
-#include "Playground/Runtime/DesktopPlatform.h"
+#include "Playground/Runtime/RuntimePlatform.h"
 
 #include "CPFInterface.h"
 #include "KLBAudioSystem.h"
@@ -32,7 +32,7 @@ int main(int argc, char **argv) {
   if (!SDL_Init(SDL_INIT_AUDIO))
     fail(SDL_GetError());
 
-  playground::runtime::DesktopPlatform platform(argv[1], argv[2]);
+  playground::runtime::RuntimePlatform platform(argv[1], argv[2]);
   CPFInterface::getInstance().setPlatformRequest(&platform);
   initNMAsset(0);
   if (!platform.init())

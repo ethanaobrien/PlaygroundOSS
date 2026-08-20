@@ -8,12 +8,12 @@
 
 namespace playground::runtime {
 
-class DesktopPlatform;
+class RuntimePlatform;
 
-class DesktopWidgetManager {
+class RuntimeWidgetManager {
 public:
-  explicit DesktopWidgetManager(DesktopPlatform *platform);
-  ~DesktopWidgetManager();
+  explicit RuntimeWidgetManager(RuntimePlatform *platform);
+  ~RuntimeWidgetManager();
 
   IWidget *create(IWidget::CONTROL type, int id, const char *caption, int x,
                   int y, int width, int height, va_list arguments);

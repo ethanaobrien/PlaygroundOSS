@@ -1,25 +1,31 @@
-#ifndef PLAYGROUND_RUNTIME_DESKTOP_PLATFORM_H
-#define PLAYGROUND_RUNTIME_DESKTOP_PLATFORM_H
+#ifndef PLAYGROUND_RUNTIME_RUNTIME_PLATFORM_H
+#define PLAYGROUND_RUNTIME_RUNTIME_PLATFORM_H
 
 #include "CPFInterface.h"
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 
 namespace playground::runtime {
 
-class DesktopStateStore;
+class RuntimeStateStore;
 class DesktopScriptRegistry;
-class DesktopWidgetManager;
+class RuntimeWidgetManager;
 
-class DesktopPlatform final : public IPlatformRequest {
+class RuntimePlatform final : public IPlatformRequest {
 public:
   using GLProcResolver = void *(*)(const char *name);
+  using StorageCommit = std::function<bool()>;
 
-  DesktopPlatform(std::string installRoot, std::string externalRoot,
+  RuntimePlatform(std::string installRoot, std::string contentRoot,
                   GLProcResolver glResolver = nullptr);
-  ~DesktopPlatform() override;
+  RuntimePlatform(std::string installRoot, std::string contentRoot,
+                  std::string stateRoot, GLProcResolver glResolver,
+                  StorageCommit commitState = {},
+                  StorageCommit commitContent = {});
+  ~RuntimePlatform() override;
 
   bool init() override;
   bool useEncryption() override;
@@ -154,15 +160,19 @@ public:
   void handleTextInput(const char *);
   bool handleEditingKey(int, bool);
   void pumpPlatformEvents();
+  bool openExternalUrl(const char *url);
 
 private:
   std::string resolvePath(const char *, bool *) const;
   std::string m_installRoot;
-  std::string m_externalRoot;
+  std::string m_contentRoot;
+  std::string m_stateRoot;
+  StorageCommit m_commitState;
+  StorageCommit m_commitContent;
   GLProcResolver m_glResolver;
-  std::unique_ptr<DesktopStateStore> m_state;
+  std::unique_ptr<RuntimeStateStore> m_state;
   std::unique_ptr<DesktopScriptRegistry> m_scriptRegistry;
-  std::unique_ptr<DesktopWidgetManager> m_widgetManager;
+  std::unique_ptr<RuntimeWidgetManager> m_widgetManager;
   std::string m_deviceId;
   std::atomic<bool> m_quitRequested{false};
   int m_frameRate{60};

@@ -18,7 +18,21 @@
 
 #include "CKLBHTTPInterface.h"
 #include <list>
+#include <stdint.h>
 #include "curl.h"
+
+struct CurlTransferMetrics {
+	double queueSeconds;
+	double dnsSeconds;
+	double connectSeconds;
+	double firstByteSeconds;
+	double totalSeconds;
+	double downloadedBytes;
+	double averageBytesPerSecond;
+	long connectionCount;
+	long redirectCount;
+	uint64_t attemptNumber;
+};
 
 // Per-request libcurl state owned by the platform HTTP service.  The
 // platform interface deliberately exposes only this handle type; engine HTTP
@@ -29,6 +43,9 @@ public:
 	static void destroy(CurlObjectInternal* operation);
 	static bool initializeLibrary();
 	static void shutdownLibrary();
+	static bool configureCookieStorage(const char* path);
+	static bool flushCookieStorage(bool* changed = NULL);
+	static bool clearCookieStorage();
 
 	explicit CurlObjectInternal(CURL* curl)
 	: m_curl(curl)
@@ -36,6 +53,13 @@ public:
 	, m_form(NULL)
 	, m_formEnd(NULL)
 	, m_postConfigured(false)
+	, m_progressContext(NULL)
+	, m_progressCallback(NULL)
+	, m_abortPredicate(NULL)
+	, m_abortContext(NULL)
+	, m_configuredAtNanoseconds(0)
+	, m_performStartedAtNanoseconds(0)
+	, m_performCount(0)
 	{}
 	~CurlObjectInternal() {}
 
@@ -50,13 +74,30 @@ public:
 	virtual void setupConnection(const char* url, const char* proxy, void* callbackContext,
 	                             void* progressCallback, void* headerCallback, void* writeCallback);
 	virtual long getHttpCode();
+	virtual CurlTransferMetrics getTransferMetrics() const;
+	void setAbortPredicate(bool (*predicate)(void*), void* context);
+	void configureTransportLimits(long maximumConnections,
+	                             long connectTimeoutSeconds,
+	                             long lowSpeedBytesPerSecond,
+	                             long lowSpeedSeconds);
 
 private:
+	static int progressDispatch(void* context, double downloadTotal,
+	                            double downloadNow, double uploadTotal,
+	                            double uploadNow);
+
 	CURL*            m_curl;
 	curl_slist*      m_headers;
 	curl_httppost*   m_form;
 	curl_httppost*   m_formEnd;
 	bool             m_postConfigured;
+	void*            m_progressContext;
+	void*            m_progressCallback;
+	bool             (*m_abortPredicate)(void*);
+	void*            m_abortContext;
+	uint64_t         m_configuredAtNanoseconds;
+	uint64_t         m_performStartedAtNanoseconds;
+	uint64_t         m_performCount;
 };
 
 #define LOCK(a)					CPFInterface::getInstance().platform().mutexLock(a)

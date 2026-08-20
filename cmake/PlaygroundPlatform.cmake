@@ -1,7 +1,9 @@
-set(_playground_supported_platforms android windows linux macos)
+set(_playground_supported_platforms android windows linux macos switch)
 
 if(ANDROID)
     set(_playground_detected_platform android)
+elseif(NINTENDO_SWITCH OR CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    set(_playground_detected_platform switch)
 elseif(WIN32)
     set(_playground_detected_platform windows)
 elseif(APPLE)

@@ -31,6 +31,8 @@ class KLBOpenSLNewEngine;
 #ifdef __ANDROID__
 void platformBufferQueueCallback(
 	SLAndroidSimpleBufferQueueItf queue, void* context);
+#elif defined(__SWITCH__)
+void switchAudioFill(void* context, s16* samples, u16 frames);
 #else
 struct SDL_AudioStream;
 void desktopAudioStreamCallback(
@@ -263,6 +265,8 @@ private:
 #ifdef __ANDROID__
 	friend void platformBufferQueueCallback(
 		SLAndroidSimpleBufferQueueItf queue, void* context);
+#elif defined(__SWITCH__)
+	friend void switchAudioFill(void* context, s16* samples, u16 frames);
 #else
 	friend void desktopAudioStreamCallback(
 		void* userdata, SDL_AudioStream* stream, int additionalAmount,

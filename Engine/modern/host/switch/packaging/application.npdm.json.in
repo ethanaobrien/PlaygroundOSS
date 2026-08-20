@@ -1,0 +1,75 @@
+{
+  "name": "PlaygroundOSS",
+  "title_id": "@PLAYGROUND_SWITCH_TITLE_ID@",
+  "title_id_range_min": "@PLAYGROUND_SWITCH_TITLE_ID@",
+  "title_id_range_max": "@PLAYGROUND_SWITCH_TITLE_ID@",
+  "main_thread_stack_size": "0x100000",
+  "main_thread_priority": 44,
+  "default_cpu_id": 0,
+  "process_category": 0,
+  "pool_partition": 0,
+  "is_64_bit": true,
+  "address_space_type": 1,
+  "is_retail": true,
+  "filesystem_access": {
+    "permissions": "0x21",
+    "save_data_owner_ids": [
+      { "accessibility": 3, "id": "@PLAYGROUND_SWITCH_TITLE_ID@" }
+    ]
+  },
+  "service_host": [],
+  "service_access": [
+    "acc:u0", "apm", "appletOE", "audout:u", "bsd:u", "caps:su", "fatal:u",
+    "fsp-srv", "hid", "nifm:u", "nvdrv:a", "set", "ssl", "time:u",
+    "vi:u"
+  ],
+  "kernel_capabilities": [
+    {
+      "type": "kernel_flags",
+      "value": {
+        "highest_thread_priority": 63,
+        "lowest_thread_priority": 16,
+        "highest_cpu_id": 3,
+        "lowest_cpu_id": 0
+      }
+    },
+    {
+      "type": "syscalls",
+      "value": {
+        "svcSetHeapSize": "0x01",
+        "svcSetMemoryPermission": "0x02",
+        "svcSetMemoryAttribute": "0x03",
+        "svcMapMemory": "0x04",
+        "svcUnmapMemory": "0x05",
+        "svcQueryMemory": "0x06",
+        "svcExitProcess": "0x07",
+        "svcCreateThread": "0x08",
+        "svcStartThread": "0x09",
+        "svcExitThread": "0x0a",
+        "svcSleepThread": "0x0b",
+        "svcSetThreadCoreMask": "0x0f",
+        "svcClearEvent": "0x12",
+        "svcMapSharedMemory": "0x13",
+        "svcUnmapSharedMemory": "0x14",
+        "svcCreateTransferMemory": "0x15",
+        "svcCloseHandle": "0x16",
+        "svcResetSignal": "0x17",
+        "svcWaitSynchronization": "0x18",
+        "svcArbitrateLock": "0x1a",
+        "svcArbitrateUnlock": "0x1b",
+        "svcWaitProcessWideKeyAtomic": "0x1c",
+        "svcSignalProcessWideKey": "0x1d",
+        "svcConnectToNamedPort": "0x1f",
+        "svcSendSyncRequest": "0x21",
+        "svcBreak": "0x26",
+        "svcOutputDebugString": "0x27",
+        "svcReturnFromException": "0x28",
+        "svcGetInfo": "0x29",
+        "svcUnmapTransferMemory": "0x52"
+      }
+    },
+    { "type": "application_type", "value": 1 },
+    { "type": "min_kernel_version", "value": "0x30" },
+    { "type": "handle_table_size", "value": 512 }
+  ]
+}
