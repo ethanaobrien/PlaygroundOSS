@@ -126,7 +126,9 @@ void onResize(void* opaque, PlaygroundDesktopHost*, int width, int height)
 {
     auto& context = *static_cast<EngineContext*>(opaque);
     if(!context.initialized) return;
-    CPFInterface::getInstance().client().setScreenInfo(false, width, height);
+    IClientRequest& client = CPFInterface::getInstance().client();
+    client.setScreenInfo(false, width, height);
+    client.changeProjectionMatrix();
 }
 
 } // namespace

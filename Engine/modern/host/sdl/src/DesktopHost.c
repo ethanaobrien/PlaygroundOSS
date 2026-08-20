@@ -169,7 +169,11 @@ static void processEvent(PlaygroundDesktopHost* host, const SDL_Event* event)
         break;
     case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
         refreshPixelSize(host);
-        if (host->callbacks.onResize) {
+        // A minimized or temporarily hidden browser canvas can report a
+        // zero-sized drawing buffer.  It is not a drawable surface and must
+        // not replace the last usable engine projection.
+        if (host->callbacks.onResize && host->pixelWidth > 0 &&
+            host->pixelHeight > 0) {
             host->callbacks.onResize(
                 host->callbackContext,
                 host,

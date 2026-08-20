@@ -135,8 +135,19 @@ void onActivity(void *opaque, PlaygroundDesktopHost *, bool active) {
 
 void onResize(void *opaque, PlaygroundDesktopHost *, int width, int height) {
   auto &context = *static_cast<EngineContext *>(opaque);
-  if (context.initialized)
-    CPFInterface::getInstance().client().setScreenInfo(false, width, height);
+  if (!context.initialized)
+    return;
+  IClientRequest &client = CPFInterface::getInstance().client();
+  client.setScreenInfo(false, width, height);
+  client.changeProjectionMatrix();
+  MAIN_THREAD_EM_ASM({
+    if (globalThis.playgroundEngineReady) {
+      globalThis.playgroundEngineReady.width = $0;
+      globalThis.playgroundEngineReady.height = $1;
+      globalThis.playgroundEngineReady.resizes =
+          (globalThis.playgroundEngineReady.resizes || 0) + 1;
+    }
+  }, width, height);
 }
 
 } // namespace

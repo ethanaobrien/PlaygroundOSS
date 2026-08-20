@@ -126,8 +126,14 @@ CKLBDrawResource::setLogicalResolution(int width, int height)
 	// Perform centering and scaling at GL matrix level.
 	ResetViewport();
 
-	bResult = CKLBRenderingManager::getInstance().setClearColor(1.0f, 0.7f, 0.2039f, 1.0f);
-	dglClearColor(m_clearColor[0], m_clearColor[1], m_clearColor[2], m_clearColor[3]);
+	// Establish the legacy startup color once.  Runtime projection rebuilds
+	// must preserve GL_ClearColor, which scripts may have changed already.
+	if (!m_gpRootNode) {
+		bResult = CKLBRenderingManager::getInstance().setClearColor(
+			1.0f, 0.7f, 0.2039f, 1.0f);
+		dglClearColor(m_clearColor[0], m_clearColor[1],
+			m_clearColor[2], m_clearColor[3]);
+	}
 	dglDisable( GL_CULL_FACE );
 
 	return bResult;
@@ -195,6 +201,13 @@ CKLBDrawResource::changeProjectionMatrix(float * /*matrix*/, int /*width*/, int 
 void
 CKLBDrawResource::changeProjectionMatrix()
 {
+	IClientRequest& client = CPFInterface::getInstance().client();
+	int width = client.getPhysicalScreenWidth();
+	int height = client.getPhysicalScreenHeight();
+	if (width > 0 && height > 0) {
+		m_phisical_width = width;
+		m_phisical_height = height;
+	}
 	m_safeAreaUpdatePending = true;
 	if (m_gpRootNode) {
 		m_gpRootNode->markUpMatrix();

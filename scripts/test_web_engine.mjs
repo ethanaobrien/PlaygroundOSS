@@ -122,10 +122,13 @@ try {
   const page = await target();
   const socket = await connect(page.webSocketDebuggerUrl);
   const insecureRequests = [];
+  const browserExceptions = [];
   socket.addEventListener("message", event => {
     const message = JSON.parse(event.data);
-    if (message.method === "Runtime.exceptionThrown")
+    if (message.method === "Runtime.exceptionThrown") {
+      browserExceptions.push(message.params.exceptionDetails.text);
       console.error("browser exception:", message.params.exceptionDetails.text);
+    }
     if (message.method === "Runtime.consoleAPICalled") {
       const output = message.params.args.map(argument =>
         argument.value ?? argument.description).join(" ");
@@ -141,6 +144,37 @@ try {
   const state = await waitForEngine(socket);
   console.log(`web engine reached the frame loop at ` +
               `${state.engine.width}x${state.engine.height}`);
+  if (process.env.PLAYGROUND_WEB_TEST_RESIZE === "1") {
+    const resize = async (width, height) => {
+      const previous = Number(await evaluate(socket,
+        "globalThis.playgroundEngineReady?.resizes ?? 0"));
+      await command(socket, "Emulation.setDeviceMetricsOverride", {
+        width, height, deviceScaleFactor: 1, mobile: false,
+      });
+      const deadline = Date.now() + 10000;
+      while (Date.now() < deadline) {
+        const value = await evaluate(socket, `JSON.stringify({
+          width: document.getElementById('canvas')?.width ?? 0,
+          height: document.getElementById('canvas')?.height ?? 0,
+          engine: globalThis.playgroundEngineReady ?? null,
+          fatal: document.getElementById('fatal')?.textContent ?? ''
+        })`);
+        const resized = JSON.parse(value ?? "{}");
+        if (resized.fatal)
+          throw new Error(resized.fatal);
+        if (resized.width === width && resized.height === height &&
+            resized.engine?.width === width &&
+            resized.engine?.height === height &&
+            Number(resized.engine?.resizes ?? 0) > previous)
+          return;
+        await sleep(50);
+      }
+      throw new Error(`web engine did not resize to ${width}x${height}`);
+    };
+    await resize(1200, 700);
+    await resize(640, 960);
+    console.log("web engine survived landscape and portrait resizes");
+  }
   if (process.env.PLAYGROUND_WEB_TEST_CLICK === "1") {
     const x = Math.floor(state.engine.width / 2);
     const y = Math.floor(state.engine.height / 2);
@@ -161,6 +195,9 @@ try {
   if (insecureRequests.length !== 0)
     throw new Error(`HTTPS page emitted insecure requests:\n${
       insecureRequests.join("\n")}`);
+  if (browserExceptions.length !== 0)
+    throw new Error(`browser exceptions occurred:\n${
+      browserExceptions.join("\n")}`);
   socket.close();
 } finally {
   chromium.kill("SIGTERM");
