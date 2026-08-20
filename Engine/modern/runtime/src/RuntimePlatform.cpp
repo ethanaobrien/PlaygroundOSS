@@ -44,6 +44,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#endif
+
 #if !defined(_WIN32)
 #include <sys/stat.h>
 #endif
@@ -1332,7 +1336,15 @@ bool RuntimePlatform::callApplication(APP_TYPE type, ...) {
 }
 
 bool RuntimePlatform::openExternalUrl(const char *url) {
-#if defined(__SWITCH__)
+#if defined(__EMSCRIPTEN__)
+  if (!url || !url[0])
+    return false;
+  // The engine runs on an Emscripten pthread. SDL's Web implementation calls
+  // window.open directly, but workers do not have a Window global. Proxy the
+  // browser operation synchronously to the main browser thread instead.
+  MAIN_THREAD_EM_ASM({ window.open(UTF8ToString($0), "_blank"); }, url);
+  return true;
+#elif defined(__SWITCH__)
   const bool shown = switch_runtime::showWebPage(url);
   if (!shown)
     logging("Switch web applet failed");
