@@ -243,7 +243,9 @@ int CurlObjectInternal::perform() {
   attributes.requestHeaders = requestHeaders.data();
   attributes.requestData = m_web->post.empty() ? nullptr : m_web->post.data();
   attributes.requestDataSize = m_web->post.size();
-  attributes.withCredentials = EM_TRUE;
+  // Match Fetch's default credentials policy: same-origin API requests use
+  // browser cookies, while cross-origin CDN downloads remain anonymous.
+  attributes.withCredentials = EM_FALSE;
   emscripten_fetch_t *fetch =
       emscripten_fetch(&attributes, m_web->url.c_str());
   if (!fetch) {
