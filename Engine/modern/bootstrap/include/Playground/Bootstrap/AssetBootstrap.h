@@ -41,6 +41,11 @@ struct AssetBootstrapOptions {
   // lacks RenameDirectory may copy the already validated content-addressed
   // staging tree, validate it again, and remove staging instead.
   PublishGeneration publishGeneration;
+  // Filesystems such as WasmFS OPFS cannot rename directories. Extract into
+  // the content-addressed generation and publish it by writing the verified
+  // completion marker last. An interrupted generation has no marker and is
+  // removed before the next extraction.
+  bool publishWithCompletionMarker{};
   // Optional test/telemetry boundary. Production leaves this empty; the host
   // probe terminates its process here to model power loss between commits.
   PublicationCheckpoint publicationCheckpoint;

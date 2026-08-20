@@ -13,7 +13,7 @@ replacement boundary is ready.
 ## Current checkpoint
 
 The root CMake project establishes one target-platform vocabulary for Android,
-Windows, Linux, and macOS. It builds a portable platform contract plus an SDL3
+Windows, Linux, macOS, Nintendo Switch, and Emscripten. It builds a portable platform contract plus an SDL3
 desktop lifecycle, window, OpenGL ES, input, and high-DPI seam. On Linux it now
 also compiles and links the complete reconstructed engine graph and drives the
 original `GameSetup`, `initGame`, `frameFlip`, and `finishGame` lifecycle.
@@ -23,6 +23,7 @@ original `GameSetup`, `initGame`, `frameFlip`, and `finishGame` lifecycle.
 | Android | Reconstructed JNI/GLES/OpenSL runtime | Configures for all four ABIs | Move the proven source graph behind CMake |
 | Windows | Modern SDL3/ANGLE desktop runtime | Complete engine graph, desktop services, audio, widgets, and movies | Continue official-asset gameplay validation alongside Linux |
 | Linux | Modern SDL3/GLES desktop runtime | Complete engine graph, desktop services, audio, widgets, movies, community login, package updates, and on-demand assets | Continue ordinary gameplay validation as new flows are exercised |
+| Emscripten | Threaded SDL3/WebGL browser runtime | Complete engine graph, OPFS installation/state, browser Fetch/crypto/audio/video/input/services, and cross-origin-isolated host | Continue interactive browser gameplay validation |
 | macOS | Legacy Xcode/Cocoa runtime | Native Clang preset and SDL3 host | Connect the engine adapter |
 | Nintendo Switch | Clean libnx modernization port | Complete engine NRO, transactional bundled assets, account SaveData, CacheStorage, audout, NIFM/curl, EGL/GLES2, lifecycle, album export, and audited NSP staging | Run and record the installed-title hardware acceptance matrix |
 

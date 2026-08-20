@@ -1,4 +1,15 @@
-find_package(ZLIB REQUIRED)
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
+    if(NOT TARGET ZLIB::ZLIB)
+        add_library(playground_web_bootstrap_zlib INTERFACE)
+        target_compile_options(playground_web_bootstrap_zlib INTERFACE
+            "SHELL:-sUSE_ZLIB=1")
+        target_link_options(playground_web_bootstrap_zlib INTERFACE
+            "SHELL:-sUSE_ZLIB=1")
+        add_library(ZLIB::ZLIB ALIAS playground_web_bootstrap_zlib)
+    endif()
+else()
+    find_package(ZLIB REQUIRED)
+endif()
 
 add_library(playground_asset_bootstrap STATIC
     src/AssetBootstrap.cpp

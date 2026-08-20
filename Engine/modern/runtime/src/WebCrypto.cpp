@@ -1,7 +1,7 @@
 #include "RuntimeCrypto.h"
 #include "RuntimePublicKey.h"
 
-#include <switch.h>
+#include <emscripten.h>
 
 #include <mbedtls/aes.h>
 #include <mbedtls/pk.h>
@@ -15,8 +15,23 @@
 namespace playground::runtime {
 namespace {
 
+EM_JS(int, fillRandom, (unsigned char *output, std::size_t size), {
+  if (!globalThis.crypto || !globalThis.crypto.getRandomValues) return -1;
+  const maximum = 65536;
+  for (let offset = 0; offset < size; offset += maximum) {
+    // Web Crypto deliberately rejects ArrayBufferViews backed by a
+    // SharedArrayBuffer. Threaded Emscripten heaps are shared, so generate in
+    // a private browser buffer and then publish the completed chunk.
+    const count = Math.min(maximum, size - offset);
+    const random = new Uint8Array(count);
+    globalThis.crypto.getRandomValues(random);
+    HEAPU8.set(random, output + offset);
+  }
+  return 0;
+});
+
 int randomCallback(void *, unsigned char *output, std::size_t size) {
-  return R_SUCCEEDED(csrngGetRandomBytes(output, size)) ? 0 : -1;
+  return fillRandom(output, size);
 }
 
 bool loadPublicKey(mbedtls_pk_context &key) {
@@ -29,18 +44,18 @@ bool loadPublicKey(mbedtls_pk_context &key) {
 } // namespace
 
 bool cryptoRandom(unsigned char *output, std::size_t size) {
-  return output && (size == 0 || R_SUCCEEDED(csrngGetRandomBytes(output, size)));
+  return output && (size == 0 || fillRandom(output, size) == 0);
 }
 
 bool cryptoSha1(const void *input, std::size_t size, unsigned char output[20]) {
-  return mbedtls_sha1_ret(static_cast<const unsigned char *>(input), size,
-                          output) == 0;
+  return mbedtls_sha1(static_cast<const unsigned char *>(input), size, output) ==
+         0;
 }
 
 bool cryptoSha512(const void *input, std::size_t size,
                   unsigned char output[64]) {
-  return mbedtls_sha512_ret(static_cast<const unsigned char *>(input), size,
-                            output, 0) == 0;
+  return mbedtls_sha512(static_cast<const unsigned char *>(input), size, output,
+                        0) == 0;
 }
 
 bool cryptoPublicKeyVerify(const unsigned char *message,
@@ -70,8 +85,8 @@ int cryptoPublicKeyEncrypt(const unsigned char *input, std::size_t inputLength,
   }
   std::size_t written = 0;
   const int result = mbedtls_pk_encrypt(&key, input, inputLength, output,
-                                        &written, outputLength,
-                                        randomCallback, nullptr);
+                                        &written, outputLength, randomCallback,
+                                        nullptr);
   mbedtls_pk_free(&key);
   return result == 0 ? static_cast<int>(written) : -1;
 }

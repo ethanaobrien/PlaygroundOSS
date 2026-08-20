@@ -18,7 +18,10 @@
 
 #include "CKLBUITask.h"
 
-#if defined(_MSC_VER)
+#if defined(__EMSCRIPTEN__)
+#include <cmath>
+#define KLB_ISNANF(value) std::isnan(value)
+#elif defined(_MSC_VER)
 #include <float.h>
 #define KLB_ISNANF(value) (_isnan(value) != 0)
 #else

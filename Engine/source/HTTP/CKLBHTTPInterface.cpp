@@ -24,7 +24,9 @@
 
 #ifdef USE_NEW_CURL_WRAPPER
 
+#if !defined(PLAYGROUND_WEB)
 #include "curl.h"
+#endif
 #include <list>
 
 // Prototypes
@@ -682,7 +684,8 @@ CKLBHTTPInterface::formatMessageCode(const u8 digest[20], char messageCode[41])
 //_______________________________________________________________________
 
 // static
-s32 CKLBHTTPInterface::HTTPConnectionThread(void * /*hThread*/, void * data) 
+#if !defined(PLAYGROUND_WEB)
+s32 CKLBHTTPInterface::HTTPConnectionThread(void * /*hThread*/, void * data)
 {
 	((CKLBHTTPInterface*)data)->download();
 	return 1;
@@ -788,6 +791,7 @@ void CKLBHTTPInterface::download() {
 		}
 	}
 }
+#endif
 
 int strncmpi(const char* str1, const char* str2, int len) {
 	while ((*str1 != 0) && (*str2 != 0) && (tolower(*str1++)) == (tolower(*str2++)) && (len-- != 0)) {

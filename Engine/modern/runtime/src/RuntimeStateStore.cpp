@@ -65,6 +65,11 @@ bool flushFile(FILE *file) {
     return false;
 #if defined(_WIN32)
   return _commit(_fileno(file)) == 0;
+#elif defined(__EMSCRIPTEN__)
+  // WasmFS' OPFS backend commits synchronous worker writes at the filesystem
+  // operation boundary.  Its virtual descriptors do not provide a host
+  // fsync operation.
+  return true;
 #else
   return fsync(fileno(file)) == 0;
 #endif
@@ -99,6 +104,11 @@ bool syncParentDirectory(const std::filesystem::path &path) {
 #if defined(_WIN32)
   // MoveFileExW(..., MOVEFILE_WRITE_THROUGH) is the Windows publication
   // boundary used by replaceFile().
+  (void)path;
+  return true;
+#elif defined(__EMSCRIPTEN__)
+  // OPFS has no openable directory descriptor and therefore no directory
+  // fsync.  The preceding WasmFS rename is the publication boundary.
   (void)path;
   return true;
 #else

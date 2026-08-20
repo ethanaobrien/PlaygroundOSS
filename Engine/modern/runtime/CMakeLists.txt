@@ -6,6 +6,30 @@ if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
     pkg_check_modules(PLAYGROUND_ZLIB REQUIRED IMPORTED_TARGET zlib)
     pkg_check_modules(PLAYGROUND_EGL REQUIRED IMPORTED_TARGET egl)
     pkg_check_modules(PLAYGROUND_GLES2 REQUIRED IMPORTED_TARGET glesv2)
+elseif(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
+    include(FetchContent)
+    set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(USE_SHARED_MBEDTLS_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(USE_STATIC_MBEDTLS_LIBRARY ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(playground_mbedtls
+        URL https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.6/mbedtls-3.6.6.tar.bz2
+        URL_HASH SHA256=8fb65fae8dcae5840f793c0a334860a411f884cc537ea290ce1c52bb64ca007a
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    FetchContent_MakeAvailable(playground_mbedtls)
+    function(playground_web_port target alias option)
+        if(TARGET ${alias})
+            return()
+        endif()
+        add_library(${target} INTERFACE)
+        target_compile_options(${target} INTERFACE "${option}")
+        target_link_options(${target} INTERFACE "${option}")
+        add_library(${alias} ALIAS ${target})
+    endfunction()
+    playground_web_port(playground_web_freetype Freetype::Freetype
+        "SHELL:-sUSE_FREETYPE=1")
+    playground_web_port(playground_web_png PNG::PNG "SHELL:-sUSE_LIBPNG=1")
+    playground_web_port(playground_web_zlib ZLIB::ZLIB "SHELL:-sUSE_ZLIB=1")
 else()
     find_package(CURL REQUIRED)
     find_package(Freetype REQUIRED)
@@ -15,7 +39,10 @@ else()
     find_package(ZLIB REQUIRED)
 endif()
 
-if(WIN32)
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
+    add_library(playground_web_media INTERFACE)
+    add_library(Playground::FFmpeg ALIAS playground_web_media)
+elseif(WIN32)
     find_path(PLAYGROUND_FFMPEG_INCLUDE_DIR libavcodec/avcodec.h REQUIRED)
     if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
         set(PLAYGROUND_VCPKG_LIBRARY_DIR
@@ -73,6 +100,9 @@ list(FILTER playground_engine_sources EXCLUDE REGEX "/UISystem/CKLBRenderBufferT
 list(FILTER playground_engine_sources EXCLUDE REGEX "/UISystem/CKLBUIPolygon\\.cpp$")
 list(FILTER playground_engine_sources EXCLUDE REGEX "/UISystem/CKLBUIPolyline2\\.cpp$")
 list(FILTER playground_engine_sources EXCLUDE REGEX "/UISystem/CKLBUIScale9Btn\\.cpp$")
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
+    list(APPEND playground_engine_sources src/WebMultithreadedNetwork.cpp)
+endif()
 
 file(GLOB playground_json_sources CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/Engine/libs/JSonParser/*.c"
@@ -83,6 +113,11 @@ file(GLOB playground_lua_sources CONFIGURE_DEPENDS
 file(GLOB playground_minizip_sources CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/Engine/libs/minizip/*.c"
 )
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
+    # The web host links Playground::AssetBootstrap, which owns the same
+    # legacy minizip implementation. Keep one copy in the final Wasm module.
+    set(playground_minizip_sources)
+endif()
 file(GLOB playground_sha1_sources CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/Engine/libs/sha1/*.c"
 )
@@ -145,6 +180,15 @@ if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
         src/RuntimeWidgets.cpp
         src/RuntimeMoviePlatform.cpp
     )
+elseif(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
+    list(APPEND playground_runtime_platform_sources
+        src/WebCrypto.cpp
+        src/RuntimePlatform.cpp
+        src/RuntimeWidgets.cpp
+        src/DesktopServices.cpp
+        src/DesktopAudioPlatform.cpp
+        src/WebMoviePlatform.cpp
+        "${PROJECT_SOURCE_DIR}/Engine/porting/Android/jni/Android/KLBOpenSLNewEngine.cpp")
 else()
     list(APPEND playground_runtime_platform_sources
         src/DesktopCrypto.cpp
@@ -209,12 +253,15 @@ target_compile_definitions(playground_engine_runtime
         ONLY_C
         PLAYGROUND_MODERN_RUNTIME
         PLAYGROUND_RUNTIME_DIAGNOSTICS
+        $<$<STREQUAL:${PLAYGROUND_TARGET_PLATFORM},emscripten>:PLAYGROUND_WEB>
+        $<$<STREQUAL:${PLAYGROUND_TARGET_PLATFORM},emscripten>:_LIBCPP_ENABLE_CXX17_REMOVED_AUTO_PTR>
         $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS>
         $<$<PLATFORM_ID:Windows>:_HAS_AUTO_PTR_ETC=1>
         $<$<PLATFORM_ID:Windows>:_USE_MATH_DEFINES>
         $<$<PLATFORM_ID:Windows>:NOMINMAX>
 )
-if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch
+   OR PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
     set_source_files_properties(
         "${PROJECT_SOURCE_DIR}/Engine/libs/SQLite/sqlite3.c"
         PROPERTIES COMPILE_DEFINITIONS
@@ -282,6 +329,14 @@ if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
         PkgConfig::PLAYGROUND_GLES2
         Playground::FFmpeg
         Playground::SwitchRuntime)
+elseif(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
+    target_link_libraries(playground_engine_runtime PUBLIC
+        Freetype::Freetype
+        PNG::PNG
+        SDL3::SDL3
+        MbedTLS::mbedcrypto
+        MbedTLS::mbedx509
+        ZLIB::ZLIB)
 else()
     target_include_directories(playground_engine_runtime PRIVATE
         "${CURL_INCLUDE_DIRS}/curl")
@@ -308,7 +363,8 @@ if(WIN32)
         bcrypt
         psapi
     )
-elseif(NOT PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
+elseif(NOT PLAYGROUND_TARGET_PLATFORM STREQUAL switch
+       AND NOT PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
     find_library(PLAYGROUND_GLES2_LIBRARY GLESv2 REQUIRED)
     target_link_libraries(playground_engine_runtime PUBLIC
         ${PLAYGROUND_GLES2_LIBRARY})

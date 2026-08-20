@@ -17,11 +17,17 @@
 
 #include <SDL3/SDL_messagebox.h>
 
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#include <emscripten/html5.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -32,7 +38,7 @@
 #include <string>
 #include <thread>
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
 #include <spawn.h>
 #include <sys/wait.h>
 
@@ -52,6 +58,152 @@ public:
   }
 };
 
+#if defined(__EMSCRIPTEN__)
+class WebLocationManager final : public ILocationManager {
+public:
+  explicit WebLocationManager(CKLBLocationManager *owner)
+      : ILocationManager(owner) {
+    MAIN_THREAD_EM_ASM({
+      if (navigator.permissions && navigator.permissions.query) {
+        navigator.permissions.query({name: 'geolocation'}).then(result => {
+          Atomics.store(HEAP32, $0 >> 2,
+            result.state === 'granted' ? 1 : 0);
+        }).catch(() => {});
+      }
+    }, &m_permission);
+  }
+
+  ~WebLocationManager() override { stopLocation(); }
+
+  void requireLocation() override {
+    MAIN_THREAD_EM_ASM({
+      if (!globalThis.playgroundLocationWatches)
+        globalThis.playgroundLocationWatches = new Map();
+      const watches = globalThis.playgroundLocationWatches;
+      if (watches.has($0)) navigator.geolocation.clearWatch(watches.get($0));
+      const watch = navigator.geolocation.watchPosition(position => {
+        HEAPF64[$1 >> 3] = position.coords.latitude;
+        HEAPF64[$2 >> 3] = position.coords.longitude;
+        Atomics.store(HEAP32, $3 >> 2, 0);
+        Atomics.store(HEAP32, $4 >> 2, 1);
+        Atomics.add(HEAP32, $5 >> 2, 1);
+      }, error => {
+        Atomics.store(HEAP32, $3 >> 2, error.code || 2);
+        Atomics.store(HEAP32, $4 >> 2, error.code === 1 ? 0 :
+          Atomics.load(HEAP32, $4 >> 2));
+        Atomics.add(HEAP32, $5 >> 2, 1);
+      }, {enableHighAccuracy: true, maximumAge: 10000, timeout: 30000});
+      watches.set($0, watch);
+    }, this, &m_latitude, &m_longitude, &m_status, &m_permission,
+       &m_locationSequence);
+  }
+
+  bool stopLocation() override {
+    MAIN_THREAD_EM_ASM({
+      const watches = globalThis.playgroundLocationWatches;
+      if (watches && watches.has($0)) {
+        navigator.geolocation.clearWatch(watches.get($0));
+        watches.delete($0);
+      }
+    }, this);
+    return true;
+  }
+
+  int getPermissionStatus() override { return m_permission.load(); }
+
+  void requirePermission() override {
+    MAIN_THREAD_EM_ASM({
+      navigator.geolocation.getCurrentPosition(() => {
+        Atomics.store(HEAP32, $0 >> 2, 1);
+        Atomics.store(HEAP32, $1 >> 2, 1);
+        Atomics.add(HEAP32, $2 >> 2, 1);
+      }, error => {
+        Atomics.store(HEAP32, $0 >> 2, 0);
+        Atomics.store(HEAP32, $1 >> 2, error.code || 1);
+        Atomics.add(HEAP32, $2 >> 2, 1);
+      }, {enableHighAccuracy: false, maximumAge: Infinity, timeout: 30000});
+    }, &m_permission, &m_permissionResult, &m_permissionSequence);
+  }
+
+  void pump() {
+    const int locationSequence = m_locationSequence.load();
+    if (locationSequence != m_seenLocationSequence) {
+      m_seenLocationSequence = locationSequence;
+      const int status = m_status.load();
+      if (status == 0) {
+        notifyLocation(0, 0, m_latitude, m_longitude,
+                       "browser geolocation update");
+      } else {
+        const char *message = status == 1 ? "browser location permission denied"
+                              : status == 3 ? "browser location request timed out"
+                                            : "browser location unavailable";
+        notifyLocation(1, status, 0.0, 0.0, message);
+      }
+    }
+    const int permissionSequence = m_permissionSequence.load();
+    if (permissionSequence != m_seenPermissionSequence) {
+      m_seenPermissionSequence = permissionSequence;
+      notifyLocation(2, m_permission.load(), 0.0, 0.0,
+                     m_permissionResult.load() == 1
+                         ? "browser location permission granted"
+                         : "browser location permission denied");
+    }
+  }
+
+private:
+  alignas(8) double m_latitude{};
+  alignas(8) double m_longitude{};
+  std::atomic<int> m_status{0};
+  std::atomic<int> m_permission{0};
+  std::atomic<int> m_locationSequence{0};
+  std::atomic<int> m_permissionResult{0};
+  std::atomic<int> m_permissionSequence{0};
+  int m_seenLocationSequence{};
+  int m_seenPermissionSequence{};
+};
+
+class WebMotionManager final : public IMotionManager {
+public:
+  ~WebMotionManager() override { stop(); }
+  void start() override {
+    if (m_running)
+      return;
+    MAIN_THREAD_EM_ASM({
+      if (globalThis.DeviceOrientationEvent &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission().catch(error =>
+          console.warn('motion permission was not granted', error));
+      }
+    });
+    m_running = emscripten_set_deviceorientation_callback(
+                    this, true, &WebMotionManager::onOrientation) ==
+                EMSCRIPTEN_RESULT_SUCCESS;
+  }
+  void stop() override {
+    if (m_running)
+      emscripten_set_deviceorientation_callback(nullptr, false, nullptr);
+    m_running = false;
+  }
+  float getAzimuth() override {
+    return m_running ? m_azimuth.load() : 0.0f;
+  }
+  float getElevation() override {
+    return m_running ? m_elevation.load() : 0.0f;
+  }
+
+private:
+  static bool onOrientation(int, const EmscriptenDeviceOrientationEvent *event,
+                            void *context) {
+    auto &self = *static_cast<WebMotionManager *>(context);
+    self.m_azimuth.store(static_cast<float>(event->alpha));
+    self.m_elevation.store(static_cast<float>(event->beta));
+    return false;
+  }
+  std::atomic<float> m_azimuth{0.0f};
+  std::atomic<float> m_elevation{0.0f};
+  bool m_running{};
+};
+#else
 class DesktopLocationManager final : public ILocationManager {
 public:
   explicit DesktopLocationManager(CKLBLocationManager *owner)
@@ -99,6 +251,116 @@ private:
   float m_elevation{};
   bool m_running{};
 };
+#endif
+
+#if defined(__EMSCRIPTEN__)
+class WebNotificationManager final : public INotificationManager {
+public:
+  explicit WebNotificationManager(CKLBNotificationManager *owner)
+      : INotificationManager(owner) {}
+
+  ~WebNotificationManager() override {
+    MAIN_THREAD_EM_ASM({
+      const timers = globalThis.playgroundNotificationTimers;
+      if (timers) {
+        for (const entry of timers) {
+          const key = entry[0];
+          const timer = entry[1];
+          if (key.startsWith($0 + '/')) {
+            clearTimeout(timer);
+            timers.delete(key);
+          }
+        }
+      }
+    }, reinterpret_cast<std::uintptr_t>(this));
+  }
+
+  void setLocalNotificationWithAlarm(const char *tag, int tagIndex,
+                                     const char *message, int delaySeconds,
+                                     const char *) override {
+    const std::string key = std::to_string(reinterpret_cast<std::uintptr_t>(this)) +
+                            "/" + (tag ? tag : "") + "/" +
+                            std::to_string(tagIndex);
+    const std::string title = tag ? tag : "PlaygroundOSS";
+    const std::string body = message ? message : "";
+    MAIN_THREAD_EM_ASM({
+      if (!globalThis.playgroundNotificationTimers)
+        globalThis.playgroundNotificationTimers = new Map();
+      const timers = globalThis.playgroundNotificationTimers;
+      const key = UTF8ToString($0);
+      if (timers.has(key)) clearTimeout(timers.get(key));
+      const title = UTF8ToString($1);
+      const body = UTF8ToString($2);
+      const timer = setTimeout(() => {
+        timers.delete(key);
+        if (Notification.permission === 'granted')
+          new Notification(title, {body});
+        else
+          console.info(title + ': ' + body);
+      }, Math.max(0, $3) * 1000);
+      timers.set(key, timer);
+    }, key.c_str(), title.c_str(), body.c_str(), delaySeconds);
+  }
+
+  void cancelLocalNotification(const char *tag, int tagIndex) override {
+    const std::string key = std::to_string(reinterpret_cast<std::uintptr_t>(this)) +
+                            "/" + (tag ? tag : "") + "/" +
+                            std::to_string(tagIndex);
+    MAIN_THREAD_EM_ASM({
+      const timers = globalThis.playgroundNotificationTimers;
+      const key = UTF8ToString($0);
+      if (timers && timers.has(key)) {
+        clearTimeout(timers.get(key));
+        timers.delete(key);
+      }
+    }, key.c_str());
+  }
+
+  void requestPermission() override {
+    MAIN_THREAD_EM_ASM({
+      Notification.requestPermission().then(permission => {
+        Atomics.store(HEAP32, $0 >> 2, permission === 'granted' ? 1 : 0);
+        Atomics.add(HEAP32, $1 >> 2, 1);
+      }).catch(() => {
+        Atomics.store(HEAP32, $0 >> 2, 0);
+        Atomics.add(HEAP32, $1 >> 2, 1);
+      });
+    }, &m_permissionResult, &m_permissionSequence);
+  }
+
+  bool getEnableNotification() override {
+    return MAIN_THREAD_EM_ASM_INT({
+      return Notification.permission === 'granted';
+    }) != 0;
+  }
+
+  void getRemoteToken(char *buffer, int bufferLength) override {
+    // Push delivery needs an application-owned push service and VAPID key.
+    // Local browser notifications remain fully available without fabricating
+    // a remote token.
+    if (buffer && bufferLength > 0)
+      buffer[0] = '\0';
+  }
+
+  void onActivityResume() override { notify(2, 0, ""); }
+
+  void pump() {
+    const int sequence = m_permissionSequence.load();
+    if (sequence == m_seenPermissionSequence)
+      return;
+    m_seenPermissionSequence = sequence;
+    const bool enabled = m_permissionResult.load() != 0;
+    notify(1, enabled ? 1 : 0,
+           enabled ? "browser notifications enabled"
+                   : "browser notifications denied");
+  }
+
+private:
+  std::atomic<int> m_permissionResult{0};
+  std::atomic<int> m_permissionSequence{0};
+  int m_seenPermissionSequence{};
+};
+#endif
 
 struct DesktopNotification {
   std::mutex mutex;
@@ -108,7 +370,17 @@ struct DesktopNotification {
 
 void showDesktopNotification(const std::string &title,
                              const std::string &message) {
-#if defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+  EM_ASM({
+    const title = UTF8ToString($0);
+    const body = UTF8ToString($1);
+    if (Notification.permission === 'granted') {
+      new Notification(title, {body});
+    } else {
+      console.info(title + ': ' + body);
+    }
+  }, title.c_str(), message.c_str());
+#elif defined(_WIN32)
   SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, title.c_str(),
                            message.c_str(), nullptr);
 #else
@@ -175,10 +447,19 @@ public:
     state->condition.notify_all();
   }
   void requestPermission() override {
+#if defined(__EMSCRIPTEN__)
+    EM_ASM({
+      if (Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+    });
+#endif
     notify(1, 1, "desktop notifications enabled");
   }
   bool getEnableNotification() override {
-#if defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+    return EM_ASM_INT({ return Notification.permission === 'granted'; }) != 0;
+#elif defined(_WIN32)
     return true;
 #else
     return std::filesystem::exists("/usr/bin/notify-send");
@@ -212,22 +493,46 @@ IAdManager *IAdManager::getInstance(CKLBAdManager *owner) {
 
 ILocationManager *ILocationManager::create(CKLBLocationManager *owner) {
   if (!s_instance) {
+#if defined(__EMSCRIPTEN__)
+    s_instance = new WebLocationManager(owner);
+#else
     s_instance = new DesktopLocationManager(owner);
+#endif
   }
   return s_instance;
 }
 
 IMotionManager *IMotionManager::getInstance() {
   if (!s_instance) {
+#if defined(__EMSCRIPTEN__)
+    s_instance = new WebMotionManager();
+#else
     s_instance = new DesktopMotionManager();
+#endif
   }
   return s_instance;
 }
 
+#if defined(__EMSCRIPTEN__)
+namespace playground::runtime {
+void pumpWebPlatformServices() {
+  if (ILocationManager::getInstance())
+    static_cast<WebLocationManager *>(ILocationManager::getInstance())->pump();
+  if (INotificationManager::getInstance())
+    static_cast<WebNotificationManager *>(INotificationManager::getInstance())
+        ->pump();
+}
+} // namespace playground::runtime
+#endif
+
 INotificationManager *
 INotificationManager::create(CKLBNotificationManager *owner) {
   if (!s_instance) {
+#if defined(__EMSCRIPTEN__)
+    s_instance = new WebNotificationManager(owner);
+#else
     s_instance = new DesktopNotificationManager(owner);
+#endif
   }
   return s_instance;
 }

@@ -4,6 +4,12 @@ project(PlaygroundOSSModernization VERSION 1.0.0 LANGUAGES C CXX)
 
 set(PLAYGROUND_APP_ASSETS_ZIP "" CACHE FILEPATH
     "Path to the original AppAssets.zip embedded unchanged in packaged builds")
+set(PLAYGROUND_WEB_APP_ASSETS_URL "AppAssets.zip" CACHE STRING
+    "URL of the unchanged AppAssets.zip fetched by the web build")
+set(PLAYGROUND_WEB_APP_ASSETS_METADATA_URL "AppAssets.metadata" CACHE STRING
+    "URL of AppAssets integrity metadata fetched by the web build")
+set(PLAYGROUND_WEB_APP_ASSETS_METADATA "" CACHE FILEPATH
+    "AppAssets metadata packaged with the web build")
 set(PLAYGROUND_SWITCH_ICON_JPEG "" CACHE FILEPATH
     "Path to a 256x256 JPEG used by installed Switch package staging")
 set(PLAYGROUND_SWITCH_TITLE_ID "0x0100F59153491000" CACHE STRING
@@ -22,6 +28,14 @@ set(PLAYGROUND_SWITCH_CACHE_MAX_SIZE "0x400000000" CACHE STRING
 include(GNUInstallDirs)
 include(CTest)
 include(cmake/PlaygroundPlatform.cmake)
+
+# Threaded Emscripten modules must compile every object with atomics and bulk
+# memory enabled, not merely pass -pthread to the final link.  Keep this at
+# the directory root so third-party and internal static libraries inherit the
+# same WebAssembly feature set.
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
+    add_compile_options("SHELL:-pthread")
+endif()
 
 set(_playground_desktop_platforms windows linux macos)
 
@@ -54,7 +68,8 @@ option(
 
 set(_playground_engine_runtime_default OFF)
 if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux
-   OR PLAYGROUND_TARGET_PLATFORM STREQUAL windows)
+   OR PLAYGROUND_TARGET_PLATFORM STREQUAL windows
+   OR PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
     set(_playground_engine_runtime_default ON)
 endif()
 option(
@@ -70,6 +85,7 @@ add_subdirectory(Engine/modern/platform)
 # and does not link this library, so do not compile a second copy of legacy
 # minizip into cross-ABI contract-only builds.
 if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch
+   OR PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten
    OR PLAYGROUND_PLATFORM_CAN_RUN_HOST_TOOLS)
     add_subdirectory(Engine/modern/bootstrap)
 endif()
@@ -79,6 +95,7 @@ if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
 endif()
 
 if(PLAYGROUND_BUILD_DESKTOP_HOST
+   OR PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten
    OR (PLAYGROUND_BUILD_ENGINE_RUNTIME
        AND PLAYGROUND_TARGET_PLATFORM IN_LIST _playground_desktop_platforms))
     include(cmake/PlaygroundSDL.cmake)
@@ -90,6 +107,10 @@ endif()
 
 if(PLAYGROUND_BUILD_DESKTOP_HOST)
     add_subdirectory(Engine/modern/host/sdl)
+endif()
+
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
+    add_subdirectory(Engine/modern/host/web)
 endif()
 
 if(PLAYGROUND_BUILD_SWITCH_HOST)

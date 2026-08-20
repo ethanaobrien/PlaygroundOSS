@@ -21,6 +21,8 @@
 
 namespace {
 
+#if !defined(PLAYGROUND_WEB)
+
 CURLSH* g_cookieShare = NULL;
 CURL* g_cookieStorage = NULL;
 std::mutex g_cookieLock;
@@ -71,6 +73,8 @@ void releaseCookieState()
 		g_cookieShare = NULL;
 	}
 }
+
+#endif
 
 } // namespace
 
@@ -233,6 +237,8 @@ NetworkManager::workThread()
 	m_bShutDownComplete = true;
 	return 1;
 }
+
+#if !defined(PLAYGROUND_WEB)
 
 CurlObjectInternal*
 CurlObjectInternal::create()
@@ -522,3 +528,5 @@ CurlObjectInternal::progressDispatch(void* context, double downloadTotal,
 	return callback(operation->m_progressContext, downloadTotal, downloadNow,
 	                uploadTotal, uploadNow);
 }
+
+#endif

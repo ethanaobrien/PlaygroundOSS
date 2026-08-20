@@ -132,6 +132,22 @@
         "PLAYGROUND_BUILD_ENGINE_RUNTIME": "ON",
         "PLAYGROUND_BUILD_SWITCH_HOST": "ON"
       }
+    },
+    {
+      "name": "web-release",
+      "displayName": "Emscripten Release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "OFF",
+        "PLAYGROUND_BUILD_PLATFORM_PROBE": "OFF",
+        "PLAYGROUND_BUILD_DESKTOP_HOST": "OFF",
+        "PLAYGROUND_BUILD_ENGINE_RUNTIME": "ON",
+        "PLAYGROUND_SDL_PROVIDER": "fetch"
+      }
     }
   ],
   "buildPresets": [
@@ -143,6 +159,7 @@
     { "name": "android-armeabi-v7a", "configurePreset": "android-armeabi-v7a" },
     { "name": "android-x86", "configurePreset": "android-x86" },
     { "name": "android-x86_64", "configurePreset": "android-x86_64" },
-    { "name": "switch-release", "configurePreset": "switch-release" }
+    { "name": "switch-release", "configurePreset": "switch-release" },
+    { "name": "web-release", "configurePreset": "web-release" }
   ]
 }

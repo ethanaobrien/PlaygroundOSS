@@ -118,3 +118,27 @@ jobs:
         run: cmake --preset ${{ matrix.preset }}
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
+
+  emscripten:
+    name: Emscripten threaded WebAssembly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 4.0.23
+          actions-cache-folder: emsdk-cache
+      - name: Configure complete web engine
+        run: cmake --preset web-release
+      - name: Build complete web engine
+        run: cmake --build --preset web-release -j2
+      - name: Build OPFS, pthread, and SQLite qualification probe
+        run: ./scripts/build_web_platform_probe.sh
+      - name: Exercise cross-origin-isolated OPFS persistence
+        env:
+          PLAYGROUND_CHROMIUM: google-chrome
+        run: |
+          python3 scripts/serve_web.py out/web-platform-probe --port 8765 &
+          server=$!
+          trap 'kill "$server"' EXIT
+          node scripts/test_web_platform_probe.mjs http://127.0.0.1:8765/

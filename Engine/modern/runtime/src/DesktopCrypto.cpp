@@ -1,4 +1,5 @@
 #include "RuntimeCrypto.h"
+#include "RuntimePublicKey.h"
 
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -12,16 +13,9 @@
 namespace playground::runtime {
 namespace {
 
-constexpr char PublicKey[] =
-    "-----BEGIN PUBLIC KEY-----\n"
-    "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDE0RNd6047aeBirzVb61DolatY\n"
-    "YWpaEUIPugOIkobHDc9qVR5iliMLyC0ErXO1siLBwN+U3zaDVOa5uhXbiS7uYq5c\n"
-    "cpxComxTnZtcn/b+mKDpYWLaC0Gv7UoiT8rpNqN3Vko645usz9OFc4VciijsHGRP\n"
-    "XmmmoP6qykfI/vba8wIDAQAB\n"
-    "-----END PUBLIC KEY-----\n";
-
 EVP_PKEY *loadPublicKey() {
-  BIO *input = BIO_new_mem_buf(PublicKey, sizeof(PublicKey) - 1);
+  BIO *input = BIO_new_mem_buf(RuntimePublicKeyPem,
+                               sizeof(RuntimePublicKeyPem) - 1);
   if (!input)
     return nullptr;
   EVP_PKEY *key = PEM_read_bio_PUBKEY(input, nullptr, nullptr, nullptr);

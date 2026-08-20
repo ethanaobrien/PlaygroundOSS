@@ -2,7 +2,12 @@
 
 #include <SDL3/SDL.h>
 
+#include <stdlib.h>
 #include <string.h>
+
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#endif
 
 struct PlaygroundDesktopHost {
     SDL_Window* window;
@@ -18,6 +23,55 @@ struct PlaygroundDesktopHost {
     SDL_FingerID touchFingerIds[10];
     bool touchFingerUsed[10];
 };
+
+static void processEvent(PlaygroundDesktopHost* host, const SDL_Event* event);
+
+#if defined(__EMSCRIPTEN__)
+typedef struct PlaygroundWebLoop {
+    PlaygroundDesktopHost* instance;
+    PlaygroundDesktopHostConfig config;
+    uint64_t previousTick;
+    uint32_t frames;
+    bool started;
+} PlaygroundWebLoop;
+
+static void finishWebLoop(PlaygroundWebLoop* loop)
+{
+    PlaygroundDesktopHost* host = loop->instance;
+    if (loop->started && host->callbacks.onStop) {
+        host->callbacks.onStop(host->callbackContext, host);
+    }
+    if (host->graphicsContext) SDL_GL_DestroyContext(host->graphicsContext);
+    if (host->window) {
+        if (host->callbacks.onTextInput) SDL_StopTextInput(host->window);
+        SDL_DestroyWindow(host->window);
+    }
+    SDL_Quit();
+    free(host);
+    free(loop);
+    emscripten_cancel_main_loop();
+}
+
+static void webFrame(void* opaque)
+{
+    PlaygroundWebLoop* loop = (PlaygroundWebLoop*)opaque;
+    PlaygroundDesktopHost* host = loop->instance;
+    SDL_Event event;
+    uint64_t now;
+    while (SDL_PollEvent(&event)) processEvent(host, &event);
+    now = SDL_GetTicksNS();
+    if (host->callbacks.onFrame &&
+        !host->callbacks.onFrame(host->callbackContext, host,
+                                 now - loop->previousTick)) {
+        host->running = false;
+    }
+    loop->previousTick = now;
+    ++loop->frames;
+    if (loop->config.maximumFrames &&
+        loop->frames >= loop->config.maximumFrames) host->running = false;
+    if (!host->running) finishWebLoop(loop);
+}
+#endif
 
 static void sendPointer(
     PlaygroundDesktopHost* host,
@@ -313,6 +367,10 @@ int playgroundDesktopHostRun(
     void* context
 )
 {
+#if defined(__EMSCRIPTEN__)
+    PlaygroundDesktopHost* allocatedHost;
+    PlaygroundWebLoop* loop;
+#endif
     PlaygroundDesktopHost host;
     SDL_Event event;
     uint64_t previousTick;
@@ -323,6 +381,16 @@ int playgroundDesktopHostRun(
     if (!config || !callbacks) {
         return 1;
     }
+#if defined(__EMSCRIPTEN__)
+    allocatedHost = (PlaygroundDesktopHost*)calloc(1, sizeof(*allocatedHost));
+    loop = (PlaygroundWebLoop*)calloc(1, sizeof(*loop));
+    if (!allocatedHost || !loop) {
+        free(allocatedHost);
+        free(loop);
+        return 1;
+    }
+#define host (*allocatedHost)
+#endif
     memset(&host, 0, sizeof(host));
     host.callbacks = *callbacks;
     host.callbackContext = context;
@@ -367,6 +435,14 @@ int playgroundDesktopHostRun(
         }
     }
     previousTick = SDL_GetTicksNS();
+#if defined(__EMSCRIPTEN__)
+    loop->instance = &host;
+    loop->config = *config;
+    loop->previousTick = previousTick;
+    loop->started = started;
+    emscripten_set_main_loop_arg(webFrame, loop, 0, true);
+    return 0;
+#else
     while (host.running) {
         uint64_t now;
         while (SDL_PollEvent(&event)) {
@@ -401,6 +477,10 @@ int playgroundDesktopHostRun(
     }
     SDL_Quit();
     return 0;
+#endif
+#if defined(__EMSCRIPTEN__)
+#undef host
+#endif
 }
 
 void playgroundDesktopHostRequestQuit(PlaygroundDesktopHost* host)

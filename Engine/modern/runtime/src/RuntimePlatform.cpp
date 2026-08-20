@@ -64,6 +64,10 @@ extern bool g_decompressBGM;
 
 namespace playground::runtime {
 
+#if defined(__EMSCRIPTEN__)
+void pumpWebPlatformServices();
+#endif
+
 struct DesktopScriptSource {
   std::string sourceName;
   std::string contentHash;
@@ -525,6 +529,29 @@ std::string sha1Hex(const char *data, size_t size) {
     output << std::setw(2) << static_cast<unsigned int>(byte);
   return output.str();
 }
+
+#if defined(PLAYGROUND_WEB)
+std::string sha1FileForWeb(const std::string &path) {
+  std::FILE *file = std::fopen(path.c_str(), "rb");
+  if (!file)
+    return {};
+  if (std::fseek(file, 0, SEEK_END) != 0) {
+    std::fclose(file);
+    return {};
+  }
+  const long length = std::ftell(file);
+  if (length < 0 || std::fseek(file, 0, SEEK_SET) != 0) {
+    std::fclose(file);
+    return {};
+  }
+  std::vector<char> contents(static_cast<size_t>(length));
+  const bool read = contents.empty() ||
+                    std::fread(contents.data(), 1, contents.size(), file) ==
+                        contents.size();
+  std::fclose(file);
+  return read ? sha1Hex(contents.data(), contents.size()) : std::string{};
+}
+#endif
 
 std::string sha512Hex(const char *data, size_t size) {
   unsigned char hash[64];
@@ -1106,7 +1133,13 @@ char *RuntimePlatform::getDeviceIntegrityInfo(const char *request) {
   const std::string unitDatabase =
       resolvePath("asset://db/unit/unit.db_", nullptr);
   char databaseHash[64]{};
+#if defined(PLAYGROUND_WEB)
+  const std::string webDatabaseHash = sha1FileForWeb(unitDatabase);
+  std::snprintf(databaseHash, sizeof(databaseHash), "%s",
+                webDatabaseHash.c_str());
+#else
   CKLBUtility::sha1File(unitDatabase.c_str(), databaseHash, 40);
+#endif
   properties["db_sha1"] = databaseHash[0] ? databaseHash : "NOT_FOUND";
 
   const std::string executable = getExecutablePath();
@@ -1707,6 +1740,11 @@ bool RuntimePlatform::handleEditingKey(int key, bool pressed) {
   return m_widgetManager->inputKey(key, pressed);
 }
 
-void RuntimePlatform::pumpPlatformEvents() { m_widgetManager->pumpEvents(); }
+void RuntimePlatform::pumpPlatformEvents() {
+#if defined(__EMSCRIPTEN__)
+  pumpWebPlatformServices();
+#endif
+  m_widgetManager->pumpEvents();
+}
 
 } // namespace playground::runtime

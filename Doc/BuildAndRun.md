@@ -9,6 +9,7 @@ repository root unless noted otherwise.
 | --- | --- | --- |
 | Linux x86-64 | Complete reconstructed engine and SDL3/GLES2 host | Full game, host diagnostic, and engine probes |
 | Windows x86-64 | Complete reconstructed engine and SDL3/ANGLE host | Full game, host diagnostic, and engine probes |
+| WebAssembly (Emscripten wasm32) | Complete threaded engine and SDL3/WebGL host | Full game in a cross-origin-isolated browser |
 | macOS | Portable contract and SDL3 host | Host and platform diagnostics; the full engine adapter is not connected yet |
 | Android ARM64, ARMv7, x86, x86-64 | Portable contract static library | Cross-build validation only; these presets do not create or install an APK |
 
@@ -292,6 +293,132 @@ these CMake outputs. The reconstructed Android engine remains available through
 the existing Android integration outside this modern host target. Connecting
 that proven runtime to these CMake presets is separate future work.
 
+## WebAssembly / Emscripten
+
+The web target is named `emscripten` throughout the CMake platform contract.
+It is a wasm32, pthread-enabled build of the complete engine, hosted by SDL3
+and WebGL. There is no single-threaded or non-isolated fallback.
+
+### Prerequisites
+
+Install Emscripten SDK 4.0.23, CMake, Ninja, Python 3, and Node.js. Activate the
+SDK in the shell used for CMake so `EMSDK`, `emcc`, and `em++` are available:
+
+```sh
+git clone https://github.com/emscripten-core/emsdk.git "$HOME/emsdk"
+cd "$HOME/emsdk"
+git checkout 4.0.23
+./emsdk install 4.0.23
+./emsdk activate 4.0.23
+source ./emsdk_env.sh
+cd /path/to/PlaygroundOSS
+```
+
+### Configure and build
+
+Pass the original archive itself; do not extract it into the web deployment.
+The build copies it unchanged and generates integrity metadata used by the
+transactional first-run installer:
+
+```sh
+cmake --preset web-release \
+  -DPLAYGROUND_APP_ASSETS_ZIP=/path/to/AppAssets.zip
+cmake --build --preset web-release -j"$(nproc)"
+```
+
+The deployable directory is:
+
+```text
+out/build/web-release/Engine/modern/host/web/
+  index.html
+  index.js
+  index.wasm
+  AppAssets.zip
+  AppAssets.metadata
+```
+
+For a CDN-hosted archive, omit `PLAYGROUND_APP_ASSETS_ZIP`, provide generated
+metadata with `PLAYGROUND_WEB_APP_ASSETS_METADATA`, and set
+`PLAYGROUND_WEB_APP_ASSETS_URL` and
+`PLAYGROUND_WEB_APP_ASSETS_METADATA_URL`. URLs are relative to the page unless
+an absolute URL is supplied.
+
+### Serve and run
+
+Threaded WebAssembly requires cross-origin isolation. Every production server
+must return at least these headers for the document and all subresources:
+
+```text
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+Cross-Origin-Resource-Policy: same-origin
+```
+
+The repository server supplies those headers for local development:
+
+```sh
+cmake --build out/build/web-release --target playground-web-serve
+# Open http://127.0.0.1:8765/
+```
+
+Or start it directly:
+
+```sh
+python3 scripts/serve_web.py \
+  out/build/web-release/Engine/modern/host/web --port 8765
+```
+
+The first launch downloads the unchanged archive, checks its size and SHA-256,
+validates every ZIP path and CRC, and extracts it into a content-addressed OPFS
+generation. The completion marker is the final write because OPFS cannot
+atomically rename a populated directory. Interrupted generations are rejected
+and rebuilt. Later launches download only the small metadata file and reuse the
+installed generation.
+
+Both installed and runtime data live in the browser's origin-private file
+system with no picker or permission prompt:
+
+```text
+/playground-opfs/cache/appassets/install-<sha256>  immutable AppAssets
+/playground-opfs/user                             state and downloaded assets
+```
+
+This uses WasmFS' OPFS backend directly and does not use IndexedDB. Storage is
+scoped to the exact origin, so changing scheme, host, or port selects a
+different game installation. Clearing site data deletes both installed and
+user data. Startup requests the browser's durable-storage classification
+without displaying a permission prompt. If the browser declines it, OPFS data
+still survives ordinary closes and reloads but remains eligible for automatic
+quota eviction under storage pressure.
+
+The browser owns cookies and codec support. Remote game/API endpoints must
+permit browser CORS requests; under COEP their responses must also be
+CORS-enabled or served through a same-origin reverse proxy. Serve the page over
+HTTPS in production (localhost is treated as a secure context). Geolocation,
+device orientation, notifications, clipboard, SDL audio, HTML video decoding,
+and WebGL are connected to browser APIs. Remote push, purchases, and rewarded
+ads need application providers and therefore report unavailable/failure rather
+than fabricating success.
+
+Run the storage/thread/SQLite qualification and full-engine boot checks with
+Chromium as follows:
+
+```sh
+./scripts/build_web_platform_probe.sh
+python3 scripts/serve_web.py out/web-platform-probe --port 8765 &
+node scripts/test_web_platform_probe.mjs http://127.0.0.1:8765/
+
+python3 scripts/serve_web.py \
+  out/build/web-release/Engine/modern/host/web --port 8766 &
+node scripts/test_web_engine.mjs http://127.0.0.1:8766/ \
+  /tmp/playground-web-engine-profile
+```
+
+Set `PLAYGROUND_CHROMIUM` if the executable is not named `chromium-browser`.
+The full-engine test uses a persistent profile, verifies isolation, and waits
+for the first engine frame. Set `PLAYGROUND_WEB_TEST_CLICK=1` to dispatch a
+title-screen click and observe the login transition after boot.
+
 ## Configuration controls
 
 - `PLAYGROUND_SDL_PROVIDER=auto|system|fetch` selects an installed SDL3 package
@@ -300,10 +427,12 @@ that proven runtime to these CMake presets is separate future work.
   and disabled on macOS and Android.
 - `PLAYGROUND_BUILD_DESKTOP_HOST` is enabled for native desktop builds.
 - `PLAYGROUND_BUILD_PLATFORM_PROBE` is disabled while cross-compiling.
+- `PLAYGROUND_APP_ASSETS_ZIP` packages the original archive for the targets
+  with transactional first-run extraction, including Emscripten.
 - `PLAYGROUND_LANGUAGE`, `PLAYGROUND_COUNTRY`, `PLAYGROUND_LOCATION` (formatted
   as `latitude,longitude`), and `PLAYGROUND_MOTION` (formatted as
   `azimuth,elevation`) override deterministic desktop defaults at runtime.
 
 The CI definition in `.github/workflows/modernization-platform.yml` is the
-canonical unattended build matrix for Linux, Windows, macOS, and all four
-Android ABIs.
+canonical unattended build matrix for Linux, Windows, Emscripten, macOS, and
+all four Android ABIs.

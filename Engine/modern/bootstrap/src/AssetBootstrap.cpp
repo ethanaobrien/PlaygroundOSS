@@ -456,10 +456,12 @@ bool prepareAssetBundle(const AssetBootstrapOptions &options,
       error = "AppAssets.zip directory does not match its build metadata";
       valid = false;
     }
-    std::filesystem::remove_all(staging, fsError);
+    const std::filesystem::path extractionRoot =
+        options.publishWithCompletionMarker ? generation : staging;
+    std::filesystem::remove_all(extractionRoot, fsError);
     fsError.clear();
     if (valid) {
-      std::filesystem::create_directories(staging, fsError);
+      std::filesystem::create_directories(extractionRoot, fsError);
       if (fsError) {
         error =
             "Could not create asset staging generation: " + fsError.message();
@@ -467,16 +469,20 @@ bool prepareAssetBundle(const AssetBootstrapOptions &options,
       }
     }
     if (valid)
-      valid = extract(archive, entries, expanded, options, staging, error);
+      valid = extract(archive, entries, expanded, options, extractionRoot,
+                      error);
     const int archiveClosed = unzClose(archive);
     if (valid && archiveClosed != UNZ_OK) {
       error = "AppAssets.zip could not be closed cleanly";
       valid = false;
     }
-    if (valid)
+    // In marker-publication mode the marker is deliberately the final write.
+    // Before it exists, no interrupted tree is a valid generation.
+    if (valid && !options.publishWithCompletionMarker)
       valid = writeFile(staging / MarkerName, options.metadata.canonicalText,
                         error);
-    if (valid && !validGeneration(staging, options.metadata)) {
+    if (valid && !options.publishWithCompletionMarker &&
+        !validGeneration(staging, options.metadata)) {
       error = "Extracted AppAssets generation is incomplete";
       valid = false;
     }
@@ -484,16 +490,23 @@ bool prepareAssetBundle(const AssetBootstrapOptions &options,
       valid = commit(options, error);
     if (valid)
       valid = checkpoint(options, "staging-committed", error);
-    if (valid)
+    if (valid && options.publishWithCompletionMarker)
+      valid = writeFile(generation / MarkerName,
+                        options.metadata.canonicalText, error);
+    if (valid && !options.publishWithCompletionMarker)
       valid = publishGeneration(options, staging, generation, error);
     if (valid)
-      valid = checkpoint(options, "generation-renamed", error);
+      valid = checkpoint(options,
+                         options.publishWithCompletionMarker
+                             ? "generation-marked"
+                             : "generation-renamed",
+                         error);
     if (valid)
       valid = commit(options, error);
     if (valid)
       valid = checkpoint(options, "generation-committed", error);
     if (!valid) {
-      std::filesystem::remove_all(staging, fsError);
+      std::filesystem::remove_all(extractionRoot, fsError);
       return false;
     }
     result.installed = true;

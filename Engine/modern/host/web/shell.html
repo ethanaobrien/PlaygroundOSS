@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="color-scheme" content="dark">
+  <title>PlaygroundOSS</title>
+  <style>
+    html, body { width:100%; height:100%; margin:0; overflow:hidden; background:#090a0d; color:#fff; font:16px system-ui,sans-serif }
+    #canvas { width:100%; height:100%; display:block; touch-action:none; outline:none }
+    #status { position:fixed; inset:0; display:grid; place-content:center; gap:1rem; text-align:center; background:#090a0d; z-index:2 }
+    #status.hidden { display:none }
+    #detail { opacity:.72; max-width:42rem; overflow-wrap:anywhere }
+    progress { width:min(34rem,80vw); height:1rem }
+    #fatal { color:#ff9ca8; white-space:pre-wrap }
+  </style>
+</head>
+<body>
+  <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+  <div id="status">
+    <strong id="phase">Loading PlaygroundOSS</strong>
+    <div id="detail">Starting the WebAssembly runtime…</div>
+    <progress id="progress" max="1"></progress>
+    <div id="fatal"></div>
+  </div>
+  <script>
+    if (!crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
+      document.getElementById('fatal').textContent =
+        'This build requires Cross-Origin-Opener-Policy: same-origin and ' +
+        'Cross-Origin-Embedder-Policy: require-corp.';
+      throw new Error('cross-origin isolation is required');
+    }
+    if (!navigator.storage || typeof navigator.storage.getDirectory !== 'function') {
+      document.getElementById('fatal').textContent =
+        'This browser does not provide the Origin Private File System.';
+      throw new Error('OPFS is required');
+    }
+    navigator.storage.persist().then(granted =>
+      console.info(`persistent browser storage ${granted ? 'granted' :
+        'not granted; data remains in OPFS but may be evicted'}`));
+    globalThis.playgroundSetStatus = (phase, detail, progress) => {
+      document.getElementById('phase').textContent = phase;
+      document.getElementById('detail').textContent = detail;
+      document.getElementById('progress').value = progress;
+      if (phase === 'Starting' && progress >= 1)
+        document.getElementById('status').classList.add('hidden');
+    };
+    globalThis.playgroundFatal = message => {
+      const status = document.getElementById('status');
+      status.classList.remove('hidden');
+      document.getElementById('phase').textContent = 'PlaygroundOSS could not start';
+      document.getElementById('detail').textContent = '';
+      document.getElementById('fatal').textContent = message;
+    };
+    var Module = {
+      canvas: document.getElementById('canvas'),
+      print: text => console.log(text),
+      printErr: text => console.error(text),
+      onAbort: reason => globalThis.playgroundFatal(String(reason))
+    };
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>

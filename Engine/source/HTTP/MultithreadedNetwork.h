@@ -19,7 +19,9 @@
 #include "CKLBHTTPInterface.h"
 #include <list>
 #include <stdint.h>
+#if !defined(PLAYGROUND_WEB)
 #include "curl.h"
+#endif
 
 struct CurlTransferMetrics {
 	double queueSeconds;
@@ -47,6 +49,9 @@ public:
 	static bool flushCookieStorage(bool* changed = NULL);
 	static bool clearCookieStorage();
 
+#if defined(PLAYGROUND_WEB)
+	CurlObjectInternal();
+#else
 	explicit CurlObjectInternal(CURL* curl)
 	: m_curl(curl)
 	, m_headers(NULL)
@@ -61,6 +66,7 @@ public:
 	, m_performStartedAtNanoseconds(0)
 	, m_performCount(0)
 	{}
+#endif
 	~CurlObjectInternal() {}
 
 	virtual void reset();
@@ -86,10 +92,15 @@ private:
 	                            double downloadNow, double uploadTotal,
 	                            double uploadNow);
 
+#if defined(PLAYGROUND_WEB)
+	struct WebData;
+	WebData*         m_web;
+#else
 	CURL*            m_curl;
 	curl_slist*      m_headers;
 	curl_httppost*   m_form;
 	curl_httppost*   m_formEnd;
+#endif
 	bool             m_postConfigured;
 	void*            m_progressContext;
 	void*            m_progressCallback;
