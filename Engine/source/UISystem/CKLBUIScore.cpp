@@ -108,7 +108,7 @@ CKLBLuaPropTask::PROP_V2 CKLBUIScore::ms_propItems[] = {
 	{	"cols",		UINTEGER,	(setBoolT)&CKLBUIScore::setColumn,		(getBoolT)&CKLBUIScore::getColumn,		0	},
 	{	"fillz",	BOOLEANT,	(setBoolT)&CKLBUIScore::setFillZero,	(getBoolT)&CKLBUIScore::getFillZero,	0	},
 	{	"anim",		R_BOOLEANT,	NULL,									(getBoolT)&CKLBUIScore::getAnim,		0	},
-	{	"value",	UINTEGER,	(setBoolT)&CKLBUIScore::setValue,		(getBoolT)&CKLBUIScore::getValue,		0	},
+	{	"value",	INTEGER64,	(setBoolT)&CKLBUIScore::setValue,		(getBoolT)&CKLBUIScore::getValue,		0	},
 	{	"align",	UINTEGER,	(setBoolT)&CKLBUIScore::setAlign,		(getBoolT)&CKLBUIScore::getAlign,		0	},
 	{	"countclip",BOOLEANT,	(setBoolT)&CKLBUIScore::setCountClip,	(getBoolT)&CKLBUIScore::getCountClip,	0	},
 
