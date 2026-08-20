@@ -1195,7 +1195,11 @@ char *RuntimePlatform::getDeviceIntegrityInfo(const char *request) {
 void RuntimePlatform::decompressBGM(bool decompress) {
   g_decompressBGM = decompress;
 }
-s64 RuntimePlatform::getElapsedTime() { return nanotime() / 1000000; }
+s64 RuntimePlatform::getElapsedTime() {
+  // IPlatformRequest exposes this clock in seconds. Lua uses it for timeout
+  // values such as the home-screen navigation voice interval.
+  return nanotime() / 1000000000LL;
+}
 void *RuntimePlatform::getFontSystem() {
   static DesktopFontSystem fontSystem;
   return &fontSystem;
