@@ -65,6 +65,124 @@
         }
       }, { capture: true, once: true });
     }
+    const webTextInputs = new Map();
+    const webTextInputColor = color => {
+      const red = (color >>> 16) & 0xff;
+      const green = (color >>> 8) & 0xff;
+      const blue = color & 0xff;
+      const alpha = ((color >>> 24) & 0xff) / 255;
+      return `rgba(${red},${green},${blue},${alpha})`;
+    };
+    const styleWebTextInput = entry => {
+      const touched = document.activeElement === entry.element;
+      entry.element.style.backgroundColor = webTextInputColor(
+        touched ? entry.touchBackground : entry.normalBackground);
+      entry.element.style.color = webTextInputColor(
+        touched ? entry.touchForeground : entry.normalForeground);
+    };
+    const layoutWebTextInput = entry => {
+      const bounds = canvas.getBoundingClientRect();
+      const scaleX = canvas.width ? bounds.width / canvas.width : 1;
+      const scaleY = canvas.height ? bounds.height / canvas.height : 1;
+      entry.element.style.left = `${bounds.left + entry.x * scaleX}px`;
+      entry.element.style.top = `${bounds.top + entry.y * scaleY}px`;
+      entry.element.style.width = `${entry.width * scaleX}px`;
+      entry.element.style.height = `${entry.height * scaleY}px`;
+    };
+    globalThis.playgroundCreateTextInput =
+      (id, password, value, x, y, width, height) => {
+        const element = document.createElement('input');
+        element.type = password ? 'password' : 'text';
+        element.value = value;
+        element.autocapitalize = 'off';
+        element.autocomplete = 'off';
+        element.spellcheck = false;
+        element.__playgroundWidgetId = id;
+        element.style.cssText =
+          'position:fixed;z-index:1;box-sizing:border-box;margin:0;' +
+          'padding:2px 6px;border:1px solid #777;border-radius:4px;' +
+          'outline:none;background:#fff;color:#000;' +
+          'font:16px sans-serif;display:none';
+        const entry = {
+          element, x, y, width, height,
+          normalBackground: 0xffffffff,
+          normalForeground: 0xff000000,
+          touchBackground: 0xffffffff,
+          touchForeground: 0xff000000
+        };
+        webTextInputs.set(id, entry);
+        document.body.appendChild(element);
+        element.addEventListener('focus', () => styleWebTextInput(entry));
+        element.addEventListener('blur', () => styleWebTextInput(entry));
+        styleWebTextInput(entry);
+        layoutWebTextInput(entry);
+      };
+    globalThis.playgroundUpdateTextInput =
+      (id, x, y, width, height, visible, enabled) => {
+        const entry = webTextInputs.get(id);
+        if (!entry)
+          return;
+        Object.assign(entry, { x, y, width, height });
+        entry.element.disabled = !enabled;
+        entry.element.style.display = visible ? 'block' : 'none';
+        if (!visible && document.activeElement === entry.element)
+          entry.element.blur();
+        layoutWebTextInput(entry);
+      };
+    globalThis.playgroundSetTextInputValue = (id, value) => {
+      const entry = webTextInputs.get(id);
+      if (entry && entry.element.value !== value)
+        entry.element.value = value;
+    };
+    globalThis.playgroundSetTextInputPlaceholder = (id, value) => {
+      const entry = webTextInputs.get(id);
+      if (entry)
+        entry.element.placeholder = value;
+    };
+    globalThis.playgroundSetTextInputColor = (id, slot, color) => {
+      const entry = webTextInputs.get(id);
+      if (!entry)
+        return;
+      if (slot === 0)
+        entry.normalBackground = color;
+      else if (slot === 1)
+        entry.normalForeground = color;
+      else if (slot === 2)
+        entry.touchBackground = color;
+      else if (slot === 3)
+        entry.touchForeground = color;
+      styleWebTextInput(entry);
+    };
+    globalThis.playgroundSetTextInputAlignment = (id, alignment) => {
+      const entry = webTextInputs.get(id);
+      if (entry)
+        entry.element.style.textAlign =
+          alignment === 1 ? 'center' : alignment === 2 ? 'right' : 'left';
+    };
+    globalThis.playgroundGetTextInputLength = id => {
+      const entry = webTextInputs.get(id);
+      return entry ? lengthBytesUTF8(entry.element.value) : -1;
+    };
+    globalThis.playgroundCopyTextInputValue = (id, address, capacity) => {
+      const entry = webTextInputs.get(id);
+      if (entry)
+        stringToUTF8(entry.element.value, address, capacity);
+    };
+    globalThis.playgroundTextInputFocused = id => {
+      const entry = webTextInputs.get(id);
+      return !!entry && document.activeElement === entry.element;
+    };
+    globalThis.playgroundDestroyTextInput = id => {
+      const entry = webTextInputs.get(id);
+      if (entry) {
+        entry.element.remove();
+        webTextInputs.delete(id);
+      }
+    };
+    addEventListener('resize', () => {
+      for (const entry of webTextInputs.values())
+        layoutWebTextInput(entry);
+    });
     globalThis.playgroundSetStatus = (phase, detail, progress) => {
       document.getElementById('phase').textContent = phase;
       document.getElementById('detail').textContent = detail;

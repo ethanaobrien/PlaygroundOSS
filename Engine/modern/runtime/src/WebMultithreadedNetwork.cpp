@@ -1,12 +1,14 @@
 #include "MultithreadedNetwork.h"
 
 #include <emscripten.h>
-#include <emscripten/fetch.h>
+#include <emscripten/atomic.h>
+#include <emscripten/threading.h>
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <mutex>
@@ -26,6 +28,27 @@ EM_JS(int, playgroundWebPageUsesHttps, (), {
 });
 
 namespace {
+
+enum XhrRequestState : std::uint32_t {
+  XhrRequestPending,
+  XhrRequestProgress,
+  XhrRequestDone,
+  XhrRequestError,
+  XhrRequestAborted,
+};
+
+struct alignas(4) XhrRequestControl {
+  std::uint32_t state{};
+  std::uint32_t httpStatus{};
+  std::uint32_t data{};
+  std::uint32_t length{};
+  std::uint32_t headers{};
+  std::uint32_t headersLength{};
+  std::uint32_t downloaded{};
+  std::uint32_t downloadTotal{};
+  std::uint32_t uploaded{};
+  std::uint32_t uploadTotal{};
+};
 
 std::mutex CookieMutex;
 std::string CookiePath;
@@ -235,43 +258,152 @@ int CurlObjectInternal::perform() {
   }
   requestHeaders.push_back(nullptr);
 
-  emscripten_fetch_attr_t attributes;
-  emscripten_fetch_attr_init(&attributes);
-  std::strcpy(attributes.requestMethod, m_web->usePost ? "POST" : "GET");
-  attributes.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY |
-                          EMSCRIPTEN_FETCH_SYNCHRONOUS;
-  attributes.requestHeaders = requestHeaders.data();
-  attributes.requestData = m_web->post.empty() ? nullptr : m_web->post.data();
-  attributes.requestDataSize = m_web->post.size();
-  // Match Fetch's default credentials policy: same-origin API requests use
-  // browser cookies, while cross-origin CDN downloads remain anonymous.
-  attributes.withCredentials = EM_FALSE;
-  emscripten_fetch_t *fetch =
-      emscripten_fetch(&attributes, m_web->url.c_str());
-  if (!fetch) {
-    std::fprintf(stderr,
-                 "web network: emscripten_fetch rejected %s before dispatch\n",
-                 m_web->url.c_str());
-    return 2;
+  const auto started = std::chrono::steady_clock::now();
+  XhrRequestControl request;
+  MAIN_THREAD_EM_ASM({
+    const controlAddress = $0;
+    const control = controlAddress >>> 2;
+    const xhr = new XMLHttpRequest();
+    globalThis.playgroundXhrRequests ||= new Map();
+    globalThis.playgroundXhrRequests.set(controlAddress, xhr);
+    const publish = state => {
+      Atomics.store(HEAP32, control, state);
+      Atomics.notify(HEAP32, control);
+    };
+    const publishProgress = () => {
+      const state = Atomics.load(HEAP32, control);
+      if (state === 0 || state === 1)
+        publish(1);
+    };
+    const finish = state => {
+      globalThis.playgroundXhrRequests.delete(controlAddress);
+      publish(state);
+    };
+    try {
+      xhr.open($1 ? 'POST' : 'GET', UTF8ToString($2), true);
+      xhr.responseType = 'arraybuffer';
+      xhr.withCredentials = false;
+      for (let headers = $3 >>> 2; ; headers += 2) {
+        const name = HEAPU32[headers];
+        if (!name)
+          break;
+        const value = HEAPU32[headers + 1];
+        xhr.setRequestHeader(UTF8ToString(name), UTF8ToString(value));
+      }
+      xhr.onreadystatechange = () => {
+        if (xhr.readyState >= XMLHttpRequest.HEADERS_RECEIVED) {
+          try {
+            Atomics.store(HEAP32, control + 1, xhr.status);
+          } catch (_) {}
+          publishProgress();
+        }
+      };
+      xhr.onprogress = event => {
+        Atomics.store(HEAP32, control + 6,
+          Math.min(event.loaded, 0xffffffff));
+        Atomics.store(HEAP32, control + 7,
+          event.lengthComputable ? Math.min(event.total, 0xffffffff) : 0);
+        publishProgress();
+      };
+      xhr.upload.onprogress = event => {
+        Atomics.store(HEAP32, control + 8,
+          Math.min(event.loaded, 0xffffffff));
+        Atomics.store(HEAP32, control + 9,
+          event.lengthComputable ? Math.min(event.total, 0xffffffff) : 0);
+        publishProgress();
+      };
+      xhr.onload = () => {
+        Atomics.store(HEAP32, control + 1, xhr.status);
+        const bytes = new Uint8Array(xhr.response || new ArrayBuffer(0));
+        const data = _malloc(bytes.byteLength || 1);
+        const rawHeaders = xhr.getAllResponseHeaders();
+        const headers = stringToNewUTF8(rawHeaders);
+        if (!data || !headers) {
+          if (data) _free(data);
+          if (headers) _free(headers);
+          finish(3);
+          return;
+        }
+        HEAPU8.set(bytes, data);
+        Atomics.store(HEAP32, control + 2, data);
+        Atomics.store(HEAP32, control + 3, bytes.byteLength);
+        Atomics.store(HEAP32, control + 4, headers);
+        Atomics.store(HEAP32, control + 5, lengthBytesUTF8(rawHeaders));
+        Atomics.store(HEAP32, control + 6, bytes.byteLength);
+        if (!Atomics.load(HEAP32, control + 7))
+          Atomics.store(HEAP32, control + 7, bytes.byteLength);
+        finish(2);
+      };
+      xhr.onerror = xhr.ontimeout = () => finish(3);
+      xhr.onabort = () => finish(4);
+      const body = $4 && $5 ? HEAPU8.slice($4, $4 + $5) : null;
+      xhr.send(body);
+    } catch (exception) {
+      console.error(`web xhr setup failed: ${exception}`);
+      finish(3);
+    }
+  }, &request, m_web->usePost, m_web->url.c_str(), requestHeaders.data(),
+     m_web->post.empty() ? nullptr : m_web->post.data(), m_web->post.size());
+
+  bool progressFailed = false;
+  bool sawFirstByte = false;
+  auto firstByte = started;
+  for (;;) {
+    if (m_abortPredicate && m_abortPredicate(m_abortContext)) {
+      MAIN_THREAD_EM_ASM({
+        const xhr = globalThis.playgroundXhrRequests?.get($0);
+        if (xhr)
+          xhr.abort();
+      }, &request);
+      progressFailed = true;
+    }
+    const auto state = static_cast<XhrRequestState>(
+        emscripten_atomic_load_u32(&request.state));
+    if (state == XhrRequestPending) {
+      emscripten_futex_wait(&request.state, XhrRequestPending, 100.0);
+      continue;
+    }
+    if (state == XhrRequestProgress) {
+      if (!sawFirstByte && (request.httpStatus || request.downloaded)) {
+        firstByte = std::chrono::steady_clock::now();
+        sawFirstByte = true;
+      }
+      if (m_progressCallback) {
+        using ProgressCallback = int (*)(void *, double, double, double, double);
+        progressFailed = reinterpret_cast<ProgressCallback>(m_progressCallback)(
+            m_progressContext, static_cast<double>(request.downloadTotal),
+            static_cast<double>(request.downloaded),
+            static_cast<double>(request.uploadTotal),
+            static_cast<double>(request.uploaded)) != 0;
+      }
+      if (progressFailed) {
+        MAIN_THREAD_EM_ASM({
+          const xhr = globalThis.playgroundXhrRequests?.get($0);
+          if (xhr)
+            xhr.abort();
+        }, &request);
+      }
+      emscripten_atomic_cas_u32(&request.state, XhrRequestProgress,
+                                XhrRequestPending);
+      continue;
+    }
+    break;
   }
 
-  m_web->httpCode = fetch->status;
-  const auto started = std::chrono::steady_clock::now();
+  m_web->httpCode = request.httpStatus;
   using HeaderCallback = std::size_t (*)(void *, std::size_t, std::size_t, void *);
   using WriteCallback = std::size_t (*)(char *, std::size_t, std::size_t, void *);
   bool headerFailed = false;
-  if (m_web->headerCallback) {
+  if (request.state == XhrRequestDone && m_web->headerCallback) {
     const auto callback =
         reinterpret_cast<HeaderCallback>(m_web->headerCallback);
     const std::string statusLine =
-        "HTTP/1.1 " + std::to_string(fetch->status) + "\r\n";
+        "HTTP/1.1 " + std::to_string(request.httpStatus) + "\r\n";
     headerFailed = callback(const_cast<char *>(statusLine.data()), 1,
                             statusLine.size(), m_web->callbackContext) !=
                    statusLine.size();
-    const int length = emscripten_fetch_get_response_headers_length(fetch);
-    std::string headers(static_cast<std::size_t>(std::max(length, 0)) + 1, '\0');
-    emscripten_fetch_get_response_headers(fetch, headers.data(), headers.size());
-    headers.resize(std::strlen(headers.c_str()));
+    std::string headers(reinterpret_cast<const char *>(request.headers),
+                        request.headersLength);
     std::size_t cursor = 0;
     while (!headerFailed && cursor < headers.size()) {
       const std::size_t end = headers.find('\n', cursor);
@@ -291,26 +423,27 @@ int CurlObjectInternal::perform() {
       headerFailed = callback(terminator, 1, 2, m_web->callbackContext) != 2;
     }
   }
-  std::size_t written = fetch->numBytes;
-  if (m_web->writeCallback && fetch->numBytes) {
+  std::size_t written = request.length;
+  if (request.state == XhrRequestDone && m_web->writeCallback && request.length) {
     written = reinterpret_cast<WriteCallback>(m_web->writeCallback)(
-        const_cast<char *>(fetch->data), 1, fetch->numBytes,
+        reinterpret_cast<char *>(request.data), 1, request.length,
         m_web->callbackContext);
   }
-  bool progressFailed = false;
-  if (m_progressCallback) {
+  if (!progressFailed && request.state == XhrRequestDone && m_progressCallback) {
     using ProgressCallback = int (*)(void *, double, double, double, double);
     progressFailed = reinterpret_cast<ProgressCallback>(m_progressCallback)(
-        m_progressContext, static_cast<double>(fetch->totalBytes),
-        static_cast<double>(fetch->numBytes),
-        static_cast<double>(m_web->post.size()),
-        static_cast<double>(m_web->post.size())) != 0;
+        m_progressContext, static_cast<double>(request.downloadTotal),
+        static_cast<double>(request.downloaded),
+        static_cast<double>(request.uploadTotal),
+        static_cast<double>(request.uploaded)) != 0;
   }
   const auto finished = std::chrono::steady_clock::now();
   m_web->metrics.totalSeconds =
       std::chrono::duration<double>(finished - started).count();
-  m_web->metrics.firstByteSeconds = m_web->metrics.totalSeconds;
-  m_web->metrics.downloadedBytes = static_cast<double>(fetch->numBytes);
+  m_web->metrics.firstByteSeconds = sawFirstByte
+      ? std::chrono::duration<double>(firstByte - started).count()
+      : m_web->metrics.totalSeconds;
+  m_web->metrics.downloadedBytes = static_cast<double>(request.length);
   m_web->metrics.averageBytesPerSecond = m_web->metrics.totalSeconds > 0
       ? m_web->metrics.downloadedBytes / m_web->metrics.totalSeconds : 0;
   m_web->metrics.connectionCount = 1;
@@ -318,16 +451,17 @@ int CurlObjectInternal::perform() {
   // Match libcurl's transport contract: an HTTP 4xx/5xx response is still a
   // successfully completed transfer.  The engine consumes getHttpCode() and
   // the response body to decide how to handle server errors.
-  const bool success = fetch->status != 0 && written == fetch->numBytes &&
+  const bool success = request.state == XhrRequestDone &&
+                       request.httpStatus != 0 && written == request.length &&
                        !headerFailed && !progressFailed;
   if (!success) {
-    std::fprintf(stderr, "web fetch failed: status=%d bytes=%llu url=%s\n",
-                 fetch->status,
-                 static_cast<unsigned long long>(fetch->numBytes),
+    std::fprintf(stderr, "web xhr failed: status=%u bytes=%u url=%s\n",
+                 request.httpStatus, request.length,
                  m_web->url.c_str());
   }
-  const bool writeFailed = written != fetch->numBytes || headerFailed;
-  emscripten_fetch_close(fetch);
+  const bool writeFailed = written != request.length || headerFailed;
+  std::free(reinterpret_cast<void *>(request.data));
+  std::free(reinterpret_cast<void *>(request.headers));
   return success ? 0 : (progressFailed ? 42 : writeFailed ? 23 : 22);
 }
 

@@ -69,7 +69,11 @@ u32 CKLBUIVariableItem::getClassID()
 CKLBLuaPropTask::PROP_V2 CKLBUIVariableItem::ms_propItems[] = {
 	UI_BASE_PROP,
 	{	"order",	UINTEGER,	(setBoolT)&CKLBUIVariableItem::setOrder,	(getBoolT)&CKLBUIVariableItem::getOrder,	0 },
+#if defined(__EMSCRIPTEN__)
+	{	"asset",	STRING,		(setBoolT)&CKLBUIVariableItem::setAssetProperty,	(getBoolT)&CKLBUIVariableItem::getAsset,	0 },
+#else
 	{	"asset",	STRING,		(setBoolT)&CKLBUIVariableItem::changeAsset,	(getBoolT)&CKLBUIVariableItem::getAsset,	0 },
+#endif
 	{	"width",	NUMERIC,	(setBoolT)&CKLBUIVariableItem::setWidth,	(getBoolT)&CKLBUIVariableItem::getWidth,	0 },
 	{	"height",	NUMERIC,	(setBoolT)&CKLBUIVariableItem::setHeight,	(getBoolT)&CKLBUIVariableItem::getHeight,	0 }
 };

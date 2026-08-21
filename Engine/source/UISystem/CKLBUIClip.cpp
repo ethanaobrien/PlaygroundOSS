@@ -36,8 +36,8 @@ static CKLBTaskFactory<CKLBUIClip> factory("UI_Clip", CLS_KLBUICLIP, cmd);
 
 CKLBLuaPropTask::PROP_V2 CKLBUIClip::ms_propItems[] = {
 	UI_BASE_PROP,
-	{	"width",	INTEGER,	(setBoolT)&CKLBUIClip::setWidth,	(getBoolT)&CKLBUIClip::getWidth,	0	},
-	{	"height",	INTEGER,	(setBoolT)&CKLBUIClip::setHeight,	(getBoolT)&CKLBUIClip::getHeight,	0	},
+	{	"width",	NUMERIC,	(setBoolT)&CKLBUIClip::setWidth,	(getBoolT)&CKLBUIClip::getWidth,	0	},
+	{	"height",	NUMERIC,	(setBoolT)&CKLBUIClip::setHeight,	(getBoolT)&CKLBUIClip::getHeight,	0	},
 	{	"order",	UINTEGER,	(setBoolT)&CKLBUIClip::setOrder,	(getBoolT)&CKLBUIClip::getOrder,	0	},
 	{	"maxodr",	UINTEGER,	(setBoolT)&CKLBUIClip::setMaxOdr,	(getBoolT)&CKLBUIClip::getMaxOdr,	0	}
 };

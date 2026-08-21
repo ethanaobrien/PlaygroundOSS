@@ -4,13 +4,13 @@
 
 #include <emscripten.h>
 #include <emscripten/atomic.h>
-#include <emscripten/fetch.h>
 #include <emscripten/threading.h>
 #include <emscripten/wasmfs.h>
 #include <mbedtls/sha256.h>
 
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -35,6 +35,22 @@ constexpr const char *StateRoot = "/playground-opfs/user";
 constexpr const char *Archive = "/playground-opfs/cache/AppAssets.zip";
 constexpr const char *Metadata = "/playground-opfs/cache/AppAssets.metadata";
 
+enum XhrState : std::uint32_t {
+  XhrPending,
+  XhrProgress,
+  XhrDone,
+  XhrError,
+};
+
+struct alignas(4) XhrControl {
+  std::uint32_t state{};
+  std::uint32_t httpStatus{};
+  std::uint32_t data{};
+  std::uint32_t length{};
+  std::uint32_t transferred{};
+  std::uint32_t total{};
+};
+
 void setStatus(const char *phase, const std::string &detail, double progress) {
   MAIN_THREAD_EM_ASM({
     const phase = UTF8ToString($0);
@@ -46,33 +62,93 @@ void setStatus(const char *phase, const std::string &detail, double progress) {
 
 bool download(const char *url, const std::filesystem::path &destination,
               std::string &error) {
-  emscripten_fetch_attr_t attributes;
-  emscripten_fetch_attr_init(&attributes);
-  std::strcpy(attributes.requestMethod, "GET");
-  attributes.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY |
-                          EMSCRIPTEN_FETCH_SYNCHRONOUS;
-  attributes.withCredentials = EM_TRUE;
-  emscripten_fetch_t *fetch = emscripten_fetch(&attributes, url);
-  if (!fetch || fetch->status < 200 || fetch->status >= 300) {
+  XhrControl control;
+  MAIN_THREAD_EM_ASM({
+    const control = $0 >>> 2;
+    const request = new XMLHttpRequest();
+    const publishState = state => {
+      Atomics.store(HEAP32, control, state);
+      Atomics.notify(HEAP32, control);
+    };
+    request.open('GET', UTF8ToString($1), true);
+    request.responseType = 'arraybuffer';
+    request.withCredentials = false;
+    request.onreadystatechange = () => {
+      if (request.readyState >= XMLHttpRequest.HEADERS_RECEIVED) {
+        try {
+          Atomics.store(HEAP32, control + 1, request.status);
+        } catch (_) {}
+      }
+    };
+    request.onprogress = event => {
+      Atomics.store(HEAP32, control + 4,
+        Math.min(event.loaded, 0xffffffff));
+      Atomics.store(HEAP32, control + 5,
+        event.lengthComputable ? Math.min(event.total, 0xffffffff) : 0);
+      if (Atomics.load(HEAP32, control) < 2)
+        publishState(1);
+    };
+    request.onload = () => {
+      Atomics.store(HEAP32, control + 1, request.status);
+      if (request.status < 200 || request.status >= 300 || !request.response) {
+        publishState(3);
+        return;
+      }
+      const bytes = new Uint8Array(request.response);
+      const data = _malloc(bytes.byteLength || 1);
+      if (!data) {
+        publishState(3);
+        return;
+      }
+      HEAPU8.set(bytes, data);
+      Atomics.store(HEAP32, control + 2, data);
+      Atomics.store(HEAP32, control + 3, bytes.byteLength);
+      Atomics.store(HEAP32, control + 4, bytes.byteLength);
+      Atomics.store(HEAP32, control + 5, bytes.byteLength);
+      publishState(2);
+    };
+    request.onerror = request.onabort = request.ontimeout = () =>
+      publishState(3);
+    request.send();
+  }, &control, url);
+
+  for (;;) {
+    const auto state = static_cast<XhrState>(
+        emscripten_atomic_load_u32(&control.state));
+    if (state == XhrPending) {
+      emscripten_futex_wait(&control.state, XhrPending, 1000.0);
+      continue;
+    }
+    if (state == XhrProgress) {
+      setStatus("Preparing game data", "Downloading integrity metadata",
+                control.total ? static_cast<double>(control.transferred) /
+                                    control.total
+                              : 0.0);
+      std::uint32_t expected = XhrProgress;
+      emscripten_atomic_cas_u32(&control.state, expected, XhrPending);
+      continue;
+    }
+    break;
+  }
+
+  if (control.state != XhrDone) {
     error = "Could not download " + std::string(url) + " (HTTP " +
-            std::to_string(fetch ? fetch->status : 0) + ")";
-    if (fetch)
-      emscripten_fetch_close(fetch);
+            std::to_string(control.httpStatus) + ")";
     return false;
   }
   std::filesystem::create_directories(destination.parent_path());
   const auto temporary = destination.string() + ".part";
   std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
   if (!output ||
-      !output.write(fetch->data,
-                    static_cast<std::streamsize>(fetch->numBytes)) ||
+      !output.write(reinterpret_cast<const char *>(control.data),
+                    static_cast<std::streamsize>(control.length)) ||
       !output.flush()) {
     error = "Could not write downloaded " + destination.string();
-    emscripten_fetch_close(fetch);
+    std::free(reinterpret_cast<void *>(control.data));
     return false;
   }
   output.close();
-  emscripten_fetch_close(fetch);
+  std::free(reinterpret_cast<void *>(control.data));
   std::error_code fsError;
   std::filesystem::remove(destination, fsError);
   fsError.clear();
@@ -86,6 +162,7 @@ bool download(const char *url, const std::filesystem::path &destination,
 
 enum StreamState : std::uint32_t {
   StreamEmpty,
+  StreamProgress,
   StreamChunk,
   StreamDone,
   StreamError,
@@ -96,6 +173,8 @@ struct alignas(4) StreamControl {
   std::uint32_t state{};
   std::uint32_t length{};
   std::uint32_t httpStatus{};
+  std::uint32_t transferred{};
+  std::uint32_t total{};
 };
 
 std::string formatDigest(const std::array<unsigned char, 32> &bytes) {
@@ -138,9 +217,9 @@ bool streamDownload(const char *url, const std::filesystem::path &destination,
     return false;
   }
 
-  // Start the asynchronous browser stream on the main runtime thread. The
-  // engine pthread consumes one bounded shared-memory chunk at a time and
-  // writes it directly to OPFS, avoiding Fetch's full-response Wasm-heap copy.
+  // Start an asynchronous XMLHttpRequest on the browser thread. XHR progress
+  // events update the startup UI while the engine pthread sleeps; once loaded,
+  // the response is copied to OPFS through one bounded shared-memory chunk.
   MAIN_THREAD_EM_ASM({
     const control = $0 >>> 2;
     const buffer = $1;
@@ -151,7 +230,7 @@ bool streamDownload(const char *url, const std::filesystem::path &destination,
         const state = Atomics.load(HEAP32, control);
         if (state === 0)
           return true;
-        if (state === 4)
+        if (state === 5)
           return false;
         const waiter = Atomics.waitAsync(HEAP32, control, state, 1000);
         if (waiter.async)
@@ -160,40 +239,61 @@ bool streamDownload(const char *url, const std::filesystem::path &destination,
           await new Promise(resolve => setTimeout(resolve, 0));
       }
     };
-    (async () => {
+    const fail = exception => {
+      console.error(`AppAssets download failed: ${exception}`);
+      Atomics.store(HEAP32, control, 4);
+      Atomics.notify(HEAP32, control);
+    };
+    const request = new XMLHttpRequest();
+    request.open('GET', url, true);
+    request.responseType = 'arraybuffer';
+    request.withCredentials = false;
+    request.onreadystatechange = () => {
+      if (request.readyState >= XMLHttpRequest.HEADERS_RECEIVED) {
+        try {
+          Atomics.store(HEAP32, control + 2, request.status);
+        } catch (_) {}
+      }
+    };
+    request.onprogress = event => {
+      Atomics.store(HEAP32, control + 3,
+        Math.min(event.loaded, 0xffffffff));
+      Atomics.store(HEAP32, control + 4,
+        event.lengthComputable ? Math.min(event.total, 0xffffffff) : 0);
+      const state = Atomics.load(HEAP32, control);
+      if (state === 0 || state === 1) {
+        Atomics.store(HEAP32, control, 1);
+        Atomics.notify(HEAP32, control);
+      }
+    };
+    request.onload = async () => {
       try {
-        const response = await fetch(url, { credentials: 'include' });
-        Atomics.store(HEAP32, control + 2, response.status);
-        if (!response.ok || !response.body)
-          throw new Error(`HTTP ${response.status}`);
-        const reader = response.body.getReader();
-        for (;;) {
-          const result = await reader.read();
-          if (result.done)
-            break;
-          let offset = 0;
-          while (offset < result.value.byteLength) {
-            if (!await waitForEmpty())
-              throw new Error('download cancelled');
-            const length = Math.min(capacity,
-              result.value.byteLength - offset);
-            HEAPU8.set(result.value.subarray(offset, offset + length), buffer);
-            Atomics.store(HEAP32, control + 1, length);
-            Atomics.store(HEAP32, control, 1);
-            Atomics.notify(HEAP32, control);
-            offset += length;
-          }
+        Atomics.store(HEAP32, control + 2, request.status);
+        if (request.status < 200 || request.status >= 300 || !request.response)
+          throw new Error(`HTTP ${request.status}`);
+        const bytes = new Uint8Array(request.response);
+        let offset = 0;
+        while (offset < bytes.byteLength) {
+          if (!await waitForEmpty())
+            throw new Error('download cancelled');
+          const length = Math.min(capacity, bytes.byteLength - offset);
+          HEAPU8.set(bytes.subarray(offset, offset + length), buffer);
+          Atomics.store(HEAP32, control + 1, length);
+          Atomics.store(HEAP32, control, 2);
+          Atomics.notify(HEAP32, control);
+          offset += length;
         }
         if (!await waitForEmpty())
           throw new Error('download cancelled');
-        Atomics.store(HEAP32, control, 2);
-        Atomics.notify(HEAP32, control);
-      } catch (exception) {
-        console.error(`AppAssets download failed: ${exception}`);
         Atomics.store(HEAP32, control, 3);
         Atomics.notify(HEAP32, control);
+      } catch (exception) {
+        fail(exception);
       }
-    })();
+    };
+    request.onerror = request.onabort = request.ontimeout = () =>
+      fail(`network status ${request.status || 0}`);
+    request.send();
   }, &control, buffer.data(), buffer.size(), url);
 
   std::uint64_t received = 0;
@@ -204,6 +304,16 @@ bool streamDownload(const char *url, const std::filesystem::path &destination,
         emscripten_atomic_load_u32(&control.state));
     if (state == StreamEmpty) {
       emscripten_futex_wait(&control.state, StreamEmpty, 1000.0);
+      continue;
+    }
+    if (state == StreamProgress) {
+      const std::uint64_t transferred = control.transferred;
+      const std::uint64_t total = control.total ? control.total : expectedSize;
+      setStatus("Downloading AppAssets.zip",
+                byteProgress(transferred, total),
+                total ? static_cast<double>(transferred) / total : 0.0);
+      std::uint32_t expected = StreamProgress;
+      emscripten_atomic_cas_u32(&control.state, expected, StreamEmpty);
       continue;
     }
     if (state == StreamDone)

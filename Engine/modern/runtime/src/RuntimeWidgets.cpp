@@ -4,6 +4,10 @@
 
 #include "CPFInterface.h"
 
+#if defined(__EMSCRIPTEN__)
+#include <emscripten.h>
+#endif
+
 #if defined(__SWITCH__)
 #include "Playground/Switch/SwitchSystem.h"
 #else
@@ -11,6 +15,7 @@
 #endif
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -26,6 +31,16 @@ public:
                 int y, int width, int height)
       : m_type(type), m_id(id), m_text(caption ? caption : ""), m_x(x), m_y(y),
         m_width(width), m_height(height) {}
+  ~DesktopWidget() override {
+#if defined(__EMSCRIPTEN__)
+    if (m_webTextInput) {
+      MAIN_THREAD_EM_ASM({
+        if (globalThis.playgroundDestroyTextInput)
+          globalThis.playgroundDestroyTextInput($0);
+      }, reinterpret_cast<std::uintptr_t>(this));
+    }
+#endif
+  }
 
   int getTextLength() override { return static_cast<int>(m_text.size()); }
   bool getText(char *buffer, int length) override {
@@ -37,18 +52,37 @@ public:
   bool setText(const char *text) override {
     m_text = text ? text : "";
     constrainLength();
+#if defined(__EMSCRIPTEN__)
+    updateWebText();
+#endif
     return true;
   }
   void move(int x, int y) override {
     m_x = x;
     m_y = y;
+#if defined(__EMSCRIPTEN__)
+    updateWebGeometry();
+#endif
   }
   void resize(int width, int height) override {
     m_width = width;
     m_height = height;
+#if defined(__EMSCRIPTEN__)
+    updateWebGeometry();
+#endif
   }
-  void visible(bool visible) override { m_visible = visible; }
-  void enable(bool enabled) override { m_enabled = enabled; }
+  void visible(bool visible) override {
+    m_visible = visible;
+#if defined(__EMSCRIPTEN__)
+    updateWebGeometry();
+#endif
+  }
+  void enable(bool enabled) override {
+    m_enabled = enabled;
+#if defined(__EMSCRIPTEN__)
+    updateWebGeometry();
+#endif
+  }
   int status() override { return m_status; }
 
   IWidget::CONTROL type() const { return m_type; }
@@ -68,11 +102,68 @@ public:
            (static_cast<unsigned char>(m_text[position]) & 0xc0) == 0x80)
       --position;
     m_text.erase(position);
+#if defined(__EMSCRIPTEN__)
+    updateWebText();
+#endif
   }
+
+#if defined(__EMSCRIPTEN__)
+  void createWebTextInput() {
+    if (m_type != TEXTBOX && m_type != PASSWDBOX)
+      return;
+    m_webTextInput = true;
+    MAIN_THREAD_EM_ASM({
+      if (globalThis.playgroundCreateTextInput) {
+        globalThis.playgroundCreateTextInput(
+          $0, !!$1, UTF8ToString($2), $3, $4, $5, $6);
+      }
+    }, reinterpret_cast<std::uintptr_t>(this), m_type == PASSWDBOX,
+       m_text.c_str(), m_x, m_y, m_width, m_height);
+    updateWebGeometry();
+  }
+
+  bool syncWebText() {
+    if (!m_webTextInput)
+      return false;
+    const int byteLength = MAIN_THREAD_EM_ASM_INT({
+      return globalThis.playgroundGetTextInputLength
+        ? globalThis.playgroundGetTextInputLength($0) : -1;
+    }, reinterpret_cast<std::uintptr_t>(this));
+    if (byteLength < 0)
+      return false;
+    std::vector<char> value(static_cast<std::size_t>(byteLength) + 1);
+    MAIN_THREAD_EM_ASM({
+      if (globalThis.playgroundCopyTextInputValue)
+        globalThis.playgroundCopyTextInputValue($0, $1, $2);
+    }, reinterpret_cast<std::uintptr_t>(this), value.data(), value.size());
+    const std::string previous = m_text;
+    m_text = value.data();
+    constrainLength();
+    if (m_text != value.data())
+      updateWebText();
+    return m_text != previous;
+  }
+
+  bool webFocused() const {
+    return m_webTextInput && MAIN_THREAD_EM_ASM_INT({
+      return globalThis.playgroundTextInputFocused
+        ? globalThis.playgroundTextInputFocused($0) : false;
+    }, reinterpret_cast<std::uintptr_t>(this));
+  }
+
+  void updateWebPlaceholder() {
+    if (!m_webTextInput)
+      return;
+    MAIN_THREAD_EM_ASM({
+      if (globalThis.playgroundSetTextInputPlaceholder)
+        globalThis.playgroundSetTextInputPlaceholder($0, UTF8ToString($1));
+    }, reinterpret_cast<std::uintptr_t>(this), m_placeholder.c_str());
+  }
+#endif
 
 protected:
   void constrainLength() {
-    if (m_maxLength < 0 || m_text.size() <= static_cast<size_t>(m_maxLength))
+    if (m_maxLength <= 0 || m_text.size() <= static_cast<size_t>(m_maxLength))
       return;
     size_t length = static_cast<size_t>(m_maxLength);
     while (length && length < m_text.size() &&
@@ -95,6 +186,30 @@ protected:
   int m_status{};
   bool m_visible{true};
   bool m_enabled{true};
+#if defined(__EMSCRIPTEN__)
+  bool m_webTextInput{};
+
+  void updateWebGeometry() {
+    if (!m_webTextInput)
+      return;
+    MAIN_THREAD_EM_ASM({
+      if (globalThis.playgroundUpdateTextInput) {
+        globalThis.playgroundUpdateTextInput(
+          $0, $1, $2, $3, $4, !!$5, !!$6);
+      }
+    }, reinterpret_cast<std::uintptr_t>(this), m_x, m_y, m_width, m_height,
+       m_visible, m_enabled);
+  }
+
+  void updateWebText() {
+    if (!m_webTextInput)
+      return;
+    MAIN_THREAD_EM_ASM({
+      if (globalThis.playgroundSetTextInputValue)
+        globalThis.playgroundSetTextInputValue($0, UTF8ToString($1));
+    }, reinterpret_cast<std::uintptr_t>(this), m_text.c_str());
+  }
+#endif
 };
 
 class DesktopTextWidget final : public DesktopWidget {
@@ -111,6 +226,9 @@ public:
     case TX_PLACEHOLDER: {
       const char *placeholder = va_arg(arguments, const char *);
       m_placeholder = placeholder ? placeholder : "";
+#if defined(__EMSCRIPTEN__)
+      updateWebPlaceholder();
+#endif
       break;
     }
     case TX_MAXLEN:
@@ -122,10 +240,36 @@ public:
       break;
     case TX_ALIGNMENTTYPE:
       m_alignment = va_arg(arguments, int);
+#if defined(__EMSCRIPTEN__)
+      MAIN_THREAD_EM_ASM({
+        if (globalThis.playgroundSetTextInputAlignment)
+          globalThis.playgroundSetTextInputAlignment($0, $1);
+      }, reinterpret_cast<std::uintptr_t>(this), m_alignment);
+#endif
       break;
-    default:
-      (void)va_arg(arguments, unsigned int);
+    default: {
+      const unsigned int color = va_arg(arguments, unsigned int);
+#if defined(__EMSCRIPTEN__)
+      int slot = -1;
+      if (command == TX_BGCOLOR_NORMAL)
+        slot = 0;
+      else if (command == TX_FGCOLOR_NORMAL)
+        slot = 1;
+      else if (command == TX_BGCOLOR_TOUCH)
+        slot = 2;
+      else if (command == TX_FGCOLOR_TOUCH)
+        slot = 3;
+      if (slot >= 0) {
+        MAIN_THREAD_EM_ASM({
+          if (globalThis.playgroundSetTextInputColor)
+            globalThis.playgroundSetTextInputColor($0, $1, $2);
+        }, reinterpret_cast<std::uintptr_t>(this), slot, color);
+      }
+#else
+      (void)color;
+#endif
       break;
+    }
     }
     va_end(arguments);
   }
@@ -253,6 +397,9 @@ IWidget *RuntimeWidgetManager::create(IWidget::CONTROL type, int id,
     text->cmd(IWidget::TX_MAXLEN, va_arg(arguments, int));
     widget = text;
     m_impl->activeText = text;
+#if defined(__EMSCRIPTEN__)
+    text->createWebTextInput();
+#endif
 #if defined(__SWITCH__)
     std::string entered;
     const int maximum = text->getTextMaxLength();
@@ -331,6 +478,14 @@ bool RuntimeWidgetManager::inputKey(int key, bool pressed) {
 }
 
 void RuntimeWidgetManager::pumpEvents() {
+#if defined(__EMSCRIPTEN__)
+  for (DesktopWidget *widget : m_impl->widgets) {
+    if (widget->webFocused())
+      m_impl->activeText = widget;
+    if (widget->syncWebText())
+      m_impl->notifyText(widget);
+  }
+#endif
   if (!CPFInterface::getInstance().isClient())
     return;
   while (!m_impl->events.empty()) {

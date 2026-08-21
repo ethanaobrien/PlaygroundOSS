@@ -36,8 +36,6 @@ target_link_options(playground-web-engine PRIVATE
     "SHELL:-pthread"
     "SHELL:-sWASMFS=1"
     "SHELL:-sFORCE_FILESYSTEM=1"
-    "SHELL:-sFETCH=1"
-    "SHELL:-sFETCH_SUPPORT_INDEXEDDB=0"
     "SHELL:-sPROXY_TO_PTHREAD=1"
     "SHELL:-sPTHREAD_POOL_SIZE=12"
     "SHELL:-sALLOW_MEMORY_GROWTH=1"

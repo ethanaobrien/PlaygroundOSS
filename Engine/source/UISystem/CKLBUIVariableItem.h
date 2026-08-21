@@ -85,6 +85,15 @@ public:
 		return bResult;
 	}
 
+#if defined(__EMSCRIPTEN__)
+	// PROP_V2 string setters are invoked as void(const char*). WebAssembly
+	// validates indirect-call return types, so do not dispatch changeAsset's
+	// bool-returning public API through that slot directly.
+	inline void setAssetProperty(const char* asset) {
+		(void)changeAsset(asset);
+	}
+#endif
+
 	bool setMaskAsset(const char* asset);
 
 private:
