@@ -29,7 +29,8 @@ target_link_libraries(playground-web-engine PRIVATE
 
 set_target_properties(playground-web-engine PROPERTIES
     OUTPUT_NAME index
-    SUFFIX ".html")
+    SUFFIX ".html"
+    LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shell.html")
 
 target_link_options(playground-web-engine PRIVATE
     "SHELL:-pthread"

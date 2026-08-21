@@ -38,6 +38,33 @@
     navigator.storage.persist().then(granted =>
       console.info(`persistent browser storage ${granted ? 'granted' :
         'not granted; data remains in OPFS but may be evicted'}`));
+    const canvas = document.getElementById('canvas');
+    const fullscreenTarget = document.documentElement;
+    const mobileBrowser = navigator.userAgentData?.mobile === true ||
+      /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+      (navigator.maxTouchPoints > 1 && /Macintosh/i.test(navigator.userAgent));
+    if (mobileBrowser) {
+      document.addEventListener('pointerdown', async () => {
+        const fullscreenElement = document.fullscreenElement ||
+          document.webkitFullscreenElement;
+        const requestFullscreen = fullscreenTarget.requestFullscreen ||
+          fullscreenTarget.webkitRequestFullscreen;
+        if (!fullscreenElement && requestFullscreen) {
+          try {
+            await requestFullscreen.call(fullscreenTarget, { navigationUI: 'hide' });
+          } catch (exception) {
+            console.info(`mobile fullscreen request was declined: ${exception}`);
+          }
+        }
+        if (screen.orientation?.lock) {
+          try {
+            await screen.orientation.lock('landscape');
+          } catch (exception) {
+            console.info(`landscape orientation lock was declined: ${exception}`);
+          }
+        }
+      }, { capture: true, once: true });
+    }
     globalThis.playgroundSetStatus = (phase, detail, progress) => {
       document.getElementById('phase').textContent = phase;
       document.getElementById('detail').textContent = detail;
@@ -53,7 +80,7 @@
       document.getElementById('fatal').textContent = message;
     };
     var Module = {
-      canvas: document.getElementById('canvas'),
+      canvas,
       print: text => console.log(text),
       printErr: text => console.error(text),
       onAbort: reason => globalThis.playgroundFatal(String(reason))
