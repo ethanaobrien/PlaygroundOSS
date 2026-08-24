@@ -77,7 +77,7 @@ public:
 	virtual void setPostFields();
 	virtual void setPostData(long contentLength, const void* data);
 	virtual void addFormData(const char* name, long contentLength, const void* data);
-	virtual void setupConnection(const char* url, const char* proxy, void* callbackContext,
+	virtual void setupConnection(const char* url, const char* userAgent, void* callbackContext,
 	                             void* progressCallback, void* headerCallback, void* writeCallback);
 	virtual long getHttpCode();
 	virtual CurlTransferMetrics getTransferMetrics() const;

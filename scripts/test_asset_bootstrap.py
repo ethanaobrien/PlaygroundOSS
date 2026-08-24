@@ -12,6 +12,8 @@ import sys
 import tempfile
 import zipfile
 
+from audit_switch_asset_paths import encode_path as encode_switch_path
+
 
 def metadata_for(archive: pathlib.Path, entries: dict[str, bytes]) -> str:
     payload = archive.read_bytes()
@@ -49,6 +51,9 @@ def run(probe: str, archive: pathlib.Path, manifest: pathlib.Path,
         cache: pathlib.Path, digest: str, cancel_after: int | None = None,
         crash_at: str | None = None,
         copy_publish: bool = False,
+        compact_names: bool = False,
+        compact_recover: bool = False,
+        switch_codec: bool = False,
         succeeds: bool = True) -> subprocess.CompletedProcess[str]:
     command = [probe, str(archive), str(manifest), str(cache), digest]
     if cancel_after is not None:
@@ -57,6 +62,12 @@ def run(probe: str, archive: pathlib.Path, manifest: pathlib.Path,
         command.append(f"crash:{crash_at}")
     elif copy_publish:
         command.append("copy-publish")
+    elif compact_names:
+        command.append("compact-names")
+    elif compact_recover:
+        command.append("compact-recover")
+    elif switch_codec:
+        command.append("switch-codec")
     result = subprocess.run(command, text=True, capture_output=True)
     if crash_at is not None:
         if result.returncode != 70:
@@ -86,6 +97,8 @@ def main() -> int:
             "m_boot/start.lua": b"print('boot')\n",
             "assets/data.bin": bytes(range(256)) * 4096,
             "unicode/\u30c6\u30b9\u30c8.txt": b"valid utf-8 name\n",
+            "assets/" + "generic-" + "x" * 57 + ".imag":
+                b"long component\n",
         }
         write_zip(archive, entries)
         text = metadata_for(archive, entries)
@@ -119,6 +132,64 @@ def main() -> int:
         assert (copied_install / "start.lua").read_bytes() == \
             entries["start.lua"]
         assert not list(copy_cache.glob(".staging-*"))
+
+        # Constrained filesystems can omit descriptive prefixes without
+        # truncating the content identity. The immutable name remains the
+        # complete SHA-256 and the disposable workspace has a short fixed
+        # name; canonical archive member paths are unchanged.
+        compact_cache = root / "compact-cache"
+        compact = run(probe, archive, manifest, compact_cache, digest,
+                      compact_names=True)
+        compact_install = pathlib.Path(compact.stdout.splitlines()[0])
+        assert compact_install.name == digest
+        assert len(compact_install.name) == 64
+        assert (compact_install / "unicode/\u30c6\u30b9\u30c8.txt").read_bytes() == \
+            entries["unicode/\u30c6\u30b9\u30c8.txt"]
+        assert not (compact_cache / ".staging").exists()
+
+        # Horizon's physical namespace limits one component to 64 bytes.
+        # The bootstrap result must remain logical while every physical I/O
+        # crosses the lossless Switch codec exactly once. A second launch
+        # verifies that validation does not accidentally encode that physical
+        # representation again.
+        codec_cache = root / "switch-codec-cache"
+        codec_first = run(probe, archive, manifest, codec_cache, digest,
+                          switch_codec=True)
+        codec_install = pathlib.Path(codec_first.stdout.splitlines()[0])
+        assert codec_install == codec_cache / digest
+        long_entry = next(name for name in entries
+                          if len(pathlib.PurePosixPath(name).name.encode()) > 64)
+        physical_long = pathlib.Path(
+            encode_switch_path(str(codec_install / long_entry)))
+        assert physical_long.read_bytes() == entries[long_entry]
+        codec_second = run(probe, archive, manifest, codec_cache, digest,
+                           switch_codec=True)
+        assert "installed=0" in codec_second.stdout
+        assert pathlib.Path(codec_second.stdout.splitlines()[0]) == codec_install
+
+        legacy_cache = root / "legacy-staging-cache"
+        legacy_staging = legacy_cache / f".staging-{digest}"
+        legacy_staging.mkdir(parents=True)
+        (legacy_staging / "partial").write_bytes(b"interrupted")
+        recovered = run(probe, archive, manifest, legacy_cache, digest,
+                        compact_recover=True)
+        recovered_install = pathlib.Path(recovered.stdout.splitlines()[0])
+        assert recovered_install.name == digest
+        assert not legacy_staging.exists()
+
+        # A completed generation is a preservation boundary. An inability to
+        # clean unrelated incomplete staging must fail rather than resetting
+        # the storage device underneath a recoverable installation.
+        protected_cache = root / "protected-generation-cache"
+        protected_staging = protected_cache / f".staging-{digest}"
+        protected_generation = protected_cache / ("install-" + "0" * 64)
+        protected_staging.mkdir(parents=True)
+        protected_generation.mkdir()
+        (protected_generation / ".appassets-version").write_text(
+            text, encoding="utf-8")
+        run(probe, archive, manifest, protected_cache, digest,
+            compact_recover=True, succeeds=False)
+        assert protected_generation.is_dir()
 
         # A process death after staging is durably committed must preserve the
         # previous generation. The next normal launch discards the abandoned

@@ -3,6 +3,7 @@
 
 #include <filesystem>
 #include <string>
+#include <cstdint>
 
 namespace playground::switch_runtime {
 
@@ -20,6 +21,9 @@ struct StorageRoots {
 // writer (downloads, SQLite, preferences and lifecycle shutdown) uses this
 // boundary so commits to the same mounted device cannot race.
 bool commitMountedDevice(const char *mountName, std::string &error);
+bool freeCacheStorageBytes(std::uint64_t &bytes, std::string &error);
+std::string describeLastFileError();
+std::string describeFileError(int errorNumber);
 
 class SwitchStorage {
 public:
@@ -33,10 +37,18 @@ public:
                            std::string &error);
   bool commitState(std::string &error);
   bool commitCache(std::string &error);
-  void unmount();
+  // CacheStorage contains only replaceable downloads and extracted bundled
+  // assets. Recreate it when an incomplete bootstrap tree is structurally
+  // undeletable; account SaveData is deliberately unaffected.
+  bool resetCache(std::string &error);
+  bool removeTree(const std::filesystem::path &path, std::string &error);
+  bool removeCacheTree(const std::filesystem::path &path, std::string &error);
+  // Commit both transactional mounts before releasing them. Unmount still
+  // completes after a commit failure so service/account teardown is balanced;
+  // callers receive the durability failure instead of silently discarding it.
+  bool unmount(std::string *error = nullptr);
   const StorageRoots &roots() const { return m_roots; }
   bool mounted() const { return m_mounted; }
-  bool yuzu1734CompatibilityMode() const { return m_yuzu1734Compatibility; }
 
 private:
   StorageRoots m_roots;
@@ -44,7 +56,6 @@ private:
   bool m_accountReady{};
   bool m_stateMounted{};
   bool m_cacheMounted{};
-  bool m_yuzu1734Compatibility{};
 };
 
 bool hashFileSha256(const std::filesystem::path &, std::string &digest,

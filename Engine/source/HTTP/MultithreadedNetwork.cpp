@@ -14,6 +14,7 @@
    limitations under the License.
 */
 #include "MultithreadedNetwork.h"
+#include "CurlTrust.h"
 
 #include <chrono>
 #include <mutex>
@@ -244,6 +245,10 @@ CurlObjectInternal*
 CurlObjectInternal::create()
 {
 	CURL* curl = curl_easy_init();
+	if (curl && playgroundConfigureCurlTrust(curl) != CURLE_OK) {
+		curl_easy_cleanup(curl);
+		curl = NULL;
+	}
 	if (curl && g_cookieShare) {
 		curl_easy_setopt(curl, CURLOPT_SHARE, g_cookieShare);
 		// Sharing the COOKIE data does not itself activate libcurl's cookie
@@ -436,7 +441,7 @@ CurlObjectInternal::addFormData(const char* name, long contentLength, const void
 }
 
 void
-CurlObjectInternal::setupConnection(const char* url, const char* proxy, void* callbackContext,
+CurlObjectInternal::setupConnection(const char* url, const char* userAgent, void* callbackContext,
 	                           void* progressCallback, void* headerCallback, void* writeCallback)
 {
 	curl_easy_setopt(m_curl, CURLOPT_HTTPHEADER, m_headers);
@@ -444,7 +449,11 @@ CurlObjectInternal::setupConnection(const char* url, const char* proxy, void* ca
 		curl_easy_setopt(m_curl, CURLOPT_HTTPGET, 1L);
 	}
 	curl_easy_setopt(m_curl, CURLOPT_URL, url);
-	curl_easy_setopt(m_curl, CURLOPT_PROXY, proxy);
+	// The legacy interface named this argument "proxy", but every caller passes
+	// CKLBHTTPInterface's configured User-Agent.  Treating it as CURLOPT_PROXY
+	// makes curl resolve the User-Agent text as a proxy host and fails before an
+	// HTTP request is sent (most visibly on Switch).
+	curl_easy_setopt(m_curl, CURLOPT_USERAGENT, userAgent);
 	curl_easy_setopt(m_curl, CURLOPT_NOPROGRESS, 0L);
 	curl_easy_setopt(m_curl, CURLOPT_NOSIGNAL, 1L);
 	m_progressContext = callbackContext;

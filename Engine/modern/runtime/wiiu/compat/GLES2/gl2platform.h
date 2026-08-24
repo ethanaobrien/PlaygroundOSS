@@ -1,0 +1,6 @@
+#ifndef PLAYGROUND_WIIU_GLES2_GL2PLATFORM_H
+#define PLAYGROUND_WIIU_GLES2_GL2PLATFORM_H
+
+#include <SDL2/SDL_opengles2_gl2platform.h>
+
+#endif

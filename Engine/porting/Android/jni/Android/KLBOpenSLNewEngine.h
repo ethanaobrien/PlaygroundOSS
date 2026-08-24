@@ -23,6 +23,9 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#if defined(__SWITCH__)
+#include <atomic>
+#endif
 #ifdef __ANDROID__
 #include <SLES/OpenSLES_Android.h>
 #endif
@@ -267,6 +270,8 @@ private:
 		SLAndroidSimpleBufferQueueItf queue, void* context);
 #elif defined(__SWITCH__)
 	friend void switchAudioFill(void* context, s16* samples, u16 frames);
+#elif defined(__WIIU__)
+	friend void wiiuAudioFill(void* context, s16* samples, u16 frames);
 #else
 	friend void desktopAudioStreamCallback(
 		void* userdata, SDL_AudioStream* stream, int additionalAmount,
@@ -306,14 +311,25 @@ private:
 	void*				m_outputInterface;
 	void*				m_workerThread;
 	bool				m_resetWorkerClock;
+	#if defined(__SWITCH__)
+	std::atomic<u64>		m_lastWorkerTime;
+	std::atomic<bool>		m_workerStopped;
+	std::atomic<bool>		m_workerEnabled;
+	#else
 	volatile u64			m_lastWorkerTime;
 	volatile bool			m_workerStopped;
 	volatile bool			m_workerEnabled;
+	#endif
 	KLBAudioCommand			m_commands[128];
 	u16				m_commandReadIndex;
 	u16				m_commandWriteIndex;
+	#if defined(__SWITCH__)
+	std::atomic<bool>		m_workerWaiting;
+	std::atomic<bool>		m_workerAcknowledged;
+	#else
 	volatile bool			m_workerWaiting;
 	volatile bool			m_workerAcknowledged;
+	#endif
 };
 
 #endif

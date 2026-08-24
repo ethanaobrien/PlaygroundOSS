@@ -174,7 +174,7 @@ void CurlObjectInternal::addFormData(const char *name, long contentLength,
   m_web->form.push_back(std::move(part));
 }
 
-void CurlObjectInternal::setupConnection(const char *url, const char *proxy,
+void CurlObjectInternal::setupConnection(const char *url, const char *userAgent,
                                          void *callbackContext,
                                          void *progressCallback,
                                          void *headerCallback,
@@ -190,7 +190,7 @@ void CurlObjectInternal::setupConnection(const char *url, const char *proxy,
   // The legacy second argument is a User-Agent string despite its old proxy
   // name. Browsers forbid setting User-Agent; preserve it as an application
   // header that servers may inspect without violating Fetch's forbidden list.
-  m_web->userAgent = proxy ? proxy : "";
+  m_web->userAgent = userAgent ? userAgent : "";
   m_web->callbackContext = callbackContext;
   m_web->headerCallback = headerCallback;
   m_web->writeCallback = writeCallback;

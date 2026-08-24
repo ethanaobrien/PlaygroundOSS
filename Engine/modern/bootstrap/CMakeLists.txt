@@ -30,8 +30,11 @@ target_link_libraries(playground_asset_bootstrap PUBLIC ZLIB::ZLIB)
 if(BUILD_TESTING AND PLAYGROUND_PLATFORM_CAN_RUN_HOST_TOOLS)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_executable(playground-asset-bootstrap-probe
-        tools/asset_bootstrap_probe.cpp)
+        tools/asset_bootstrap_probe.cpp
+        "${PROJECT_SOURCE_DIR}/Engine/modern/runtime/switch/src/SwitchPath.cpp")
     target_compile_features(playground-asset-bootstrap-probe PRIVATE cxx_std_17)
+    target_include_directories(playground-asset-bootstrap-probe PRIVATE
+        "${PROJECT_SOURCE_DIR}/Engine/modern/runtime/switch/include")
     target_link_libraries(playground-asset-bootstrap-probe PRIVATE
         Playground::AssetBootstrap)
     add_test(NAME playground-asset-bootstrap
@@ -42,4 +45,14 @@ if(BUILD_TESTING AND PLAYGROUND_PLATFORM_CAN_RUN_HOST_TOOLS)
         COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/scripts/test_switch_package_tools.py"
             "${PROJECT_SOURCE_DIR}/scripts/package_switch_nsp.py")
+    add_executable(playground-switch-path-probe
+        "${PROJECT_SOURCE_DIR}/Engine/modern/runtime/switch/tools/switch_path_probe.cpp"
+        "${PROJECT_SOURCE_DIR}/Engine/modern/runtime/switch/src/SwitchPath.cpp")
+    target_compile_features(playground-switch-path-probe PRIVATE cxx_std_17)
+    target_include_directories(playground-switch-path-probe PRIVATE
+        "${PROJECT_SOURCE_DIR}/Engine/modern/runtime/switch/include")
+    add_test(NAME playground-switch-path-codec
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/scripts/test_switch_path_codec.py"
+            "$<TARGET_FILE:playground-switch-path-probe>")
 endif()

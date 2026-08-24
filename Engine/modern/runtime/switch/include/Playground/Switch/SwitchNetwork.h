@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
 #include <mutex>
 #include <string>
 
@@ -52,15 +53,25 @@ public:
 
   bool initialize(std::string &error);
   Transfer beginTransfer(std::string &error);
-  void suspend();
+  // Requests cancellation and waits briefly for every libcurl lease to leave
+  // the mounted filesystems before the applet lifecycle commits storage.
+  bool suspend(std::string &error);
   bool resume(std::string &error);
-  void shutdown();
+  // Roll back service initialization before any transfer lease exists without
+  // changing foreground/suspended lifecycle state, so a transient higher-
+  // layer initialization failure can be retried.
+  bool rollbackInitialization(std::string &error);
+  // Final teardown has no safe timeout: the platform object, curl globals,
+  // and mounted filesystems are all still reachable by an active lease.
+  // Cancel and drain every lease before their owners are destroyed.
+  void shutdownAndWait();
   NetworkMetrics metrics() const;
 
 private:
   void finishTransfer(std::uint64_t startedAt, std::size_t receivedBytes);
   void shutdownLocked();
   mutable std::mutex m_mutex;
+  std::condition_variable m_idle;
   NetworkMetrics m_metrics;
   bool m_nifmReady{};
   bool m_requestReady{};

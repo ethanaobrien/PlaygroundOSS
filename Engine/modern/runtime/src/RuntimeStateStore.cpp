@@ -111,6 +111,14 @@ bool syncParentDirectory(const std::filesystem::path &path) {
   // fsync.  The preceding WasmFS rename is the publication boundary.
   (void)path;
   return true;
+#elif defined(__SWITCH__)
+  // libnx fsdev implements open() by issuing IFileSystem::OpenFile, so
+  // directory descriptors are not supported Horizon objects. The temporary
+  // file was flushed with fsFileFlush above. Installed
+  // SaveData/CacheStorage callers additionally provide an archive commit;
+  // development NRO storage on sdmc has no separate directory-fsync API.
+  (void)path;
+  return true;
 #else
   const std::filesystem::path parent = path.parent_path();
   const int descriptor =
@@ -160,7 +168,7 @@ bool loadFile(const std::filesystem::path &path,
 
 RuntimeStateStore::RuntimeStateStore(std::filesystem::path path, Commit commit)
     : m_path(std::move(path)), m_commit(std::move(commit)) {
-  load();
+  m_valid = load();
 }
 
 std::string RuntimeStateStore::get(const std::string &key) const {
@@ -171,6 +179,8 @@ std::string RuntimeStateStore::get(const std::string &key) const {
 
 bool RuntimeStateStore::set(const std::string &key, const std::string &value) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_valid)
+    return false;
   const auto old = m_values.find(key);
   const bool existed = old != m_values.end();
   const std::string previous = existed ? old->second : std::string();
@@ -186,6 +196,8 @@ bool RuntimeStateStore::set(const std::string &key, const std::string &value) {
 
 bool RuntimeStateStore::erase(const std::string &key) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_valid)
+    return false;
   const auto old = m_values.find(key);
   if (old == m_values.end())
     return true;
@@ -210,21 +222,24 @@ bool RuntimeStateStore::load() {
     m_values = std::move(loaded);
     std::error_code error;
     std::filesystem::remove(m_path, error);
+    if (error)
+      return false;
     error.clear();
-    if (replaceFile(previous, m_path, error)) {
-      if (m_commit)
-        m_commit();
-      else
-        syncParentDirectory(m_path);
-    }
-    return true;
+    if (!replaceFile(previous, m_path, error))
+      return false;
+    return m_commit ? m_commit() : syncParentDirectory(m_path);
   }
 
   // A missing store is the normal first-launch state. A malformed store is
   // deliberately not interpreted as an empty successful state.
   std::error_code error;
-  return !std::filesystem::exists(m_path, error) &&
-         !std::filesystem::exists(previous, error);
+  const bool activeExists = std::filesystem::exists(m_path, error);
+  if (error)
+    return false;
+  const bool recoveryExists = std::filesystem::exists(previous, error);
+  if (error)
+    return false;
+  return !activeExists && !recoveryExists;
 }
 
 bool RuntimeStateStore::saveLocked() const {
@@ -238,7 +253,7 @@ bool RuntimeStateStore::saveLocked() const {
   FILE *file = openFile(temporary, "wb");
   if (!file)
     return false;
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__SWITCH__)
   chmod(temporary.c_str(), S_IRUSR | S_IWUSR);
 #endif
 

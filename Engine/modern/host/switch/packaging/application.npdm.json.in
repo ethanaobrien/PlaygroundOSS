@@ -20,8 +20,8 @@
   "service_host": [],
   "service_access": [
     "acc:u0", "apm", "appletOE", "audout:u", "bsd:u", "caps:su", "fatal:u",
-    "fsp-srv", "hid", "nifm:u", "nvdrv:a", "set", "ssl", "time:u",
-    "vi:u"
+    "csrng", "fsp-srv", "hid", "nifm:u", "notif:a", "nvdrv", "set",
+    "set:sys", "sfdnsres", "ssl", "time:u", "vi:u"
   ],
   "kernel_capabilities": [
     {

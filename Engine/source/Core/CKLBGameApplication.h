@@ -34,6 +34,9 @@ public:
     virtual ~CKLBGameApplication();
 
 	void setInitParam	(u32 param, void* complexSetup);
+	// The default database belongs to the application. Supply its logical URI
+	// before enabling ENGINE_USE_DEFAULTDB.
+	bool setDefaultDatabaseUri(const char *uri);
 	bool initGame		();
 	void finishGame		(bool complete);
     
@@ -123,6 +126,7 @@ protected:
 	int						m_frameTime;
     IClientRequest::ORIGIN  m_origin;
 	bool					m_useDefaultDB;
+	char				* m_defaultDatabaseUri;
 	bool					m_useDefaultFont;
     bool                    m_updateRotation;
 	bool					m_reboot;

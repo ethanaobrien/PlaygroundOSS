@@ -14,6 +14,7 @@ typedef struct PlaygroundBuildTarget {
     unsigned int isLinux;
     unsigned int isMacOS;
     unsigned int isSwitch;
+    unsigned int isWiiU;
 } PlaygroundBuildTarget;
 
 const PlaygroundBuildTarget* playgroundGetBuildTarget(void);

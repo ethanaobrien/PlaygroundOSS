@@ -1,12 +1,16 @@
 #include "Playground/Bootstrap/AssetBootstrap.h"
 #include "Playground/Host/SwitchHost.h"
+#include "Playground/Platform/BuildTargetConfig.h"
 #include "Playground/Runtime/RuntimePlatform.h"
 #include "Playground/Switch/SwitchNetwork.h"
+#include "Playground/Switch/SwitchPath.h"
+#include "Playground/Switch/SwitchCrypto.h"
 #include "Playground/Switch/SwitchSqlite.h"
 #include "Playground/Switch/SwitchStorage.h"
 #include "Playground/Switch/SwitchSystem.h"
 
 #include "CPFInterface.h"
+#include "CKLBDatabase.h"
 #include "NotificationManager.h"
 
 #include <algorithm>
@@ -16,6 +20,8 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <utility>
+#include <unordered_set>
 
 namespace {
 
@@ -29,7 +35,7 @@ struct EngineContext {
   bool paused{};
   bool foreground{true};
   bool romfs{};
-  bool logRedirected{};
+  std::unordered_set<std::int64_t> widgetCapturedPointers;
 };
 
 bool readText(const std::filesystem::path &path, std::string &text) {
@@ -41,149 +47,32 @@ bool readText(const std::filesystem::path &path, std::string &text) {
   return input.good() || input.eof();
 }
 
-bool publishForYuzu1734(const std::filesystem::path &staging,
-                        const std::filesystem::path &generation,
-                        std::string &error) {
-  constexpr const char *CompletionMarker = ".appassets-version";
-  std::error_code fsError;
-  std::filesystem::remove_all(generation, fsError);
-  fsError.clear();
-  std::filesystem::create_directories(generation, fsError);
-  if (fsError) {
-    error =
-        "Could not create the yuzu AppAssets generation: " + fsError.message();
-    return false;
-  }
-
-  auto streamFile = [&error](const std::filesystem::path &inputPath,
-                             const std::filesystem::path &output,
-                             const std::filesystem::path &relative) {
-    std::ifstream input(inputPath, std::ios::binary);
-    std::ofstream destination(output, std::ios::binary | std::ios::trunc);
-    if (!input || !destination) {
-      error =
-          "Could not open AppAssets file for yuzu 1734: " + relative.string();
-      return false;
-    }
-    destination << input.rdbuf();
-    destination.close();
-    if (input.bad() || !destination) {
-      error =
-          "Could not stream AppAssets file for yuzu 1734: " + relative.string();
-      return false;
-    }
-    return true;
-  };
-
-  std::filesystem::path markerSource;
-  std::filesystem::recursive_directory_iterator iterator(staging, fsError);
-  const std::filesystem::recursive_directory_iterator end;
-  while (!fsError && iterator != end) {
-    const auto &entry = *iterator;
-    const std::filesystem::path relative =
-        entry.path().lexically_relative(staging);
-    const std::filesystem::path output = generation / relative;
-    if (entry.is_directory(fsError)) {
-      std::filesystem::create_directories(output, fsError);
-    } else if (!fsError && entry.is_regular_file(fsError)) {
-      if (relative == CompletionMarker)
-        markerSource = entry.path();
-      else {
-        std::filesystem::create_directories(output.parent_path(), fsError);
-        if (!fsError && !streamFile(entry.path(), output, relative))
-          return false;
-      }
-    } else if (!fsError) {
-      error = "Unexpected entry while publishing AppAssets for yuzu 1734: " +
-              relative.string();
-      return false;
-    }
-    if (!fsError)
-      iterator.increment(fsError);
-  }
-  if (fsError) {
-    error = "Could not publish AppAssets on yuzu 1734: " + fsError.message();
-    return false;
-  }
-
-  // This is the commit record checked on the next launch. Copy it only after
-  // every payload file so interruption can never authenticate a partial tree.
-  if (markerSource.empty() ||
-      !streamFile(markerSource, generation / CompletionMarker,
-                  CompletionMarker)) {
-    if (error.empty())
-      error = "The yuzu AppAssets staging tree has no completion marker";
-    return false;
-  }
-
-  std::filesystem::remove_all(staging, fsError);
-  if (fsError) {
-    error = "Could not remove yuzu AppAssets staging: " + fsError.message();
-    return false;
-  }
-  return true;
-}
-
 void fatal(const std::string &message) {
   std::fprintf(stderr, "Switch startup failed: %s\n", message.c_str());
   playground::switch_runtime::showApplicationMessage(
       "PlaygroundOSS could not start", message.c_str());
 }
 
-bool redirectInstalledLog(EngineContext &context, std::string &error) {
-  if (!playground::switch_runtime::isInstalledApplication())
-    return true;
-  const std::filesystem::path directory =
-      context.storage.roots().state / "logs";
-  const std::filesystem::path current = directory / "runtime.log";
-  const std::filesystem::path previous = directory / "runtime.previous.log";
-  std::error_code fsError;
-  std::filesystem::create_directories(directory, fsError);
-  if (fsError) {
-    error = "Could not create the installed-title log directory: " +
-            fsError.message();
-    return false;
-  }
-  if (std::filesystem::is_regular_file(current, fsError) &&
-      std::filesystem::file_size(current, fsError) > 4 * 1024 * 1024) {
-    std::filesystem::remove(previous, fsError);
-    fsError.clear();
-    std::filesystem::rename(current, previous, fsError);
-    if (fsError) {
-      error = "Could not rotate the installed-title log: " + fsError.message();
-      return false;
-    }
-  }
-  FILE *out = std::freopen(current.string().c_str(), "ab", stdout);
-  FILE *err = std::freopen(current.string().c_str(), "ab", stderr);
-  if (!out || !err) {
-    error = "Could not open the installed-title runtime log";
-    return false;
-  }
-  std::setvbuf(stdout, nullptr, _IOLBF, 0);
-  std::setvbuf(stderr, nullptr, _IOLBF, 0);
-  context.logRedirected = true;
-  std::printf("\n=== PlaygroundOSS installed-title launch ===\n");
-  return true;
-}
-
 void releasePlatformResources(EngineContext &context) {
-  playground::switch_runtime::sharedSwitchNetwork().shutdown();
+  // Startup failures can bypass the engine's ordinary shutdownNetwork call.
+  // Enforce the same lease boundary here before destroying the platform or
+  // unmounting either filesystem.
+  playground::switch_runtime::sharedSwitchNetwork().shutdownAndWait();
   CPFInterface::getInstance().setClientRequest(nullptr);
   CPFInterface::getInstance().setPlatformRequest(nullptr);
   context.platform.reset();
-  playground::switch_runtime::shutdownSwitchSqliteDurability();
+  shutdownEncryptedSQLiteVFS();
+  playground::switch_runtime::shutdownSwitchSqlitePaths();
+  playground::switch_runtime::shutdownCryptoService();
   std::fflush(nullptr);
-  if (context.logRedirected) {
-    std::fclose(stdout);
-    std::fclose(stderr);
-    context.logRedirected = false;
-  }
   if (context.romfs) {
     playground::switch_runtime::shutdownRomFs();
     context.romfs = false;
   }
-  context.storage.unmount();
+  std::string storageError;
+  if (!context.storage.unmount(&storageError))
+    std::fprintf(stderr, "Switch storage unmount failure: %s\n",
+                 storageError.c_str());
 }
 
 bool prepareStorageAndAssets(EngineContext &context, PlaygroundSwitchHost *host,
@@ -192,8 +81,6 @@ bool prepareStorageAndAssets(EngineContext &context, PlaygroundSwitchHost *host,
   const bool installed = playground::switch_runtime::isInstalledApplication();
   if (installed) {
     if (!context.storage.mountInstalledTitle(error))
-      return false;
-    if (!redirectInstalledLog(context, error))
       return false;
 #if !defined(PLAYGROUND_SWITCH_BUNDLED_ASSETS)
     error = "Installed builds require AppAssets.zip in RomFS";
@@ -234,11 +121,36 @@ bool prepareStorageAndAssets(EngineContext &context, PlaygroundSwitchHost *host,
   options.cacheRoot = context.storage.roots().installContainer;
   options.metadata = std::move(metadata);
   options.hashFile = playground::switch_runtime::hashFileSha256;
+  if (installed)
+    options.mapStoragePath = playground::switch_runtime::encodeStoragePath;
+  if (installed) {
+    options.describeFileError =
+        playground::switch_runtime::describeLastFileError;
+  }
   options.commitStorage = [&context](std::string &commitError) {
     return context.storage.commitCache(commitError);
   };
-  if (context.storage.yuzu1734CompatibilityMode()) {
-    options.publishGeneration = publishForYuzu1734;
+  if (installed) {
+    // Horizon SaveData/CacheStorage journals use a bounded mapping table.
+    // AppAssets contains thousands of small files; one transaction exhausts
+    // that table (FS 2-6706) even though data space remains. Staging has no
+    // completion marker, so periodic commits remain power-loss safe.
+    options.extractionCommitInterval = 256;
+  }
+  if (installed) {
+    // libstdc++ remove_all reports a generic EIO for large CacheStorage trees
+    // on Horizon. Use the mounted IFileSystem's native recursive operation.
+    options.removeTree = [&context](const std::filesystem::path &path,
+                                    std::string &removeError) {
+      return context.storage.removeCacheTree(path, removeError);
+    };
+    options.resetReplaceableStorage = [&context](std::string &resetError) {
+      return context.storage.resetCache(resetError);
+    };
+    // Keep bootstrap-owned path components compact on Horizon. The immutable
+    // directory remains the complete 64-character SHA-256; only descriptive
+    // prefixes and the disposable staging suffix are omitted.
+    options.maximumInternalNameLength = 64;
   }
   options.maximumEntries = options.metadata.entryCount;
   options.maximumExpandedBytes = options.metadata.expandedSize;
@@ -265,18 +177,52 @@ bool prepareStorageAndAssets(EngineContext &context, PlaygroundSwitchHost *host,
 }
 
 void setPaused(EngineContext &context, bool paused) {
-  if (!context.initialized || context.paused == paused)
+  if (context.paused == paused)
     return;
+  if (!context.initialized) {
+    // onStart performs first-run extraction before the engine exists, but the
+    // bootstrap progress pump still receives HOME/sleep focus transitions.
+    // Commit any mounted transactional storage at that safe between-entry
+    // boundary instead of silently skipping lifecycle durability merely
+    // because client/audio/network initialization has not happened yet.
+    if (paused && context.storage.mounted()) {
+      std::string error;
+      if (!context.storage.commitState(error))
+        std::fprintf(stderr,
+                     "Switch bootstrap suspend SaveData commit failed: %s\n",
+                     error.c_str());
+      error.clear();
+      if (!context.storage.commitCache(error))
+        std::fprintf(stderr,
+                     "Switch bootstrap suspend CacheStorage commit failed: %s\n",
+                     error.c_str());
+    }
+    context.paused = paused;
+    return;
+  }
   CPFInterface &interface = CPFInterface::getInstance();
   if (paused) {
     interface.client().pauseGame(true);
     if (interface.platform().getAudioSystem())
       interface.platform().getAudioSystem()->onActivityPause();
-    playground::switch_runtime::sharedSwitchNetwork().suspend();
     std::string error;
-    if (!context.storage.commitState(error) ||
-        !context.storage.commitCache(error))
-      std::fprintf(stderr, "Switch suspend commit failed: %s\n", error.c_str());
+    const bool networkIdle =
+        playground::switch_runtime::sharedSwitchNetwork().suspend(error);
+    if (!networkIdle)
+      std::fprintf(stderr, "Switch suspend network failure: %s\n",
+                   error.c_str());
+    error.clear();
+    if (!context.storage.commitState(error))
+      std::fprintf(stderr, "Switch suspend SaveData commit failed: %s\n",
+                   error.c_str());
+    // CacheStorage may still have a temporary download writer after a bounded
+    // cancellation timeout. Never commit that filesystem concurrently.
+    if (networkIdle) {
+      error.clear();
+      if (!context.storage.commitCache(error))
+        std::fprintf(stderr, "Switch suspend CacheStorage commit failed: %s\n",
+                     error.c_str());
+    }
   } else {
     std::string error;
     if (!playground::switch_runtime::sharedSwitchNetwork().resume(error))
@@ -298,42 +244,74 @@ bool onStart(void *opaque, PlaygroundSwitchHost *host) {
   // service calls may themselves take noticeable time on first launch.
   if (!playgroundSwitchHostPresentBootstrapProgress(host, 0, 100))
     return false;
+  if (!playground::switch_runtime::initializeCryptoService(error)) {
+    fatal(error);
+    releasePlatformResources(context);
+    return false;
+  }
   if (!prepareStorageAndAssets(context, host, installRoot, error)) {
     fatal(error);
     releasePlatformResources(context);
     return false;
   }
-  if (!playground::switch_runtime::initializeSwitchSqliteDurability(error)) {
+  if (!playground::switch_runtime::initializeSwitchSqlitePaths(error)) {
     fatal(error);
     releasePlatformResources(context);
     return false;
   }
 
   const auto &roots = context.storage.roots();
+  const bool installed =
+      roots.mode == playground::switch_runtime::StorageMode::InstalledTitle;
+  playground::runtime::RuntimePlatform::StorageCommit commitState;
+  playground::runtime::RuntimePlatform::StorageCommit commitContent;
+  if (roots.mode == playground::switch_runtime::StorageMode::InstalledTitle) {
+    commitState = [&context] {
+      std::string commitError;
+      const bool committed = context.storage.commitState(commitError);
+      if (!committed)
+        std::fprintf(stderr, "SaveData commit failed: %s\n",
+                     commitError.c_str());
+      return committed;
+    };
+    commitContent = [&context] {
+      std::string commitError;
+      const bool committed = context.storage.commitCache(commitError);
+      if (!committed)
+        std::fprintf(stderr, "CacheStorage commit failed: %s\n",
+                     commitError.c_str());
+      return committed;
+    };
+  }
   context.platform = std::make_unique<playground::runtime::RuntimePlatform>(
       installRoot.string(), roots.content.string(), roots.state.string(),
       playgroundSwitchHostGetGLProcAddress,
-      [&context] {
-        std::string commitError;
-        const bool committed = context.storage.commitState(commitError);
-        if (!committed)
-          std::fprintf(stderr, "SaveData commit failed: %s\n",
-                       commitError.c_str());
-        return committed;
+      std::move(commitState), std::move(commitContent),
+      installed
+          ? playground::runtime::RuntimePlatform::PathMapper{
+                playground::switch_runtime::encodeStoragePath}
+          : playground::runtime::RuntimePlatform::PathMapper{},
+      [&context](const std::filesystem::path &path,
+                 std::string &removeError) {
+        return context.storage.removeTree(path, removeError);
       },
-      [&context] {
-        std::string commitError;
-        const bool committed = context.storage.commitCache(commitError);
-        if (!committed)
-          std::fprintf(stderr, "CacheStorage commit failed: %s\n",
-                       commitError.c_str());
-        return committed;
-      });
+      PLAYGROUND_APP_INTEGRITY_DATABASE_URI,
+      installed
+          ? playground::runtime::RuntimePlatform::StorageList{
+                playground::switch_runtime::listStorageDirectory}
+          : playground::runtime::RuntimePlatform::StorageList{});
 
   CPFInterface &interface = CPFInterface::getInstance();
   interface.setPlatformRequest(context.platform.get());
-  if (!context.platform->init() || !GameSetup()) {
-    fatal("Platform or client setup failed");
+  if (!context.platform->init()) {
+    fatal("Platform initialization failed: " +
+          context.platform->initializationError());
+    context.platform->shutdownAudioSystem();
+    releasePlatformResources(context);
+    return false;
+  }
+  if (!GameSetup()) {
+    fatal("Client setup failed");
     context.platform->shutdownAudioSystem();
     releasePlatformResources(context);
     return false;
@@ -363,6 +341,7 @@ bool onFrame(void *opaque, PlaygroundSwitchHost *host, std::uint64_t deltaNs) {
       static_cast<u32>(std::clamp<std::uint64_t>(deltaNs / 1000000, 1, 250));
   if (!CPFInterface::getInstance().client().frameFlip(deltaMs))
     return false;
+  context.platform->renderWidgets();
   playgroundSwitchHostSwapBuffers(host);
   if (context.platform->quitRequested())
     playgroundSwitchHostRequestQuit(host);
@@ -377,10 +356,8 @@ void onStop(void *opaque, PlaygroundSwitchHost *) {
   }
   if (context.platform)
     context.platform->shutdownAudioSystem();
-  std::string ignored;
-  std::fflush(nullptr);
-  context.storage.commitState(ignored);
-  context.storage.commitCache(ignored);
+  // releasePlatformResources drains transfer leases and performs the single
+  // checked final filesystem commit/unmount boundary.
   releasePlatformResources(context);
 }
 
@@ -389,6 +366,17 @@ void onPointer(void *opaque, PlaygroundSwitchHost *, std::int64_t id,
   auto &context = *static_cast<EngineContext *>(opaque);
   if (!context.initialized || context.paused)
     return;
+  if (phase == PLAYGROUND_SWITCH_POINTER_DOWN) {
+    if (context.platform->handleWidgetPointerDown(x, y)) {
+      context.widgetCapturedPointers.insert(id);
+      return;
+    }
+  } else if (context.widgetCapturedPointers.count(id)) {
+    if (phase == PLAYGROUND_SWITCH_POINTER_UP ||
+        phase == PLAYGROUND_SWITCH_POINTER_CANCEL)
+      context.widgetCapturedPointers.erase(id);
+    return;
+  }
   const IClientRequest::INPUT_TYPE type =
       phase == PLAYGROUND_SWITCH_POINTER_DOWN   ? IClientRequest::I_CLICK
       : phase == PLAYGROUND_SWITCH_POINTER_MOVE ? IClientRequest::I_DRAG

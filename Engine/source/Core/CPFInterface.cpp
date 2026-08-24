@@ -36,18 +36,38 @@ IPlatformRequest::IPlatformRequest()
 {}
 IPlatformRequest::~IPlatformRequest() {}
 
+const char *IPlatformRequest::getDatabasePath(const char *assetPath,
+                                              DatabaseOpenMode,
+                                              bool *isReadOnly) {
+	return getFullPath(assetPath, isReadOnly);
+}
+
+bool IPlatformRequest::commitDatabasePath(const char * /*resolvedPath*/) {
+	return true;
+}
+
+int IPlatformRequest::ifsync(void *stream) {
+	return ifflush(stream);
+}
+
+bool IPlatformRequest::listFiles(const char *, std::vector<std::string>&) {
+	return false;
+}
+
 bool IPlatformRequest::init() {
 #if defined(__ANDROID__)
 	m_audio = KLBOpenSLNewEngine::getInstance();
 #else
 	m_audio = getNewAudioImplementation();
 #endif
-	m_audio->init();
-	return true;
+	return m_audio && m_audio->init();
 }
 
 void IPlatformRequest::shutdownAudioSystem() {
-	m_audio->shutdown();
+	if (m_audio) {
+		m_audio->shutdown();
+		m_audio = NULL;
+	}
 }
 
 bool IPlatformRequest::isSafeAreaScreen() {

@@ -831,10 +831,16 @@ void VDocCompositeAlphaLayers(VDocClipContext* destination,
 	const u32 shadowBlue = shadowColor & 0xff;
 	const u32 shadowGreen = (shadowColor >> 8) & 0xff;
 	const u32 shadowRed = (shadowColor >> 16) & 0xff;
-	const u32 packedBodyColor =
-		(bodyBlue << 16) | (bodyGreen << 8) | bodyRed;
-	const u32 packedShadowColor =
-		(shadowBlue << 16) | (shadowGreen << 8) | shadowRed;
+	/*
+	 * VDocFillClipMargins stores this value into a four-byte RGBA surface and
+	 * then replaces byte 3 with the glyph coverage.  Construct the value by
+	 * writing RGBA bytes rather than relying on the host integer byte order.
+	 * The previous 0x00BBGGRR packing only produced R,G,B,0 in memory on
+	 * little-endian CPUs; on Wii U it produced 0,B,G,R and the coverage write
+	 * replaced red instead of alpha, leaving outlined text transparent.
+	 */
+	const u32 packedBodyColor = convertARGB32_RGBA8(bodyColor);
+	const u32 packedShadowColor = convertARGB32_RGBA8(shadowColor);
 
 	VDocIntersectCompositeClip(body, destination, NULL);
 	VDocIntersectCompositeClip(shadow, destination, NULL);

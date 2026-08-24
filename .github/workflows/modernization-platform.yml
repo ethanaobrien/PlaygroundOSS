@@ -142,3 +142,55 @@ jobs:
           server=$!
           trap 'kill "$server"' EXIT
           node scripts/test_web_platform_probe.mjs http://127.0.0.1:8765/
+
+  wiiu:
+    name: Nintendo Wii U PowerPC
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitppc:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Wii U host and complete engine
+        run: >-
+          /opt/devkitpro/portlibs/wiiu/bin/powerpc-eabi-cmake
+          -S . -B out/build/wiiu-release
+          -DCMAKE_BUILD_TYPE=Release
+          -DPLAYGROUND_TARGET_PLATFORM=wiiu
+          -DPLAYGROUND_BUILD_ENGINE_RUNTIME=ON
+          -DPLAYGROUND_BUILD_WIIU_HOST=ON
+      - name: Build Wii U probe and complete engine RPX
+        run: >-
+          cmake --build out/build/wiiu-release -j2
+          --target playground-wiiu-host playground-wiiu-engine
+      - name: Audit GX2 backend, verified TLS, and artifacts
+        shell: bash
+        run: |
+          grep -qx 'PORT:STRING=WiiU' \
+            out/build/wiiu-release/_deps/playground-wiiu-angle/src/playground_wiiu_angle_external-build/CMakeCache.txt
+          /opt/devkitpro/devkitPPC/bin/powerpc-eabi-nm -C \
+            out/build/wiiu-release/_deps/playground-wiiu-angle/install/lib/libANGLE.a |
+            grep 'rx::RendererGX2' >/dev/null
+          grep -F 'case angle::FormatID::R4G4B4A4_UNORM:' \
+            out/build/wiiu-release/_deps/playground-wiiu-angle/src/playground_wiiu_angle_external/src/libANGLE/renderer/gx2/gx2_format_table.cpp \
+            >/dev/null
+          test "$(/opt/devkitpro/devkitPPC/bin/powerpc-eabi-nm -C \
+            out/build/wiiu-release/Engine/modern/host/wiiu/playground-wiiu-engine.elf |
+            awk '$3 == "mbedtls_hardware_poll" { print $2 }')" = T
+          test "$(sha256sum \
+            out/build/wiiu-release/Engine/modern/host/wiiu/downloads/cacert.pem |
+            awk '{ print $1 }')" = \
+            f66dff1bdf8f96060b8177976f8b7d9254bc89bc4db933d769f7384d28480bc9
+          strings \
+            out/build/wiiu-release/Engine/modern/host/wiiu/playground-wiiu-engine.elf |
+            grep -Fx '/vol/content/cacert.pem' >/dev/null
+          grep -F 'CURLOPT_SSL_VERIFYPEER, 1L' \
+            Engine/source/HTTP/CurlTrust.h >/dev/null
+          grep -F 'CURLOPT_SSL_VERIFYHOST, 2L' \
+            Engine/source/HTTP/CurlTrust.h >/dev/null
+          grep -F 'CURLOPT_CAPATH, nullptr' \
+            Engine/source/HTTP/CurlTrust.h >/dev/null
+          grep -F 'error == VPAD_READ_NO_SAMPLES || error == VPAD_READ_BUSY' \
+            Engine/modern/host/wiiu/src/WiiUHost.c >/dev/null
+          grep -F 'PLAYGROUND_WIIU_POINTER_UP, host->touchX' \
+            Engine/modern/host/wiiu/src/WiiUHost.c >/dev/null
+          test -s out/build/wiiu-release/Engine/modern/host/wiiu/playground-wiiu-host.rpx
+          test -s out/build/wiiu-release/Engine/modern/host/wiiu/playground-wiiu-engine.rpx

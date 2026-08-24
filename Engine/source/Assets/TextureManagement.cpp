@@ -75,6 +75,32 @@ static const int s_texturePixelFormats[4] = {
 	GL_UNSIGNED_BYTE
 };
 
+#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && \
+	__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+static bool normalizePackedTextureEndian(
+	u8*& bitmap,
+	u32 pixelCount,
+	bool& ownsBitmap)
+{
+	u8* pixels = bitmap;
+	if (!ownsBitmap) {
+		pixels = KLBNEWA(u8, (size_t)pixelCount * 2);
+		if (!pixels) {
+			return false;
+		}
+		memcpy(pixels, bitmap, (size_t)pixelCount * 2);
+		bitmap = pixels;
+		ownsBitmap = true;
+	}
+	for (u32 pixel = 0; pixel < pixelCount; pixel++) {
+		const u8 high = pixels[pixel * 2];
+		pixels[pixel * 2] = pixels[pixel * 2 + 1];
+		pixels[pixel * 2 + 1] = high;
+	}
+	return true;
+}
+#endif
+
 CKLBAbstractAsset* createTexture(u32 orgWidthI, u32 orgHeightI, const char* name,
 	s32 pixelFormat, u8 roundToPowerOfTwo, CTexture* sourceTexture);
 
@@ -2191,6 +2217,27 @@ KLBTextureAssetPlugin::loadAsset(u8* stream, size_t streamSize)
 				//
 				// Texture creation may fail, but asset is considered as loaded
 				//
+				#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && \
+					__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+				if (!hardCompression &&
+					(pixelFormat == GL_UNSIGNED_SHORT_5_6_5 ||
+					 pixelFormat == GL_UNSIGNED_SHORT_5_5_5_1 ||
+					 pixelFormat == GL_UNSIGNED_SHORT_4_4_4_4)) {
+					u8* bitmap = (u8*)pNewAsset->m_bitmap;
+					if (!normalizePackedTextureEndian(
+							bitmap,
+							(u32)pNewAsset->m_width * pNewAsset->m_height,
+							ownsBitmap)) {
+						pNewAsset->m_bitmap = NULL;
+					} else {
+						pNewAsset->m_bitmap = bitmap;
+					}
+				}
+				if (!pNewAsset->m_bitmap) {
+					KLBDELETE(pNewAsset);
+					return NULL;
+				}
+				#endif
 				if ((bytePerPix == 4) && (pNewAsset->m_imageCount == 1)) {
 					decodeTexturePayload(
 						(u8*)pNewAsset->m_bitmap,

@@ -12,9 +12,8 @@ add_library(Playground::PlatformContract ALIAS playground_platform_contract)
 target_include_directories(playground_platform_contract
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-    PRIVATE
-        ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 target_compile_features(playground_platform_contract PUBLIC c_std_11)
 set_target_properties(playground_platform_contract PROPERTIES
@@ -33,7 +32,9 @@ install(TARGETS playground_platform_contract
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 install(
-    FILES include/Playground/Platform/BuildTarget.h
+    FILES
+        include/Playground/Platform/BuildTarget.h
+        ${CMAKE_CURRENT_BINARY_DIR}/generated/Playground/Platform/BuildTargetConfig.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/Playground/Platform
 )
 install(EXPORT PlaygroundModernizationTargets

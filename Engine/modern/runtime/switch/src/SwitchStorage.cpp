@@ -3,10 +3,12 @@
 
 #include <switch.h>
 
+#include <array>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <utility>
 
 namespace playground::switch_runtime {
 namespace {
@@ -19,7 +21,10 @@ constexpr s64 SaveDataSize = PLAYGROUND_SWITCH_SAVE_SIZE;
 constexpr s64 SaveDataJournalSize = PLAYGROUND_SWITCH_SAVE_JOURNAL_SIZE;
 constexpr s64 CacheStorageSize = PLAYGROUND_SWITCH_CACHE_SIZE;
 constexpr s64 CacheStorageJournalSize = PLAYGROUND_SWITCH_CACHE_JOURNAL_SIZE;
-constexpr u64 SaveDataAvailableSize = 0x4000;
+// libnx retains the older `available_size` field name at this IPC offset.
+// Horizon's SaveDataCreationInfo names the same field `block_size`; the
+// platform default is 16 KiB. It is filesystem geometry, not free capacity.
+constexpr u64 SaveDataBlockSize = 0x4000;
 
 static_assert(SaveDataSize > 0 && SaveDataJournalSize > 0);
 static_assert(CacheStorageSize > 0 && CacheStorageJournalSize > 0);
@@ -48,6 +53,18 @@ bool targetNotFound(Result result) {
   return R_MODULE(result) == FsResultModule && R_DESCRIPTION(result) == 1002;
 }
 
+bool pathNotFound(Result result) {
+  // FS 2-1 is PathNotFound. Recursive cleanup is intentionally idempotent.
+  return R_MODULE(result) == FsResultModule && R_DESCRIPTION(result) == 1;
+}
+
+bool pathIsBelowRoot(const std::string &path, const std::string &root) {
+  if (root.empty() || path.size() <= root.size() ||
+      path.compare(0, root.size(), root) != 0)
+    return false;
+  return root.back() == '/' || path[root.size()] == '/';
+}
+
 Result createAccountSaveData(u64 applicationId, AccountUid user) {
   FsSaveDataAttribute attribute{};
   attribute.application_id = applicationId;
@@ -56,7 +73,7 @@ Result createAccountSaveData(u64 applicationId, AccountUid user) {
   FsSaveDataCreationInfo creation{};
   creation.save_data_size = SaveDataSize;
   creation.journal_size = SaveDataJournalSize;
-  creation.available_size = SaveDataAvailableSize;
+  creation.available_size = SaveDataBlockSize;
   creation.owner_id = applicationId;
   creation.save_data_space_id = FsSaveDataSpaceId_User;
   FsSaveDataMetaInfo metadata{};
@@ -71,131 +88,31 @@ Result createCacheStorage(u64 applicationId) {
   FsSaveDataCreationInfo creation{};
   creation.save_data_size = CacheStorageSize;
   creation.journal_size = CacheStorageJournalSize;
-  creation.available_size = SaveDataAvailableSize;
+  creation.available_size = SaveDataBlockSize;
   creation.owner_id = applicationId;
   creation.save_data_space_id = FsSaveDataSpaceId_User;
   FsSaveDataMetaInfo metadata{};
   return fsCreateSaveDataFileSystem(&attribute, &creation, &metadata);
 }
 
-bool hasYuzu1734MisorderedCreateArtifact(u64 applicationId, s64 journalSize) {
-  FsSaveDataInfoReader reader{};
-  if (R_FAILED(fsOpenSaveDataInfoReader(&reader, FsSaveDataSpaceId_User)))
-    return false;
-
-  bool found = false;
-  for (;;) {
-    FsSaveDataInfo entries[16]{};
-    s64 count = 0;
-    const Result result =
-        fsSaveDataInfoReaderRead(&reader, entries, 16, &count);
-    if (R_FAILED(result) || count <= 0)
-      break;
-    for (s64 index = 0; index < count; ++index) {
-      const FsSaveDataInfo &entry = entries[index];
-      // yuzu 1734 decodes command 22 as CreationInfo, Attribute, u128,
-      // whereas Horizon/libnx use Attribute, CreationInfo, MetaInfo. The
-      // standard request therefore leaves this unique synthetic record:
-      // System type in User space, owner as system-save ID, and the journal
-      // and available sizes reinterpreted as the UID. Never select this path
-      // based on a generic emulator probe or a failed mount alone.
-      if (entry.save_data_space_id == FsSaveDataSpaceId_User &&
-          entry.save_data_type == FsSaveDataType_System &&
-          entry.system_save_data_id == applicationId &&
-          entry.uid.uid[0] == static_cast<u64>(journalSize) &&
-          entry.uid.uid[1] == SaveDataAvailableSize) {
-        found = true;
-        break;
-      }
-    }
-    if (found || count < 16)
-      break;
-  }
-  fsSaveDataInfoReaderClose(&reader);
-  return found;
+Result deleteCacheStorage(u16 index) {
+  // IFileSystemProxy::DeleteCacheStorage (command 33, Horizon 5.0.0+) is the
+  // title-scoped operation for disposable CacheStorage. libnx exposes the
+  // adjacent create/open calls but not this wrapper.
+  if (hosversionBefore(5, 0, 0))
+    return MAKERESULT(Module_Libnx, LibnxError_IncompatSysVer);
+  return serviceDispatchIn(fsGetServiceSession(), 33, index);
 }
 
-Result createWithYuzu1734FieldOrder(const FsSaveDataAttribute &attribute,
-                                    const FsSaveDataCreationInfo &creation) {
-  struct Yuzu1734CreateInput {
-    FsSaveDataCreationInfo creation;
-    FsSaveDataAttribute attribute;
-    FsSaveDataMetaInfo metadata;
-  } input{creation, attribute, {}};
-  static_assert(sizeof(Yuzu1734CreateInput) == sizeof(FsSaveDataCreationInfo) +
-                                                   sizeof(FsSaveDataAttribute) +
-                                                   sizeof(FsSaveDataMetaInfo));
-  return serviceDispatchIn(fsGetServiceSession(), 22, input);
-}
-
-Result createAccountSaveDataYuzu1734(u64 applicationId, AccountUid user) {
-  FsSaveDataAttribute attribute{};
-  attribute.application_id = applicationId;
-  attribute.uid = user;
-  attribute.save_data_type = FsSaveDataType_Account;
-  FsSaveDataCreationInfo creation{};
-  creation.save_data_size = SaveDataSize;
-  creation.journal_size = SaveDataJournalSize;
-  creation.available_size = SaveDataAvailableSize;
-  creation.owner_id = applicationId;
-  creation.save_data_space_id = FsSaveDataSpaceId_User;
-  return createWithYuzu1734FieldOrder(attribute, creation);
-}
-
-Result createCacheStorageYuzu1734(u64 applicationId) {
-  FsSaveDataAttribute attribute{};
-  attribute.application_id = applicationId;
-  attribute.save_data_type = FsSaveDataType_Cache;
-  attribute.save_data_index = CacheIndex;
-  FsSaveDataCreationInfo creation{};
-  creation.save_data_size = CacheStorageSize;
-  creation.journal_size = CacheStorageJournalSize;
-  creation.available_size = SaveDataAvailableSize;
-  creation.owner_id = applicationId;
-  creation.save_data_space_id = FsSaveDataSpaceId_User;
-  return createWithYuzu1734FieldOrder(attribute, creation);
-}
-
-template <typename Mount, typename Create, typename Yuzu1734Create>
+template <typename Mount, typename Create>
 bool mountOrProvision(const char *description, Mount mount, Create create,
-                      Yuzu1734Create yuzu1734Create, u64 applicationId,
-                      s64 journalSize, bool &usedYuzu1734Compatibility,
                       std::string &error) {
   const StorageProvisionOutcome outcome =
       provisionStorage(mount, create, [](std::uint32_t result) {
         return targetNotFound(result);
       });
-  if (outcome.mounted) {
-    // The malformed command-22 record survives after yuzu has created the
-    // correctly ordered save.  Keep recognizing that exact fingerprint on
-    // subsequent launches so old yuzu also receives the filesystem-operation
-    // compatibility it needs (notably its missing RenameDirectory command).
-    if (hasYuzu1734MisorderedCreateArtifact(applicationId, journalSize))
-      usedYuzu1734Compatibility = true;
+  if (outcome.mounted)
     return true;
-  }
-  if (outcome.creationAttempted && targetNotFound(outcome.retryResult) &&
-      hasYuzu1734MisorderedCreateArtifact(applicationId, journalSize)) {
-    const Result compatibilityResult = yuzu1734Create();
-    const Result compatibilityRetry = mount();
-    if (R_SUCCEEDED(compatibilityRetry)) {
-      usedYuzu1734Compatibility = true;
-      std::fprintf(stderr,
-                   "%s: applied verified yuzu 1734 command-22 field-order "
-                   "compatibility (create=0x%08x)\n",
-                   description, compatibilityResult);
-      return true;
-    }
-    char text[320];
-    std::snprintf(text, sizeof(text),
-                  "%s was absent; standard creation returned 0x%08x, its "
-                  "retry returned 0x%08x, yuzu-1734 compatibility creation "
-                  "returned 0x%08x, and its retry returned 0x%08x",
-                  description, outcome.creationResult, outcome.retryResult,
-                  compatibilityResult, compatibilityRetry);
-    error = text;
-    return false;
-  }
   if (!outcome.creationAttempted) {
     error = resultError(description, outcome.initialResult);
     return false;
@@ -245,13 +162,58 @@ bool commitMountedDevice(const char *mountName, std::string &error) {
   return true;
 }
 
+bool freeCacheStorageBytes(std::uint64_t &bytes, std::string &error) {
+  FsFileSystem *filesystem = fsdevGetDeviceFileSystem(CacheMount);
+  if (!filesystem) {
+    error = "CacheStorage free-space query requires a mounted cache";
+    return false;
+  }
+  s64 available = 0;
+  const Result result = fsFsGetFreeSpace(filesystem, "/", &available);
+  if (R_FAILED(result)) {
+    error = resultError("CacheStorage free-space query", result);
+    return false;
+  }
+  if (available < 0) {
+    error = "CacheStorage returned a negative free-space value";
+    return false;
+  }
+  bytes = static_cast<std::uint64_t>(available);
+  return true;
+}
+
+std::string describeFileError(int errorNumber) {
+  const Result result = fsdevGetLastResult();
+  char text[160];
+  std::snprintf(text, sizeof(text),
+                "errno=%d (%s), Horizon result 0x%08x (module=%u, "
+                "description=%u)",
+                errorNumber, std::strerror(errorNumber), result,
+                R_MODULE(result), R_DESCRIPTION(result));
+  return text;
+}
+
+std::string describeLastFileError() { return describeFileError(errno); }
+
 SwitchStorage::SwitchStorage() = default;
-SwitchStorage::~SwitchStorage() { unmount(); }
+SwitchStorage::~SwitchStorage() {
+  std::string error;
+  if (!unmount(&error) && !error.empty())
+    std::fprintf(stderr, "Switch storage destructor: %s\n", error.c_str());
+}
 
 bool SwitchStorage::mountInstalledTitle(std::string &error) {
   unmount();
   if (!envIsNso()) {
     error = "Installed-title storage was requested from an NRO";
+    return false;
+  }
+  // libnx learns the Horizon version from set:sys during process startup.
+  // Its CacheStorage wrappers deliberately return IncompatSysVer without an
+  // FS request when that lookup was denied and the version remains 0.0.0.
+  if (hosversionGet() == 0) {
+    error = "Horizon version discovery failed; verify set:sys access in the "
+            "installed NPDM";
     return false;
   }
   u64 applicationId = 0;
@@ -277,8 +239,7 @@ bool SwitchStorage::mountInstalledTitle(std::string &error) {
           "fsdevMountSaveData",
           [=] { return fsdevMountSaveData(StateMount, applicationId, user); },
           [=] { return createAccountSaveData(applicationId, user); },
-          [=] { return createAccountSaveDataYuzu1734(applicationId, user); },
-          applicationId, SaveDataJournalSize, m_yuzu1734Compatibility, error)) {
+          error)) {
     unmount();
     return false;
   }
@@ -290,15 +251,15 @@ bool SwitchStorage::mountInstalledTitle(std::string &error) {
                                           CacheIndex);
           },
           [=] { return createCacheStorage(applicationId); },
-          [=] { return createCacheStorageYuzu1734(applicationId); },
-          applicationId, CacheStorageJournalSize, m_yuzu1734Compatibility,
           error)) {
     unmount();
     return false;
   }
   m_cacheMounted = true;
   m_roots.mode = StorageMode::InstalledTitle;
-  m_roots.state = std::string(StateMount) + ":/user";
+  // Durable engine state lives at the account SaveData root. Replaceable
+  // content and installed-asset generations use CacheStorage below.
+  m_roots.state = std::string(StateMount) + ":/";
   m_roots.cache = std::string(CacheMount) + ":/";
   m_roots.installContainer = m_roots.cache / "application";
   m_roots.content = m_roots.cache / "content";
@@ -349,12 +310,141 @@ bool SwitchStorage::commitCache(std::string &error) {
   return commitMountedDevice(CacheMount, error);
 }
 
-void SwitchStorage::unmount() {
-  std::string ignored;
-  if (m_stateMounted)
-    commitState(ignored);
-  if (m_cacheMounted)
-    commitCache(ignored);
+bool SwitchStorage::resetCache(std::string &error) {
+  if (!m_cacheMounted || m_roots.mode != StorageMode::InstalledTitle) {
+    error = "CacheStorage reset requires a mounted installed-title cache";
+    return false;
+  }
+  u64 applicationId = 0;
+  if (!programId(applicationId)) {
+    error = "Could not determine the installed application ID for cache "
+            "recovery";
+    return false;
+  }
+  if (fsdevUnmountDevice(CacheMount) < 0) {
+    error = "Could not unmount damaged CacheStorage";
+    return false;
+  }
+  m_cacheMounted = false;
+  Result result = deleteCacheStorage(CacheIndex);
+  if (R_FAILED(result)) {
+    error = resultError("DeleteCacheStorage", result);
+    return false;
+  }
+  result = createCacheStorage(applicationId);
+  if (R_FAILED(result)) {
+    error = resultError("CacheStorage recreation", result);
+    return false;
+  }
+  result = fsdevMountCacheStorage(CacheMount, applicationId, CacheIndex);
+  if (R_FAILED(result)) {
+    error = resultError("CacheStorage remount", result);
+    return false;
+  }
+  m_cacheMounted = true;
+  if (!createRoots(m_roots, error) || !commitCache(error))
+    return false;
+  return true;
+}
+
+bool SwitchStorage::removeCacheTree(const std::filesystem::path &path,
+                                    std::string &error) {
+  const std::string full = path.lexically_normal().generic_string();
+  const std::string cacheRoot = m_roots.cache.generic_string();
+  if (!pathIsBelowRoot(full, cacheRoot)) {
+    error = "CacheStorage removal rejected a path outside the cache root";
+    return false;
+  }
+  return removeTree(path, error);
+}
+
+bool SwitchStorage::removeTree(const std::filesystem::path &path,
+                               std::string &error) {
+  const std::string full = path.lexically_normal().generic_string();
+  const std::string cacheRoot = m_roots.cache.generic_string();
+  const std::string stateRoot = m_roots.state.generic_string();
+  if (m_mounted && m_roots.mode == StorageMode::DevelopmentNro) {
+    const bool insideCache = pathIsBelowRoot(full, cacheRoot);
+    const bool insideState = pathIsBelowRoot(full, stateRoot);
+    if (!insideCache && !insideState) {
+      error = "Development storage removal rejected a root or outside path";
+      return false;
+    }
+    std::error_code filesystemError;
+    std::filesystem::remove_all(path, filesystemError);
+    if (filesystemError) {
+      error = "Development storage removal failed: " +
+              filesystemError.message();
+      return false;
+    }
+    return true;
+  }
+  const bool cache = m_cacheMounted && pathIsBelowRoot(full, cacheRoot);
+  const bool state = m_stateMounted && pathIsBelowRoot(full, stateRoot);
+  if (!cache && !state) {
+    error = "Native storage removal rejected a mount root or outside path";
+    return false;
+  }
+  const std::string &root = cache ? cacheRoot : stateRoot;
+  std::string nativePath = full.substr(root.size());
+  if (nativePath.empty() || nativePath.front() != '/')
+    nativePath.insert(nativePath.begin(), '/');
+  if (nativePath.size() >= FS_MAX_PATH) {
+    error = "CacheStorage removal path exceeds Horizon's path limit";
+    return false;
+  }
+  // libnx advertises FS_MAX_PATH bytes in the IPC pointer buffer regardless
+  // of the C string's logical length. Give Horizon a fully backed and
+  // zero-padded buffer rather than exposing bytes beyond std::string storage.
+  std::array<char, FS_MAX_PATH> nativeBuffer{};
+  std::memcpy(nativeBuffer.data(), nativePath.data(), nativePath.size());
+  const char *mount = cache ? CacheMount : StateMount;
+  FsFileSystem *filesystem = fsdevGetDeviceFileSystem(mount);
+  if (!filesystem) {
+    error = "Native storage removal could not resolve its mounted filesystem";
+    return false;
+  }
+  // Do not query entry type first. Physical hardware has accepted deletion
+  // while rejecting the redundant lookup. DeleteFile handles ordinary files;
+  // recursive deletion handles directories. A missing path is idempotent.
+  const Result fileResult = fsFsDeleteFile(filesystem, nativeBuffer.data());
+  if (R_SUCCEEDED(fileResult))
+    return true;
+  const Result directoryResult =
+      fsFsDeleteDirectoryRecursively(filesystem, nativeBuffer.data());
+  if (R_SUCCEEDED(directoryResult))
+    return true;
+  if (pathNotFound(fileResult) && pathNotFound(directoryResult))
+    return true;
+  {
+    char text[384];
+    std::snprintf(text, sizeof(text),
+                  "Native storage removal failed (file=0x%08x, "
+                  "directory=0x%08x) for path '%s' (length=%zu)",
+                  R_VALUE(fileResult), R_VALUE(directoryResult),
+                  nativePath.c_str(), nativePath.size());
+    error = text;
+    return false;
+  }
+}
+
+bool SwitchStorage::unmount(std::string *error) {
+  bool committed = true;
+  std::string failure;
+  auto recordFailure = [&](const char *storage, const std::string &detail) {
+    committed = false;
+    if (!failure.empty())
+      failure += "; ";
+    failure += storage;
+    failure += ": ";
+    failure += detail;
+  };
+  std::string commitError;
+  if (m_stateMounted && !commitState(commitError))
+    recordFailure("SaveData commit", commitError);
+  commitError.clear();
+  if (m_cacheMounted && !commitCache(commitError))
+    recordFailure("CacheStorage commit", commitError);
   if (m_cacheMounted) {
     fsdevUnmountDevice(CacheMount);
     m_cacheMounted = false;
@@ -368,8 +458,10 @@ void SwitchStorage::unmount() {
     m_accountReady = false;
   }
   m_mounted = false;
-  m_yuzu1734Compatibility = false;
   m_roots = {};
+  if (error)
+    *error = std::move(failure);
+  return committed;
 }
 
 } // namespace playground::switch_runtime

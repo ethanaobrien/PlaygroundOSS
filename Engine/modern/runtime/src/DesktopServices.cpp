@@ -13,6 +13,7 @@
 #include "CKLBMotionManager.h"
 #include "CPFInterface.h"
 #include "NotificationManager.h"
+#include "Playground/Runtime/AssertionDiagnostics.h"
 #include "assert_klb.h"
 
 #include <SDL3/SDL_messagebox.h>
@@ -578,9 +579,11 @@ extern "C" void assertFunction(int line, const char *file, const char *message,
   va_start(arguments, message);
   std::vsnprintf(formatted, sizeof(formatted), message, arguments);
   va_end(arguments);
+  const std::string readable =
+      playground::runtime::readableAssertionMessage(formatted);
 
   std::fprintf(stderr, "Assert l.%d in %s:\n%s\n", line, file ? file : "",
-               formatted);
+               readable.c_str());
   std::fflush(stderr);
 }
 

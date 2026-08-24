@@ -24,7 +24,8 @@ bool request(const std::string &url, const char *expected) {
   if (!operation)
     return false;
   std::string body;
-  operation->setupConnection(url.c_str(), nullptr, &body, nullptr,
+  operation->setupConnection(url.c_str(), "PlaygroundOSS-network-probe/1",
+                             &body, nullptr,
                              reinterpret_cast<void *>(discardHeader),
                              reinterpret_cast<void *>(writeBody));
   const int result = operation->perform();

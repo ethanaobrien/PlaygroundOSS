@@ -20,7 +20,9 @@ public:
   void destroy(IWidget *widget);
   void inputText(const char *text);
   bool inputKey(int key, bool pressed);
+  bool pointerDown(float x, float y);
   void pumpEvents();
+  void render();
 
 private:
   class Impl;

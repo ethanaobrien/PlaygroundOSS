@@ -58,9 +58,14 @@ unzip /path/to/AppAssets.zip -d /tmp/sif-appassets
     --frames 600
 ```
 
-The install root is read-only by convention. `file://external` is mapped to the
-separate writable external root, while `asset://` checks the external override
-first and then the install root. Shipped encrypted reads use the reconstructed
+The install root is read-only by convention. Explicit `file://state/` paths
+use durable user state. The legacy `file://external/` namespace overlays
+durable state on re-downloadable content: ordinary new downloads use content,
+while an explicit writable database open performs a durable copy-up into user
+state. This typed contract avoids guessing ownership from game filenames,
+extensions, callers, or path shape.
+`asset://` checks the content override first and then the install root. Shipped
+encrypted reads use the reconstructed
 `CDecryptBaseClass` with the same virtual-path key as Android.
 
 The Linux runtime now provides persistent atomic secure/default storage and a

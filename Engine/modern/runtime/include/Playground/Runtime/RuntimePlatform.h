@@ -4,9 +4,12 @@
 #include "CPFInterface.h"
 
 #include <atomic>
+#include <filesystem>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <vector>
 
 namespace playground::runtime {
 
@@ -18,13 +21,24 @@ class RuntimePlatform final : public IPlatformRequest {
 public:
   using GLProcResolver = void *(*)(const char *name);
   using StorageCommit = std::function<bool()>;
+  using PathMapper =
+      std::function<std::filesystem::path(const std::filesystem::path &)>;
+  using StorageRemove = std::function<bool(const std::filesystem::path &,
+                                           std::string &)>;
+  using StorageList = std::function<bool(const std::filesystem::path &,
+                                         std::vector<std::string> &,
+                                         std::string &)>;
 
   RuntimePlatform(std::string installRoot, std::string contentRoot,
-                  GLProcResolver glResolver = nullptr);
+                  GLProcResolver glResolver = nullptr,
+                  std::string integrityDatabaseUri = {});
   RuntimePlatform(std::string installRoot, std::string contentRoot,
                   std::string stateRoot, GLProcResolver glResolver,
                   StorageCommit commitState = {},
-                  StorageCommit commitContent = {});
+                  StorageCommit commitContent = {}, PathMapper pathMapper = {},
+                  StorageRemove storageRemove = {},
+                  std::string integrityDatabaseUri = {},
+                  StorageList storageList = {});
   ~RuntimePlatform() override;
 
   bool init() override;
@@ -39,6 +53,7 @@ public:
   u32 ifread(void *, u32, u32, void *) override;
   u32 ifwrite(const void *, u32, u32, void *) override;
   int ifflush(void *) override;
+  int ifsync(void *) override;
   long iftell(void *) override;
   bool icreateEmptyFile(const char *) override;
   int irename(const char *, const char *) override;
@@ -64,6 +79,7 @@ public:
   ITmpFile *openTmpFile(const char *) override;
   int removeTmpFile(const char *) override;
   bool removeFileOrFolder(const char *) override;
+  bool listFiles(const char *, std::vector<std::string> &) override;
   void excludePathFromBackup(const char *) override;
   u32 getFreeSpaceExternalKB() override;
   u32 getPhysicalMemKB() override;
@@ -75,6 +91,8 @@ public:
   void *getFont(int, const char *) override;
   void deleteFont(void *) override;
   const char *getFullPath(const char *, bool *) override;
+  const char *getDatabasePath(const char *, DatabaseOpenMode, bool *) override;
+  bool commitDatabasePath(const char *) override;
   const char *getPlatform() override;
   void *getGLExtension(const char *) override;
   const char *getShaderExtension(int) override;
@@ -157,23 +175,39 @@ public:
   bool getTextInfo(const char *, void *, STextInfo *) override;
 
   bool quitRequested() const { return m_quitRequested.load(); }
+  const std::string &initializationError() const {
+    return m_initializationError;
+  }
   void handleTextInput(const char *);
   bool handleEditingKey(int, bool);
+  bool handleWidgetPointerDown(float, float);
   void pumpPlatformEvents();
+  void renderWidgets();
   bool openExternalUrl(const char *url);
 
 private:
+  bool usesStateStorage(const char *) const;
   std::string resolvePath(const char *, bool *) const;
+  std::string resolveDatabasePath(const char *, DatabaseOpenMode, bool *);
   std::string m_installRoot;
   std::string m_contentRoot;
   std::string m_stateRoot;
+  std::string m_integrityDatabaseUri;
   StorageCommit m_commitState;
   StorageCommit m_commitContent;
+  PathMapper m_pathMapper;
+  StorageRemove m_storageRemove;
+  StorageList m_storageList;
+  // Makes copy-up and namespace mutations atomic with respect to one another.
+  // The backing SaveData and CacheStorage archives are separate filesystems,
+  // but file://external must present one coherent application namespace.
+  mutable std::mutex m_storageMutationMutex;
   GLProcResolver m_glResolver;
   std::unique_ptr<RuntimeStateStore> m_state;
   std::unique_ptr<DesktopScriptRegistry> m_scriptRegistry;
   std::unique_ptr<RuntimeWidgetManager> m_widgetManager;
   std::string m_deviceId;
+  std::string m_initializationError;
   std::atomic<bool> m_quitRequested{false};
   int m_frameRate{60};
 };

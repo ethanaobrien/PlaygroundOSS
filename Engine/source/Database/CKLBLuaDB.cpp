@@ -14,11 +14,13 @@
    limitations under the License.
 */
 #include "CKLBLuaDB.h"
-#if defined(__SWITCH__)
-#include "Playground/Switch/SwitchSqlite.h"
+#include "CKLBDatabase.h"
+#if defined(__WIIU__)
+#include "Playground/WiiU/WiiUSqlite.h"
 #endif
 #include "CPFInterface.h"
 #include "CKLBUtility.h"
+
 
 CKLBLuaDB	*	CKLBLuaDB::ms_begin = NULL;
 CKLBLuaDB	*	CKLBLuaDB::ms_end	= NULL;
@@ -107,17 +109,29 @@ bool
 CKLBLuaDB::open(const char * db_asset, int flags)
 {
 	IPlatformRequest& platform = CPFInterface::getInstance().platform();
-	bool isReadOnly;
-	const char* fullpath = platform.getFullPath(db_asset,&isReadOnly);
+	if (platform.useEncryption() && !initializeEncryptedSQLiteVFS()) {
+		platform.logging("Could not initialize encrypted SQLite VFS");
+		return false;
+	}
+	bool isReadOnly = false;
+	const IPlatformRequest::DatabaseOpenMode openMode =
+		(flags & SQLITE_OPEN_CREATE)
+			? IPlatformRequest::DatabaseOpenMode::ReadWriteCreate
+			: ((flags & SQLITE_OPEN_READWRITE)
+				? IPlatformRequest::DatabaseOpenMode::ReadWrite
+				: IPlatformRequest::DatabaseOpenMode::ReadOnly);
+	const char* fullpath = platform.getDatabasePath(db_asset, openMode,
+		&isReadOnly);
+	if (!fullpath || !fullpath[0]) {
+		platform.logging("Database path could not be resolved: %s",
+			db_asset ? db_asset : "(temporary)");
+		delete[] fullpath;
+		return false;
+	}
 
 	//
 	if (isReadOnly && (flags & SQLITE_OPEN_READONLY) == 0) {
 		klb_assertAlways("DB Write Enabled on Read Only file system.");
-	}
-
-	if (!isReadOnly) {
-		flags |= SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE;
-		flags &= ~SQLITE_OPEN_READONLY;
 	}
 
 	// create が指定されていない場合、対象のDBファイルが見つからなければその時点でエラー
@@ -128,14 +142,16 @@ CKLBLuaDB::open(const char * db_asset, int flags)
 	}*/
 
 	// int rc = sqlite3_open(fullpath, &m_db);
-	#if defined(__SWITCH__)
+	#if defined(__WIIU__)
+	const char* sqlitePath = fullpath;
 	const char* sqliteVfs =
-		playground::switch_runtime::selectSwitchDatabaseVfs(
+		playground::wiiu_runtime::selectWiiUDatabaseVfs(
 			db_asset, fullpath, isReadOnly);
 	#else
+	const char* sqlitePath = fullpath;
 	const char* sqliteVfs = NULL;
 	#endif
-	int rc = sqlite3_open_v2(fullpath, &m_db, flags, sqliteVfs);
+	int rc = sqlite3_open_v2(sqlitePath, &m_db, flags, sqliteVfs);
     if (!isReadOnly) {
         CPFInterface::getInstance().platform().excludePathFromBackup(fullpath);
     }
@@ -149,14 +165,7 @@ CKLBLuaDB::open(const char * db_asset, int flags)
 
 	char * errMsg;
 	m_pragmaJournal = true;
-	#if defined(__SWITCH__)
-	const char* journalPolicy = isReadOnly
-		? "PRAGMA journal_mode = OFF;"
-		: "PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL;";
-	rc = sqlite3_exec(m_db, journalPolicy, CKLBLuaDB::row_callback, this, &errMsg);
-	#else
 	rc = sqlite3_exec(m_db, "PRAGMA journal_mode = OFF;", CKLBLuaDB::row_callback, this, &errMsg);
-	#endif
 	m_pragmaJournal = false;
 
 	if (rc) {

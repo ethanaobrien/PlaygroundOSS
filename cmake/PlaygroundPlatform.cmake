@@ -1,4 +1,5 @@
-set(_playground_supported_platforms android windows linux macos switch emscripten)
+set(_playground_supported_platforms
+    android windows linux macos switch wiiu emscripten)
 
 if(EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     set(_playground_detected_platform emscripten)
@@ -6,6 +7,8 @@ elseif(ANDROID)
     set(_playground_detected_platform android)
 elseif(NINTENDO_SWITCH OR CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
     set(_playground_detected_platform switch)
+elseif(NINTENDO_WIIU OR WIIU OR CMAKE_SYSTEM_NAME STREQUAL "CafeOS")
+    set(_playground_detected_platform wiiu)
 elseif(WIN32)
     set(_playground_detected_platform windows)
 elseif(APPLE)
@@ -47,6 +50,10 @@ endif()
 math(EXPR PLAYGROUND_TARGET_POINTER_BITS "${CMAKE_SIZEOF_VOID_P} * 8")
 if(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
     set(PLAYGROUND_TARGET_ARCHITECTURE wasm32)
+elseif(PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu)
+    # devkitPPC currently reports a generic PowerPC processor name. Keep the
+    # contract explicit about the Wii U's 32-bit, big-endian Espresso CPU.
+    set(PLAYGROUND_TARGET_ARCHITECTURE powerpc32)
 else()
     string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" PLAYGROUND_TARGET_ARCHITECTURE)
 endif()

@@ -1,4 +1,5 @@
 #include "Playground/Bootstrap/AssetBootstrap.h"
+#include "Playground/Switch/SwitchPath.h"
 
 #include <cstdlib>
 #include <fstream>
@@ -25,6 +26,9 @@ int main(int argc, char **argv) {
   const std::string fault = argc == 6 ? argv[5] : "";
   const bool crashCheckpoint = fault.rfind("crash:", 0) == 0;
   const bool copyPublish = fault == "copy-publish";
+  const bool compactNames = fault == "compact-names";
+  const bool compactRecover = fault == "compact-recover";
+  const bool switchCodec = fault == "switch-codec";
   const std::string crashAt = crashCheckpoint ? fault.substr(6) : "";
   const std::uint64_t cancelAfter = !fault.empty() && !crashCheckpoint
                                         ? std::strtoull(argv[5], nullptr, 10)
@@ -39,6 +43,39 @@ int main(int argc, char **argv) {
     return true;
   };
   options.commitStorage = [](std::string &) { return true; };
+  if (compactNames || compactRecover)
+    options.maximumInternalNameLength = 64;
+  if (switchCodec) {
+    options.maximumInternalNameLength = 64;
+    options.mapStoragePath =
+        playground::switch_runtime::encodeStoragePath;
+  }
+  if (compactRecover) {
+    const std::filesystem::path cacheRoot = options.cacheRoot;
+    options.removeTree = [](const std::filesystem::path &path,
+                            std::string &error) {
+      if (path.filename().string().rfind(".staging-", 0) == 0) {
+        error = "simulated native recursive-removal failure";
+        return false;
+      }
+      std::error_code fsError;
+      std::filesystem::remove_all(path, fsError);
+      if (!fsError)
+        return true;
+      error = fsError.message();
+      return false;
+    };
+    options.resetReplaceableStorage = [cacheRoot](std::string &error) {
+      std::error_code fsError;
+      std::filesystem::remove_all(cacheRoot, fsError);
+      if (!fsError)
+        std::filesystem::create_directories(cacheRoot, fsError);
+      if (!fsError)
+        return true;
+      error = fsError.message();
+      return false;
+    };
+  }
   options.progress = [cancelAfter](std::uint64_t complete, std::uint64_t,
                                    const std::string &) {
     return !cancelAfter || complete < cancelAfter;

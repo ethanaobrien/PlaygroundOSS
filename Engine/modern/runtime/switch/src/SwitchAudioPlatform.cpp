@@ -16,8 +16,11 @@ KLBOpenSLNewEngine *platformEngine;
 
 void switchAudioFill(void *context, s16 *samples, u16 frames) {
   auto *engine = static_cast<KLBOpenSLNewEngine *>(context);
-  if (!engine || engine != platformEngine)
+  if (!engine || engine != platformEngine) {
+    if (samples)
+      std::memset(samples, 0, static_cast<std::size_t>(frames) * 4);
     return;
+  }
   engine->beginPlatformCallback();
   engine->m_workerAcknowledged = true;
   if (engine->m_workerEnabled) {

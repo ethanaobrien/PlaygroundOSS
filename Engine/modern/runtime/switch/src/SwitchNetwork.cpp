@@ -2,6 +2,7 @@
 
 #include <switch.h>
 
+#include <chrono>
 #include <cstdio>
 #include <utility>
 
@@ -74,14 +75,16 @@ bool SwitchNetwork::Transfer::cancellationRequested() const {
                         std::memory_order_acquire) != m_cancellationEpoch;
 }
 
-SwitchNetwork::~SwitchNetwork() { shutdown(); }
+SwitchNetwork::~SwitchNetwork() { shutdownAndWait(); }
 
 bool SwitchNetwork::initialize(std::string &error) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (m_socketReady) {
-    m_suspendRequested.store(false, std::memory_order_release);
-    return true;
+  if (m_suspendRequested.load(std::memory_order_acquire)) {
+    error = "Switch networking cannot initialize while the title is suspended";
+    return false;
   }
+  if (m_socketReady)
+    return true;
 
   Result result = nifmInitialize(NifmServiceType_User);
   if (R_FAILED(result)) {
@@ -103,6 +106,18 @@ bool SwitchNetwork::initialize(std::string &error) {
     shutdownLocked();
     return false;
   }
+  // SubmitAndWait only reports failures while submitting or observing the
+  // request. Network availability is stored on the request itself. Horizon's
+  // standard application flow checks that result and, when necessary, opens
+  // the system network applet so the launch-selected user can reconnect or
+  // cancel. Failing immediately here makes a disconnected title behave like
+  // a headless service rather than a native application.
+  result = nifmLaHandleNetworkRequestResult(&g_request);
+  if (R_FAILED(result)) {
+    error = resultError("nifmLaHandleNetworkRequestResult", result);
+    shutdownLocked();
+    return false;
+  }
 
   const SocketInitConfig configuration = socketConfiguration();
   result = socketInitialize(&configuration);
@@ -112,7 +127,6 @@ bool SwitchNetwork::initialize(std::string &error) {
     return false;
   }
   m_socketReady = true;
-  m_suspendRequested.store(false, std::memory_order_release);
   ++m_metrics.initializationCount;
   return true;
 }
@@ -145,24 +159,52 @@ void SwitchNetwork::finishTransfer(std::uint64_t startedAt,
   if (m_suspendRequested.load(std::memory_order_acquire) &&
       !m_metrics.activeTransfers)
     shutdownLocked();
+  if (!m_metrics.activeTransfers)
+    m_idle.notify_all();
 }
 
-void SwitchNetwork::suspend() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+bool SwitchNetwork::suspend(std::string &error) {
+  std::unique_lock<std::mutex> lock(m_mutex);
   m_cancellationEpoch.fetch_add(1, std::memory_order_acq_rel);
   m_suspendRequested.store(true, std::memory_order_release);
-  if (!m_metrics.activeTransfers)
+  if (!m_metrics.activeTransfers) {
     shutdownLocked();
+    return true;
+  }
+  if (!m_idle.wait_for(lock, std::chrono::seconds(10), [this] {
+        return m_metrics.activeTransfers == 0;
+      })) {
+    error = "Network transfers did not quiesce within 10 seconds of suspend";
+    return false;
+  }
+  // finishTransfer performs the service shutdown while holding this mutex.
+  return true;
 }
 
-bool SwitchNetwork::resume(std::string &error) { return initialize(error); }
+bool SwitchNetwork::resume(std::string &error) {
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_suspendRequested.store(false, std::memory_order_release);
+  }
+  return initialize(error);
+}
 
-void SwitchNetwork::shutdown() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+void SwitchNetwork::shutdownAndWait() {
+  std::unique_lock<std::mutex> lock(m_mutex);
   m_cancellationEpoch.fetch_add(1, std::memory_order_acq_rel);
   m_suspendRequested.store(true, std::memory_order_release);
-  if (!m_metrics.activeTransfers)
-    shutdownLocked();
+  m_idle.wait(lock, [this] { return m_metrics.activeTransfers == 0; });
+  shutdownLocked();
+}
+
+bool SwitchNetwork::rollbackInitialization(std::string &error) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_metrics.activeTransfers) {
+    error = "Network initialization rollback found an active transfer";
+    return false;
+  }
+  shutdownLocked();
+  return true;
 }
 
 void SwitchNetwork::shutdownLocked() {

@@ -411,6 +411,13 @@ CKLBCompositeAssetPlugin::~CKLBCompositeAssetPlugin() {
 
 static float s_deviceScale;
 
+static s32 decodeSigned24(u32 value) {
+	const u32 payload = value & 0x00FFFFFFU;
+	return (payload & 0x00800000U)
+		? static_cast<s32>(static_cast<s64>(payload) - 0x01000000LL)
+		: static_cast<s32>(payload);
+}
+
 float CKLBInnerDef::getLayoutValue(LAYOUT_VALUE value, float parentSize) const {
 	u32 mode = (layoutInfo >> (value * 2)) & 3;
 	float result;
@@ -658,7 +665,7 @@ s32 CKLBCompositeAsset::readLayoutInt(s32 value, u32 layoutShift) {
 		layoutMask = LAYOUT_SIZE_MODES[layoutMode];
 	}
 	m_pCurrInnerDef->layoutInfo |= layoutMask << layoutShift;
-	return (value << 8) >> 8;
+	return decodeSigned24(static_cast<u32>(value));
 }
 
 void CKLBCompositeAsset::appendInnerDef(CKLBInnerDef* definition) {
@@ -725,10 +732,12 @@ int CKLBCompositeAsset::readInt(long long integerVal)
 		m_pCurrInnerDef->priority = (u32)integerVal;	
 		break;
 	case X_FIELD:
-		m_pCurrInnerDef->position[CKLBInnerDef::LAYOUT_X] = (float)(m_bLowRes ? ((integerVal>>1)<<1) : integerVal);
+		m_pCurrInnerDef->position[CKLBInnerDef::LAYOUT_X] =
+			(float)(m_bLowRes ? (integerVal & ~1LL) : integerVal);
 		break;
 	case Y_FIELD:	
-		m_pCurrInnerDef->position[CKLBInnerDef::LAYOUT_Y] = (float)(m_bLowRes ? ((integerVal>>1)<<1) : integerVal);
+		m_pCurrInnerDef->position[CKLBInnerDef::LAYOUT_Y] =
+			(float)(m_bLowRes ? (integerVal & ~1LL) : integerVal);
 		break;
 	case SX_FIELD:	
 		m_pCurrInnerDef->sx = (s16)integerVal;
@@ -766,7 +775,7 @@ int CKLBCompositeAsset::readInt(long long integerVal)
 			}
 			m_pCurrInnerDef->layoutInfo |= layoutMask;
 			s32 width = (s32)integerVal;
-			width = (width << 8) >> 8;
+			width = decodeSigned24(static_cast<u32>(width));
 			m_pCurrInnerDef->width = (float)width;
 		} else {
 			m_width = (s16)integerVal;
@@ -781,7 +790,7 @@ int CKLBCompositeAsset::readInt(long long integerVal)
 			}
 			m_pCurrInnerDef->layoutInfo |= layoutMask;
 			s32 height = (s32)integerVal;
-			height = (height << 8) >> 8;
+			height = decodeSigned24(static_cast<u32>(height));
 			m_pCurrInnerDef->height = (float)height;
 		} else {
 			m_height = (s16)integerVal;
@@ -1585,6 +1594,9 @@ int CKLBCompositeAsset::readMapKey(const unsigned char * stringVal, size_t strin
 
 	// Tmp C string
 	char buff[100];
+	if (stringLen >= sizeof(buff)) {
+		return 0;
+	}
 	memcpy(buff,stringVal,stringLen);
 	buff[stringLen] = 0;
 

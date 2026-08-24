@@ -18,6 +18,7 @@
 #include "CKLBNetAPIKeyChain.h"
 #include "KLBBase64.h"
 #include "MultithreadedNetwork.h"
+#include "CurlTrust.h"
 #include <string.h>
 #include <ctype.h>
 ;
@@ -693,6 +694,10 @@ s32 CKLBHTTPInterface::HTTPConnectionThread(void * /*hThread*/, void * data)
 
 void CKLBHTTPInterface::download() {
 	CURL* curl = curl_easy_init();
+	if (curl && playgroundConfigureCurlTrust(curl) != CURLE_OK) {
+		curl_easy_cleanup(curl);
+		curl = NULL;
+	}
 	if(curl)
 	{
 		curl_slist* headerlist = NULL;

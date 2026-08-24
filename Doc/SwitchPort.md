@@ -10,8 +10,10 @@ and commit history are not imported into this branch.
 Deliver a production-quality Nintendo Switch port as an installed, user-
 selecting application title: bundle the original `AppAssets.zip` unchanged;
 extract, validate, upgrade, and recover it transactionally in CacheStorage;
-keep durable identity, credentials, preferences, and databases in the launch
-user's SaveData; implement complete libnx graphics, input, audio, network,
+keep durable identity, credentials, preferences, and explicitly state-owned
+application data in the launch user's SaveData; keep replaceable downloaded
+content in CacheStorage regardless of its file format; implement complete
+libnx graphics, input, audio, network,
 lifecycle, notification, and system-service behavior; package with audited
 NACP/NPDM least privilege; and pass both reproducible host-side gates and the
 recorded real-hardware acceptance matrix. The development NRO may use only an
@@ -23,8 +25,8 @@ The production artifact is an installed application title. It must have a
 stable, configurable application ID, a launch-selected user account, account
 SaveData, application CacheStorage, and an immutable RomFS. Failure to acquire
 any required production mount is a startup error. Production must never place
-credentials, databases, extracted application files, or downloads in an
-unscoped `sdmc:` directory.
+credentials, application data, extracted application files, or downloads in
+an unscoped `sdmc:` directory.
 
 The NRO is a development artifact. Because a homebrew NRO has no application
 SaveData or CacheStorage of its own, it may use an explicitly selected,
@@ -34,22 +36,38 @@ not be selected automatically by the production executable.
 
 ## Storage contract
 
-The engine sees three roots. Classification is explicit; it is never inferred
-from whether a relative path happens to contain a slash.
+The engine sees three roots. Ownership is never inferred from a filename,
+extension, path shape, caller, or game identity. `file://state/` is explicit
+durable state. The legacy `file://external/` namespace is presented as the
+single app-private filesystem mobile clients expect, backed by an account
+SaveData upper layer and a replaceable CacheStorage lower layer.
 
 | Root | Backing storage | Contents |
 | --- | --- | --- |
 | `install` | CacheStorage | Transactionally extracted `AppAssets.zip` |
 | `content` | CacheStorage | Downloaded packages, temporary downloads, and other reproducible assets |
-| `state` | Launch user's account SaveData | Credentials, device identity, preferences, cookies, and persistent databases |
+| `state` | Launch user's account SaveData | Credentials, device identity, preferences, cookies, explicit state, and copy-on-write mutable databases |
 
 The package contains the original `AppAssets.zip` as one RomFS file. It does
 not contain an extracted AppAssets tree. On first launch or archive upgrade,
 the bootstrap streams the archive into a staging generation under
 CacheStorage, validates every entry and required engine files, commits the
 generation, and atomically renames it to the immutable directory selected by
-the bundled metadata hash. The bundled hash is the active-generation selector,
+the complete 64-character bundled SHA-256. On constrained Horizon storage the
+temporary workspace is the fixed bootstrap-owned `.staging` directory; it is
+never valid until publication. The bundled hash is the active-generation selector,
 so there is no separately mutable active pointer to tear.
+
+CacheStorage on physical hardware rejects an individual filename component
+longer than 64 bytes even when the complete path is well below Horizon's
+`0x300` path bound. Installed-title mode therefore uses a lossless physical
+filesystem encoding. Logical components up to 64 UTF-8 bytes remain unchanged;
+oversized components (and literal names in the private `~pg*` namespace) are
+base64url encoded and split into reserved physical components of at most 64
+bytes. All engine-facing paths and directory listings remain the original
+logical names. The codec is generic, injective, and applied once at the
+filesystem boundary across bootstrap and runtime operations; it contains no
+application asset names. Development NRO storage on SD is not encoded.
 
 Bootstrap requirements:
 
@@ -69,8 +87,8 @@ Bootstrap requirements:
   state.
 
 State writes and SQLite transactions must use an archive-aware durability
-boundary. A successful engine-level durable write is not reported until the
-file is closed and the SaveData device has been committed. Multi-file state
+boundary. Engine-level state publication commits the SaveData device after
+the completed file operation and at lifecycle boundaries. Multi-file state
 publication uses a recoverable journal or dual-slot protocol; deleting a live
 destination before rename is not an atomic update strategy.
 
@@ -82,13 +100,48 @@ the durable jar. Cookie, key/value, SQLite, and lifecycle commits are
 serialized with one SaveData commit boundary; parallel downloads use the same
 serialized boundary for CacheStorage publication.
 
-Writable SQLite databases must use `file://state/`. On Switch those paths
-bypass the legacy read-only encrypted-asset VFS, use SQLite DELETE journals
-with `synchronous=FULL`, and pass every journal/database sync and deletion
-through the SaveData-commit VFS. Read-only encrypted databases under the
-installed asset generation retain the original engine VFS and never create a
-journal. The small platform key/value store separately keeps a previous
-generation until its replacement has been atomically published and committed.
+New engine-owned writable state uses `file://state/`. The database frontend
+also carries its actual open mode to the platform. A read-only external
+database observes the SaveData upper layer first and then CacheStorage. The
+first writable open copies an existing lower-layer database byte-for-byte to
+SaveData, commits that copy, and opens it there; a genuinely new writable
+database is created there directly. SQLite's requested read/create flags are
+not rewritten merely because a mount is writable. Ordinary external downloads
+remain in CacheStorage. Directory enumeration merges both layers, rename
+preserves the source layer, and logical deletion removes every physical layer
+of that object so an obsolete lower copy cannot reappear. These are generic
+union-filesystem rules, not knowledge of Lua or a particular game database.
+The separate `PLAYGROUND_APP_INTEGRITY_DATABASE_URI` build setting belongs to
+the application protocol adapter. The Switch host passes it into the generic
+runtime; neither Switch storage nor `RuntimePlatform.cpp` names that database,
+and the engine default is empty. The application packaging configuration must
+provide a URI when its server protocol requires one.
+
+The legacy `ENGINE_USE_DEFAULTDB` feature is likewise identity-free. The
+engine no longer embeds a `gamedb.db` path; an application that enables the
+flag must first call `CKLBGameApplication::setDefaultDatabaseUri()`. Enabling
+the feature without an application URI fails startup instead of guessing a
+game-owned filename.
+
+All Switch databases use the engine's established encrypted SQLite file
+wrapper and `journal_mode=OFF`, matching Android and the first hardware-working
+Switch draft. A cloned `unix-none` VFS supplies only absolute devoptab path,
+time, and randomness helpers; it is not the database I/O layer. The wrapper
+checks short writes and flush failures, implements truncate through Horizon,
+rejects unsupported WAL shared-memory operations instead of hanging, and
+asks the platform to make each dirty database path durable at SQLite
+sync/close boundaries. The generic database layer knows neither Switch mount
+names nor which filesystem owns a path; the configured runtime root selects
+the appropriate commit callback. Lifecycle commits remain a second durability
+boundary. Only an explicitly unnamed temporary database uses connection-local
+`:memory:` storage on Switch. A named database whose asset path cannot be
+resolved fails its open; it is never replaced by a valid-but-empty database.
+The generic database frontends do not include or call a Switch helper.
+
+The per-user key/value state store fails closed if both its active and recovery
+generations are malformed or unreadable. It does not manufacture a new device
+identity over corrupt SaveData. Startup reports that storage failure before
+initializing the game or audio runtime.
 
 ## Account contract
 
@@ -116,6 +169,11 @@ Pause ordering mirrors the proven Android engine contract:
 3. quiesce audio through `IAudioSystem::onActivityPause()`;
 4. stop issuing rendering callbacks and cancel pre-suspend network transfers;
 5. finish and commit pending durable state.
+
+The network lease layer waits up to ten seconds for canceled libcurl workers
+to release CacheStorage. SaveData is still committed if that bound is reached,
+but CacheStorage is deliberately not committed concurrently with a remaining
+temporary-file writer; the timeout is logged as a lifecycle failure.
 
 Resume ordering is:
 
@@ -197,6 +255,37 @@ The port is complete only when this matrix is recorded as passing on an
 installed title. An NRO-only run, successful compilation, or a title-screen
 boot is not sufficient.
 
+## Runtime-platform audit (2026-08-22)
+
+The complete Switch boundary was re-audited after hardware repeatedly exposed
+an empty writable database. The review compared the current implementation,
+the Android contract, the earlier hardware-working Switch draft, libnx service
+ownership, linked symbols, and every engine-facing platform method. It found
+and corrected these architectural problems rather than adding another
+database-specific exception:
+
+| Area | Incorrect/overcomplicated behavior removed | Audited behavior |
+| --- | --- | --- |
+| SQLite | A second raw Unix I/O wrapper routed writable databases around the engine's encryption VFS and reached unsupported Horizon/newlib descriptor operations. | `unix-none` supplies path/time/random helpers only; the established encrypted engine VFS performs all database I/O. Initialization is explicit and idempotent for both database entry points. |
+| Database durability | Short writes, seeks, file-size queries, flushes, archive commits, and unsupported VFS operations were ignored, misreported, or could spin forever; the VFS also claimed unproven power-safe sector overwrites. A later fallback silently converted any unresolved named database to `:memory:`, masking a missing asset as a valid empty database. | Errors propagate as specific SQLite I/O results; truncate uses the mounted file's real size operation, dirty SaveData/CacheStorage files flush and commit at sync/close, unsupported WAL shared-memory calls fail immediately, and device capability flags remain conservative. Named database paths fail closed when unresolved; only an explicitly unnamed temporary database uses memory. |
+| Storage ownership | One-off database-name patches coupled the platform to a particular game's Lua files; later slash-depth classifiers guessed whether a path was state. Mapping every external database to CacheStorage then shared mutable user databases across accounts. | The generic database API supplies read-only/read-write/create intent. Mutable external databases copy up into selected-account SaveData; replaceable downloads remain in CacheStorage; reads and listings form one overlay. Switch contains no game name, filename, extension, call-site, or path-shape classifier. |
+| Overlay mutation | Redirecting a writable open without copying the existing lower database created an empty file. Deleting or renaming only the upper copy could reveal stale CacheStorage data. | Copy-up is byte-preserving and committed before open. Logical deletion clears all realizations of an object, and upper-layer rename cleans obsolete lower names, preserving single-filesystem behavior. |
+| Persistent identity | Corrupt active and recovery state generations were treated like first launch, allowing a new device identity to overwrite damaged user state; recovery publication commit failures were ignored. | Corruption and failed recovery publication stop startup. The runtime never invents replacement credentials or identity over unreadable SaveData. |
+| Asset publication | An old-emulator fingerprint selected malformed FS IPC and a copy-based publication protocol. Some stale-tree deletion bypassed the native cleanup hook. | Production uses ordinary libnx provisioning, transactional staging, native recursive deletion, periodic bounded CacheStorage commits, and atomic directory publication only. |
+| Physical paths | A hash/truncation experiment was not reversible and coupled only some call sites to a renamed asset namespace. Removing all translation was also wrong: the v2 hardware run failed with FS 2-6003 on an exact 70-byte component while its full native path was only 120 bytes. Bootstrap also previously used 72/73-byte generation/staging basenames, and the state publisher attempted unsupported directory descriptor operations. | Engine/game paths remain exact logical names. Installed storage uses one reversible base64url component codec at every filesystem boundary, splitting only components that exceed the hardware-proven 64-byte limit or collide with its reserved `~pg*` namespace. Listings decode names; rename/removal hide empty continuation spines. The 8,462-entry AppAssets archive maps injectively with max component 64 and max path 161. Bootstrap-owned names use the full 64-character SHA-256 plus `.staging`; authenticated recovery may reset only incomplete replaceable CacheStorage when no completed generation exists. NRO paths remain native SD paths, and no unsupported directory descriptor or permission call is made. |
+| Lifecycle/network | HOME suspend could commit CacheStorage while a canceled curl worker still owned a temporary writer; lazy transfer initialization could clear the suspend flag; final shutdown also committed/unmounted storage and destroyed process-wide curl state after a bounded timeout even though a worker could still be executing a platform member. NIFM request submission was mistaken for successful network availability. | HOME uses a bounded cancellation wait and skips CacheStorage commit on timeout. Final teardown has no unsafe timeout: it drains every transfer lease before cookie flush, curl-global cleanup, platform destruction, storage commit, or filesystem unmount. Only explicit resume clears suspension, and the submitted NIFM request's actual result is validated. |
+| Input/widgets | The software keyboard opened when a text control was created, Switch did not render the static control/value, and one pointer's widget capture swallowed every other pointer. | Touch/controller hit testing opens the bounded system keyboard only after selection; accepted UTF-8 text returns through the engine callback, the GLES overlay renders the current value, and capture is tracked per pointer. |
+| Audio | Plain cross-thread flags and teardown ordering could leave the audio callback or mixer waiting on each other during suspend/shutdown. | Switch-only atomic coordination stops/joins AudioOut before destroying the mixer and fills stale callbacks with silence. |
+| System integration | Free space used POSIX emulation, locale was fixed to Japan, direct gyro calls reported no data, notification permission used the wrong callback and alarms were incorrectly declared unsupported, and desktop product identity leaked into integrity data. Alarm enumeration also allowed one selected user to modify another user's same-tag registration. | Native Horizon free-space, language/region, reconnecting motion, memory, Album, sleep, browser, application alarms, and application identity paths are used. Alarm replacement/cancellation/expiry is scoped to the launch-selected account and updates in place. Horizon only exposes weekly schedules, so representable one-shot delays carry an absolute due time and are retired on alarm launch or later manual resume; delays of a week or more fail explicitly instead of firing early or recurring forever. Unavailable ads, location, and clipboard report that limitation instead of fabricating persistence. |
+| Packaging | Service auditing covered only a small hand-picked subset and allowed stale ACL entries. | The final ELF must account exactly for all 19 linked libnx services, all linked SVCs, filesystem mask `0x21`, selected-user NACP policy, and configured SaveData/CacheStorage sizes. |
+
+No emulator-specific production path remains. Compile, host probes, descriptor
+audits, deterministic staging, and NSP construction are green, but the rows in
+`SwitchHardwareAcceptance.md` remain the authority for behavior which cannot
+be proven by a cross-build—especially first writable-database creation,
+power-loss durability, HOME/sleep timing, user isolation, and Album/audio on a
+physical console.
+
 ## Prerequisites
 
 Install the current devkitPro Switch toolchain and portlibs packages for
@@ -234,10 +323,11 @@ Configure and build a self-contained NRO with the original archive in RomFS:
 ```sh
 export DEVKITPRO=/opt/devkitpro
 cmake --preset switch-release \
-  -DPLAYGROUND_APP_ASSETS_ZIP=/absolute/path/AppAssets.zip
+  -DPLAYGROUND_APP_ASSETS_ZIP=/absolute/path/AppAssets.zip \
+  -DPLAYGROUND_APP_INTEGRITY_DATABASE_URI=asset://db/unit/unit.db_
 cmake --build --preset switch-release --target \
   playground-switch-engine-nro playground-switch-engine-npdm-audit \
-  playground-switch-engine-nacp-audit
+  playground-switch-engine-nacp-audit playground-switch-engine-runtime-audit
 ```
 
 The output is:
@@ -257,8 +347,9 @@ Handheld mode uses the touch screen directly. Docked mode displays a small
 pink controller cursor: move it with the left stick or D-pad, press or hold A
 for touch-down and drag, release A for touch-up, and use B for Android-
 compatible back. Plus requests a clean application exit. Pointer state is
-canceled on focus loss and dock/undock so a system applet cannot leave a stuck
-touch.
+canceled on focus loss, dock/undock, and controller disconnect so a system
+applet or removed controller cannot leave a stuck touch. Six-axis input also
+reacquires its handle after controller disconnect or Npad style changes.
 
 For an NRO built without bundled RomFS, place `AppAssets.zip` in that same SD
 directory and generate its adjacent metadata with:
@@ -278,10 +369,11 @@ tree:
 export DEVKITPRO=/opt/devkitpro
 cmake --preset switch-release \
   -DPLAYGROUND_APP_ASSETS_ZIP=/absolute/path/AppAssets.zip \
+  -DPLAYGROUND_APP_INTEGRITY_DATABASE_URI=asset://db/unit/unit.db_ \
   -DPLAYGROUND_SWITCH_ICON_JPEG=/absolute/path/icon-256x256.jpg
 cmake --build --preset switch-release --target \
   playground-switch-package-stage playground-switch-engine-npdm-audit \
-  playground-switch-engine-nacp-audit
+  playground-switch-engine-nacp-audit playground-switch-engine-runtime-audit
 ```
 
 The deterministic input tree is under:
@@ -309,13 +401,11 @@ the `PLAYGROUND_SWITCH_TITLE_ID`, `PLAYGROUND_SWITCH_SAVE_*`, and
 `PLAYGROUND_SWITCH_CACHE_*` CMake cache values only before distribution;
 changing title ID creates a distinct title/storage identity.
 
-Old yuzu 1734 does not implement the modern command-22 layout or
-`IFileSystem::RenameDirectory`. The installed runtime does not identify an
-emulator by name and does not weaken the hardware path. It first sends the
-standard libnx request; only the unique malformed System-save record produced
-by yuzu's misordered decoder enables a compatibility request and a streamed
-publication of the already validated staging generation. Real Horizon keeps
-the normal account SaveData/CacheStorage requests and atomic directory rename.
+The production runtime contains no emulator-specific IPC or filesystem path.
+In particular, old yuzu 1734's misordered command-22 request layout and missing
+`IFileSystem::RenameDirectory` are not worked around by issuing malformed IPC
+from the title. Test with current emulator releases that implement the libnx/
+Horizon contracts, and use physical hardware for release acceptance.
 
 ## Creating and installing the NSP
 
@@ -338,14 +428,10 @@ one from the NACP-backed size policy only when Horizon reports that it does not
 exist. A production launch fails closed if either store remains unavailable;
 it never falls back to SD storage.
 
-For yuzu 1734, use **File > Install Files to NAND...**, select the generated
-NSP, and confirm the installation dialog. Launch the installed title from the
-game list; opening an individual NCA is only a developer diagnostic and is not
-the distribution workflow. A successful first boot writes
-`user/logs/runtime.log` in the title's account SaveData and reaches the title
-screen after validating or extracting AppAssets. yuzu 1734's command-22 and
-directory-publication compatibility is selected only from its mechanically
-identified malformed save record, as described above.
+For an emulator, use its installed-title workflow, select the generated NSP,
+and launch the title from the game list. Opening one NCA is only a developer
+diagnostic and is not the distribution workflow. Emulator success is useful
+debug evidence but never substitutes for the hardware matrix.
 
 The pack step verifies every staged file against `package-manifest.json`,
 rejects symbolic links and undeclared files (including accidental keys), and
@@ -366,38 +452,48 @@ is derived from a user-owned keyset.
 
 ## Runtime path and durability rules
 
-Engine URIs have fixed ownership:
+Engine URIs have explicit namespace and access semantics:
 
 - `file://install/` is the active, read-only extracted AppAssets generation;
 - `asset://` and `file://asset/` prefer a downloaded CacheStorage override and
   otherwise read the install generation;
-- `file://external/` is reproducible downloaded/cache content;
+- new ordinary `file://external/` downloads are reproducible CacheStorage
+  content; reads see a selected-account SaveData overlay first;
+- writable external database opens copy up to, or create in, selected-account
+  SaveData according to the database API's explicit open mode;
 - `file://state/` is private per-user SaveData.
 
 Traversal, absolute, drive-qualified, backslash, and control-character URI
 paths are rejected. Cache publications and SaveData publications commit their
-respective filesystem devices. On Switch, the default SQLite VFS additionally
-commits `pgstate` after successful writable database/journal synchronization,
-deletion, and dirty close.
+respective filesystem devices.
 
 Switch devoptab paths (`pgstate:/...` and `pgcache:/...`) are already absolute.
 The Switch SQLite VFS preserves them verbatim instead of allowing the generic
 Unix canonicalizer to prepend `/`, which would make encrypted packaged
 databases inaccessible.
 
-The engine's legacy encrypted SQLite wrapper remains restricted to logical
-asset databases. The selection is made before SQLite opens the file, while the
-original URI is still known: `asset://` uses the encrypted VFS whether it
-resolves to the bundled generation or a downloaded CacheStorage override;
-`file://state/` and `file://external/` use the named Switch durability VFS.
-This avoids guessing from physical paths or extensions—the game has both an
-encrypted downloaded `game_mater.db_` and a writable plain `unit_list.db_`.
-A missing asset with no resolved native path uses the durable temporary-SQLite
-fallback. The durability VFS is based on SQLite's `unix-none` backend: Horizon
-mounts are private to this application process, while libnx devoptab
-intentionally lacks POSIX `fcntl` advisory locks. SQLite still performs
-ordinary writes, syncs, journaling, and explicit SaveData commits; only
-unavailable cross-process locking is omitted.
+In installed-title mode those absolute paths are the physical result of the
+lossless component codec described above. URI joining always happens in the
+logical namespace, after which the complete path is encoded exactly once.
+Bootstrap returns a logical install root, not an already encoded path. Runtime
+directory enumeration reverses the codec before names reach engine callers.
+
+Every file-backed database uses the engine's existing encrypted SQLite
+wrapper, matching the Android runtime contract. Namespace plus explicit open
+mode selects only the physical storage layer; it never selects a database
+implementation based on a filename, extension, directory depth, caller, or
+game-specific list. A named database with no resolved native path fails its
+open, while an explicitly unnamed temporary database uses connection-local
+memory. A cloned
+`unix-none` VFS supplies path, time, and randomness helpers because Horizon
+mounts are private to the application process and libnx devoptab intentionally
+lacks POSIX `fcntl` advisory locks; it does not perform database I/O. The
+engine retains its original `journal_mode=OFF` policy on every platform. The
+path-helper VFS changes no file-I/O callbacks; it only preserves
+already-absolute devoptab paths. Horizon filesystem commits are owned by the
+platform durability contract at database sync/close, state/content
+publication, suspend, and shutdown. Only unavailable cross-process locking is
+omitted.
 
 HOME/sleep cancels active curl transfers through the transfer progress hook,
 then commits state/cache without destroying BSD beneath a running callback.
@@ -411,12 +507,11 @@ capture, no-op dirty detection, on-disk persistence, process restart/reload,
 request replay, and complete clearing. This is part of the ordinary Linux
 `ctest` gate and does not require official assets.
 
-Installed-title stdout/stderr is line-buffered into the selected user's
-`logs/runtime.log` in SaveData and rotated at 4 MiB to
-`runtime.previous.log`. Suspend and orderly exit flush and commit that log.
-NRO mode keeps stdio attached to the Homebrew Menu/nxlink console. Release
-acceptance logs can therefore be obtained by dumping the test user's SaveData
-without placing private diagnostics in shared SD storage.
+Installed-title startup never depends on diagnostic log persistence: Horizon
+SaveData stdio redirection is not portable across supported firmware and
+libnx combinations. NRO mode keeps stdio attached to the Homebrew Menu/nxlink
+console and is the supported verbose-diagnostic path. User state and cache
+durability remain explicitly committed independently of logging.
 
 ## Validation commands
 

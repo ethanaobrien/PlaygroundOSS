@@ -76,6 +76,14 @@ if(PLAYGROUND_BUILD_ENGINE_RUNTIME)
         DEPENDS playground-switch-engine playground-switch-engine-npdm
                 "${PROJECT_SOURCE_DIR}/scripts/audit_switch_npdm.py"
         VERBATIM)
+    add_custom_target(playground-switch-engine-runtime-audit
+        COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/scripts/audit_switch_runtime_contract.py"
+            --elf "$<TARGET_FILE:playground-switch-engine>"
+            --nm "${CMAKE_NM}"
+        DEPENDS playground-switch-engine
+                "${PROJECT_SOURCE_DIR}/scripts/audit_switch_runtime_contract.py"
+        VERBATIM)
     add_custom_command(OUTPUT "${_base_nacp}"
         COMMAND "${NX_NACPTOOL_EXE}" --create
             "PlaygroundOSS SIF" "PlaygroundOSS contributors"
@@ -133,6 +141,13 @@ if(PLAYGROUND_BUILD_ENGINE_RUNTIME)
             VERBATIM)
         add_custom_target(playground-switch-engine-romfs
             DEPENDS "${_romfs_archive}" "${_romfs_metadata}")
+        add_custom_target(playground-switch-engine-path-audit
+            COMMAND "${Python3_EXECUTABLE}"
+                "${PROJECT_SOURCE_DIR}/scripts/audit_switch_asset_paths.py"
+                --archive "${_romfs_archive}"
+            DEPENDS playground-switch-engine-romfs
+                    "${PROJECT_SOURCE_DIR}/scripts/audit_switch_asset_paths.py"
+            VERBATIM)
         set_target_properties(playground-switch-engine-romfs PROPERTIES
             DKP_ASSET_FOLDER "${_engine_romfs}"
             DKP_ASSET_FILES "${_romfs_archive};${_romfs_metadata}")
@@ -159,7 +174,9 @@ if(PLAYGROUND_BUILD_ENGINE_RUNTIME)
                     --output "${_package_stage}"
                     --title-id "${PLAYGROUND_SWITCH_TITLE_ID}"
                 DEPENDS playground-switch-engine playground-switch-engine-npdm
+                        playground-switch-engine-runtime-audit
                         playground-switch-engine-nacp-audit
+                        playground-switch-engine-path-audit
                         playground-switch-engine-romfs "${_engine_nacp}"
                         "${_switch_icon}"
                         "${PROJECT_SOURCE_DIR}/scripts/stage_switch_package.py"

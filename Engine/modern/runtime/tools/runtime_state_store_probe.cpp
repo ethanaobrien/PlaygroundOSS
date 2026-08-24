@@ -78,13 +78,21 @@ int main() {
   std::filesystem::rename(state, previous, error);
   if (!require(!error, "could not create interrupted-publication fixture"))
     return 7;
+  commitAllowed = false;
+  {
+    playground::runtime::RuntimeStateStore store(
+        state, [&commitAllowed] { return commitAllowed; });
+    if (!require(!store.valid(),
+                 "failed recovery publication was reported durable"))
+      return 8;
+  }
   {
     playground::runtime::RuntimeStateStore store(state);
     if (!require(store.get("identity") == "old",
                  "previous generation was not recovered") ||
         !require(std::filesystem::is_regular_file(state),
                  "recovered generation was not republished"))
-      return 8;
+      return 9;
   }
 
   // A malformed active file must likewise fall back to a valid previous one.
@@ -92,14 +100,46 @@ int main() {
                              std::filesystem::copy_options::overwrite_existing,
                              error);
   if (!require(!error, "could not create corruption fixture"))
-    return 9;
+    return 10;
   std::ofstream(state, std::ios::binary | std::ios::trunc) << "broken";
   {
     playground::runtime::RuntimeStateStore store(state);
     if (!require(store.get("identity") == "old",
                  "corrupt active generation did not recover"))
-      return 10;
+      return 11;
   }
+
+  // If both generations are malformed, fail closed. Treating corruption as
+  // first launch would silently replace account identity and secure values.
+  std::filesystem::remove(previous, error);
+  std::ofstream(state, std::ios::binary | std::ios::trunc) << "broken-again";
+  {
+    playground::runtime::RuntimeStateStore store(state);
+    if (!require(!store.valid(), "unrecoverable corruption was accepted") ||
+        !require(!store.set("identity", "replacement"),
+                 "corrupt state was overwritten") ||
+        !require(store.get("identity").empty(),
+                 "corrupt state exposed invented values"))
+      return 12;
+  }
+
+  // A path query failure is not equivalent to a missing first-launch store.
+  // A self-referential symlink produces ELOOP without relying on permission
+  // behavior (the probe may run as root). Windows CI cannot assume symlink
+  // creation privilege, so this POSIX error-path assertion is scoped there.
+#if !defined(_WIN32)
+  const std::filesystem::path loop = root / "loop";
+  std::filesystem::create_symlink("loop", loop, error);
+  if (!require(!error, "could not create path-query-error fixture"))
+    return 13;
+  {
+    playground::runtime::RuntimeStateStore store(loop / "state");
+    if (!require(!store.valid(), "state path query failure was accepted") ||
+        !require(!store.set("identity", "replacement"),
+                 "state path query failure allowed a replacement write"))
+      return 13;
+  }
+#endif
 
   std::filesystem::remove_all(root, error);
   std::cout << "runtime-state-store-probe passed\n";

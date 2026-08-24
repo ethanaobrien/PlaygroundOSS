@@ -20,11 +20,21 @@
 #include "lundump.h"
 #include "lzio.h"
 
+#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && \
+ __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+#define PLAYGROUND_LUA_BIG_ENDIAN 1
+#else
+#define PLAYGROUND_LUA_BIG_ENDIAN 0
+#endif
+
 typedef struct {
  lua_State* L;
  ZIO* Z;
  Mbuffer* b;
  const char* name;
+#if PLAYGROUND_LUA_BIG_ENDIAN
+ int swapEndian;
+#endif
 } LoadState;
 
 static void error(LoadState* S, const char* why)
@@ -58,6 +68,10 @@ static int LoadInt(LoadState* S)
 {
  int x;
  LoadVar(S,x);
+#if PLAYGROUND_LUA_BIG_ENDIAN
+ if (S->swapEndian)
+  x=(int)__builtin_bswap32((unsigned int)x);
+#endif
  if (x<0) error(S,"corrupted");
  return x;
 }
@@ -66,13 +80,26 @@ static lua_Number LoadNumber(LoadState* S)
 {
  lua_Number x;
  LoadVar(S,x);
+#if PLAYGROUND_LUA_BIG_ENDIAN
+ if (S->swapEndian)
+ {
+  unsigned char* p=(unsigned char*)&x;
+  size_t i;
+  for (i=0; i<sizeof(x)/2; ++i)
+  {
+   unsigned char t=p[i];
+   p[i]=p[sizeof(x)-1-i];
+   p[sizeof(x)-1-i]=t;
+  }
+ }
+#endif
  return x;
 }
 
 static TString* LoadString(LoadState* S)
 {
  int size;
- LoadVar(S,size);
+ size=LoadInt(S);
  if (size==0)
   return NULL;
  else
@@ -89,6 +116,14 @@ static void LoadCode(LoadState* S, Proto* f)
  f->code=luaM_newvector(S->L,n,Instruction);
  f->sizecode=n;
  LoadVector(S,f->code,n,sizeof(Instruction));
+#if PLAYGROUND_LUA_BIG_ENDIAN
+ if (S->swapEndian)
+ {
+  int i;
+  for (i=0; i<n; ++i)
+   f->code[i]=(Instruction)__builtin_bswap32((unsigned int)f->code[i]);
+ }
+#endif
 }
 
 static Proto* LoadFunction(LoadState* S);
@@ -149,6 +184,11 @@ static void LoadDebug(LoadState* S, Proto* f)
  f->lineinfo=luaM_newvector(S->L,n,int);
  f->sizelineinfo=n;
  LoadVector(S,f->lineinfo,n,sizeof(int));
+#if PLAYGROUND_LUA_BIG_ENDIAN
+ if (S->swapEndian)
+  for (i=0; i<n; ++i)
+   f->lineinfo[i]=(int)__builtin_bswap32((unsigned int)f->lineinfo[i]);
+#endif
  n=LoadInt(S);
  f->locvars=luaM_newvector(S->L,n,LocVar);
  f->sizelocvars=n;
@@ -194,6 +234,17 @@ static void LoadHeader(LoadState* S)
  memcpy(s,h,sizeof(char));			/* first char already read */
  LoadBlock(S,s+sizeof(char),LUAC_HEADERSIZE-sizeof(char));
  if (memcmp(h,s,N0)==0) return;
+#if PLAYGROUND_LUA_BIG_ENDIAN
+ /* Shipped SIF assets contain Android-generated little-endian Lua chunks.
+    Their scalar fields and instructions have fixed widths, so accept the
+    opposite-endian header and swap those fields while loading. */
+ if (memcmp(h,s,N2)==0 && h[N2]!=s[N2]
+     && memcmp(h+N2+1,s+N2+1,N0-(N2)-1)==0)
+ {
+  S->swapEndian=1;
+  return;
+ }
+#endif
  if (memcmp(h,s,N1)!=0) error(S,"not a");
  if (memcmp(h,s,N2)!=0) error(S,"version mismatch in");
  if (memcmp(h,s,N3)!=0) error(S,"incompatible"); else error(S,"corrupted");
@@ -214,6 +265,9 @@ Proto* luaU_undump (lua_State* L, ZIO* Z, Mbuffer* buff, const char* name)
  S.L=L;
  S.Z=Z;
  S.b=buff;
+#if PLAYGROUND_LUA_BIG_ENDIAN
+ S.swapEndian=0;
+#endif
  LoadHeader(&S);
  return luai_verifycode(L,buff,LoadFunction(&S));
 }

@@ -1,5 +1,6 @@
 #include "RuntimeCrypto.h"
 #include "RuntimePublicKey.h"
+#include "Playground/Switch/SwitchCrypto.h"
 
 #include <switch.h>
 
@@ -9,14 +10,53 @@
 #include <mbedtls/sha512.h>
 
 #include <array>
+#include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <vector>
+
+namespace playground::switch_runtime {
+namespace {
+
+std::atomic<bool> g_cryptoReady{false};
+
+} // namespace
+
+bool initializeCryptoService(std::string &error) {
+  if (g_cryptoReady.load(std::memory_order_acquire))
+    return true;
+  const Result result = csrngInitialize();
+  if (R_FAILED(result)) {
+    char text[128];
+    std::snprintf(text, sizeof(text),
+                  "csrngInitialize failed with result 0x%08x", result);
+    error = text;
+    return false;
+  }
+  g_cryptoReady.store(true, std::memory_order_release);
+  return true;
+}
+
+void shutdownCryptoService() {
+  if (!g_cryptoReady.exchange(false, std::memory_order_acq_rel))
+    return;
+  csrngExit();
+}
+
+bool cryptoServiceReady() {
+  return g_cryptoReady.load(std::memory_order_acquire);
+}
+
+} // namespace playground::switch_runtime
 
 namespace playground::runtime {
 namespace {
 
 int randomCallback(void *, unsigned char *output, std::size_t size) {
-  return R_SUCCEEDED(csrngGetRandomBytes(output, size)) ? 0 : -1;
+  return switch_runtime::cryptoServiceReady() &&
+                 R_SUCCEEDED(csrngGetRandomBytes(output, size))
+             ? 0
+             : -1;
 }
 
 bool loadPublicKey(mbedtls_pk_context &key) {
@@ -29,7 +69,8 @@ bool loadPublicKey(mbedtls_pk_context &key) {
 } // namespace
 
 bool cryptoRandom(unsigned char *output, std::size_t size) {
-  return output && (size == 0 || R_SUCCEEDED(csrngGetRandomBytes(output, size)));
+  return output && switch_runtime::cryptoServiceReady() &&
+         (size == 0 || R_SUCCEEDED(csrngGetRandomBytes(output, size)));
 }
 
 bool cryptoSha1(const void *input, std::size_t size, unsigned char output[20]) {

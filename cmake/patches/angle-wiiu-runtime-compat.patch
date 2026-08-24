@@ -1,0 +1,155 @@
+diff --git a/src/libANGLE/Context.cpp b/src/libANGLE/Context.cpp
+index fbe4388e15..394b33765f 100644
+--- a/src/libANGLE/Context.cpp
++++ b/src/libANGLE/Context.cpp
+@@ -912,7 +912,15 @@ void Context::initializeDefaultResources()
+
+     mState.initializeZeroTextures(this, mZeroTextures);
+
++#if defined(ANGLE_PLATFORM_WIIU)
++    // The GX2 backend converts images synchronously and does not consume the
++    // display worker pools. Copying their shared_ptrs here can stall the Wii U
++    // atomic reference-count path during the first eglMakeCurrent.
++    angle::ImageLoadContext imageLoadContext;
++    ANGLE_CONTEXT_TRY(mImplementation->initialize(imageLoadContext));
++#else
+     ANGLE_CONTEXT_TRY(mImplementation->initialize(mDisplay->getImageLoadContext()));
++#endif
+
+     // Add context into the share group
+     mState.getShareGroup()->addSharedContext(this);
+diff --git a/src/libANGLE/HandleAllocator.cpp b/src/libANGLE/HandleAllocator.cpp
+index 286a17f864..9d98ad383c 100644
+--- a/src/libANGLE/HandleAllocator.cpp
++++ b/src/libANGLE/HandleAllocator.cpp
+@@ -67,9 +67,10 @@ bool HandleAllocator::allocate(GLuint *outId)
+         }
+         else
+         {
+-            angle::CheckedNumeric<GLuint> checkedBegin = listIt->begin;
+-            checkedBegin++;
+-            listIt->begin = checkedBegin.ValueOrDie();
++            // The range end has already been proven greater than begin. Avoid
++            // GCC's PowerPC conditional-trap lowering in CheckedNumeric's
++            // impossible overflow arm; Cemu 2.6 cannot execute that opcode.
++            ++listIt->begin;
+         }
+
+         if (mLoggingEnabled)
+diff --git a/src/libANGLE/renderer/gx2/gx2_format_table.cpp b/src/libANGLE/renderer/gx2/gx2_format_table.cpp
+index 88fef8ad38..a329dd1c2d 100644
+--- a/src/libANGLE/renderer/gx2/gx2_format_table.cpp
++++ b/src/libANGLE/renderer/gx2/gx2_format_table.cpp
+@@ -310,8 +310,20 @@ const SurfaceFormat &SurfaceFormat::Get(angle::FormatID formatID)
+         }
+         case angle::FormatID::R5G5B5A1_UNORM:
+         {
++            // GX2 packed-16 surfaces are endian-sensitive. Convert the GLES
++            // client representation to RGBA8 so alpha occupies a real byte
++            // and the standard ANGLE loader handles the host word order.
+             static const SurfaceFormat format(
+-                angle::FormatID::R5G5B5A1_UNORM, GX2_SURFACE_FORMAT_UNORM_R5_G5_B5_A1,
+-                GX2_SEL_MASK(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A), true, false);
++                formatID, angle::FormatID::R8G8B8A8_UNORM, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8,
++                GX2_SEL_MASK(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A), false, false);
++            return format;
++        }
++        case angle::FormatID::R4G4B4A4_UNORM:
++        {
++            // The generic fallback selects a constant-one alpha channel.
++            // RGBA4444 UI atlases need their four-bit alpha expanded instead.
++            static const SurfaceFormat format(
++                formatID, angle::FormatID::R8G8B8A8_UNORM, GX2_SURFACE_FORMAT_UNORM_R8_G8_B8_A8,
++                GX2_SEL_MASK(GX2_SQ_SEL_R, GX2_SQ_SEL_G, GX2_SQ_SEL_B, GX2_SQ_SEL_A), false, false);
+             return format;
+         }
+         case angle::FormatID::R32G32_FLOAT:
+diff --git a/src/libANGLE/renderer/gx2/ContextGX2.cpp b/src/libANGLE/renderer/gx2/ContextGX2.cpp
+index 8adb80ade3..679ba5f6ba 100644
+--- a/src/libANGLE/renderer/gx2/ContextGX2.cpp
++++ b/src/libANGLE/renderer/gx2/ContextGX2.cpp
+@@ -756,7 +756,10 @@ void ContextGX2::handleError(GLenum errorCode,
+
+ angle::ImageLoadContext ContextGX2::getImageLoadContext() const
+ {
+-    return getRenderer()->getDisplay()->getImageLoadContext();
++    // GX2 image conversion is synchronous. Avoid copying the display's
++    // worker-pool shared_ptrs on Wii U; none of the GX2 load functions use a
++    // worker pool.
++    return angle::ImageLoadContext();
+ }
+
+ angle::Result ContextGX2::initializeMultisampleTextureToBlack(const gl::Context *context,
+@@ -982,9 +985,9 @@ void ContextGX2::updateScissor()
+     }
+
+     // Get scissored area
+-    mScissorRect = ClipRectToScissor(getState(), viewportClippedRenderArea, false);
++    // GLES scissor coordinates are bottom-left based while GX2 expects its
++    // rectangle from the top-left of the render target.
++    mScissorRect = ClipRectToScissor(getState(), viewportClippedRenderArea, true);
+
+-    // TODO flip Y?
+-
+     mInternalDirtyBits.set(DIRTY_BIT_GX2_SCISSOR);
+ }
+
+diff --git a/src/libGLESv2/global_state.h b/src/libGLESv2/global_state.h
+index 56bc6a0987..591d0a8bde 100644
+--- a/src/libGLESv2/global_state.h
++++ b/src/libGLESv2/global_state.h
+@@ -109,21 +109,27 @@ ANGLE_INLINE ScopedContextMutexLock LockAndTryMergeContextMutexes(gl::Context *c
+
+ }  // namespace egl
+
+-#define ANGLE_SCOPED_GLOBAL_LOCK() egl::ScopedGlobalEGLMutexLock globalMutexLock
+-#if ANGLE_CAPTURE_ENABLED
++#if defined(ANGLE_PLATFORM_WIIU)
++#    define ANGLE_SCOPED_GLOBAL_LOCK()
++#    define ANGLE_SCOPED_GLOBAL_EGL_AND_EGL_SYNC_LOCK()
++#    define ANGLE_SCOPED_GLOBAL_EGL_SYNC_LOCK()
++#else
++#    define ANGLE_SCOPED_GLOBAL_LOCK() egl::ScopedGlobalEGLMutexLock globalMutexLock
++#    if ANGLE_CAPTURE_ENABLED
+ #    define ANGLE_SCOPED_GLOBAL_EGL_AND_EGL_SYNC_LOCK() \
+         egl::ScopedGlobalEGLMutexLock globalMutexLock
+-#else
++#    else
+ #    define ANGLE_SCOPED_GLOBAL_EGL_AND_EGL_SYNC_LOCK() \
+         egl::ScopedGlobalEGLMutexLock globalMutexLock;  \
+         egl::ScopedGlobalEGLSyncObjectMutexLock globalEGLSyncObjectMutexLock
+-#endif
++#    endif
+
+-#if ANGLE_CAPTURE_ENABLED
++#    if ANGLE_CAPTURE_ENABLED
+ #    define ANGLE_SCOPED_GLOBAL_EGL_SYNC_LOCK() egl::ScopedGlobalEGLMutexLock globalMutexLock
+-#else
++#    else
+ #    define ANGLE_SCOPED_GLOBAL_EGL_SYNC_LOCK() \
+         egl::ScopedGlobalEGLSyncObjectMutexLock globalEGLSyncObjectMutexLock
++#    endif
+ #endif
+
+ namespace gl
+diff --git a/src/common/wiiu/sys/single_threaded.h b/src/common/wiiu/sys/single_threaded.h
+new file mode 100644
+index 0000000000..7eb90011dd
+--- /dev/null
++++ b/src/common/wiiu/sys/single_threaded.h
+@@ -0,0 +1,15 @@
++#pragma once
++
++// ANGLE's Wii U frontend is confined to the ProcUI/main thread.  The engine
++// may have unrelated audio/network workers, but they never enter EGL/GLES.
++// Keep libstdc++ reference counts on their single-threaded path: the generic
++// PowerPC atomic dispatch used when pthread symbols are linked is not usable
++// by this CafeOS port.
++inline constexpr bool __libc_single_threaded = true;
++
++// Cemu 2.6 does not correctly execute PowerPC conditional-trap instructions.
++// GCC folds impossible overflow guards into those instructions when their
++// failure arm is __builtin_trap(). Preserve the guard and its fatal behavior,
++// but lower the failure arm to an ordinary abort call.
++extern "C" void playground_wiiu_trap_abort(void);
++#define __builtin_trap() playground_wiiu_trap_abort()

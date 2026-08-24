@@ -30,6 +30,14 @@ struct OutputState {
 
 OutputState g_output;
 
+bool reportResult(const char *operation, Result result) {
+  if (R_SUCCEEDED(result))
+    return true;
+  std::fprintf(stderr, "%s failed with 0x%08x\n", operation,
+               R_VALUE(result));
+  return false;
+}
+
 void fill(AudioOutBuffer &buffer) {
   auto *samples = static_cast<std::int16_t *>(buffer.buffer);
   if (g_output.callback && !g_output.paused)
@@ -47,7 +55,15 @@ void outputThread() {
         audoutWaitPlayFinish(&released, &releasedCount, 100000000ULL);
     if (!g_output.running)
       break;
-    if (R_FAILED(result) || !released || !releasedCount)
+    if (result == MAKERESULT(Module_Kernel, KernelError_TimedOut))
+      continue;
+    if (R_FAILED(result)) {
+      std::fprintf(stderr, "audoutWaitPlayFinish failed with 0x%08x\n",
+                   result);
+      g_output.running = false;
+      break;
+    }
+    if (!released || !releasedCount)
       continue;
     fill(*released);
     const Result appendResult = audoutAppendAudioOutBuffer(released);
@@ -97,11 +113,23 @@ bool initializeAudioOutput(void *context, AudioFillCallback callback,
     }
   }
   if (R_FAILED(audoutStartAudioOut())) {
-    releaseAllocations();
+    // Every allocation above has already been submitted to Horizon. Close
+    // the service and release its references before returning that memory to
+    // the allocator, even when playback never reached the started state.
     audoutExit();
+    releaseAllocations();
     return false;
   }
-  appletSetMediaPlaybackState(true);
+  if (!reportResult("appletSetMediaPlaybackState(true)",
+                    appletSetMediaPlaybackState(true))) {
+    reportResult("audoutStopAudioOut after media-state failure",
+                 audoutStopAudioOut());
+    audoutExit();
+    releaseAllocations();
+    g_output.context = nullptr;
+    g_output.callback = nullptr;
+    return false;
+  }
   g_output.running = true;
   g_output.initialized = true;
   g_output.thread = std::thread(outputThread);
@@ -114,14 +142,16 @@ void shutdownAudioOutput() {
   if (!g_output.initialized)
     return;
   g_output.running = false;
-  audoutStopAudioOut();
+  reportResult("audoutStopAudioOut during shutdown", audoutStopAudioOut());
   if (g_output.thread.joinable())
     g_output.thread.join();
   if (hosversionAtLeast(4, 0, 0)) {
     bool flushed = false;
-    audoutFlushAudioOutBuffers(&flushed);
+    reportResult("audoutFlushAudioOutBuffers",
+                 audoutFlushAudioOutBuffers(&flushed));
   }
-  appletSetMediaPlaybackState(false);
+  reportResult("appletSetMediaPlaybackState(false) during shutdown",
+               appletSetMediaPlaybackState(false));
   audoutExit();
   releaseAllocations();
   g_output.buffers.fill(AudioOutBuffer{});
@@ -135,8 +165,9 @@ void shutdownAudioOutput() {
 void pauseAudioOutput() {
   if (!g_output.initialized || g_output.paused.exchange(true))
     return;
-  audoutStopAudioOut();
-  appletSetMediaPlaybackState(false);
+  reportResult("audoutStopAudioOut during pause", audoutStopAudioOut());
+  reportResult("appletSetMediaPlaybackState(false) during pause",
+               appletSetMediaPlaybackState(false));
 }
 
 void resumeAudioOutput() {
@@ -148,7 +179,8 @@ void resumeAudioOutput() {
     g_output.paused = true;
     return;
   }
-  appletSetMediaPlaybackState(true);
+  reportResult("appletSetMediaPlaybackState(true) during resume",
+               appletSetMediaPlaybackState(true));
 }
 
 } // namespace playground::switch_runtime

@@ -1,4 +1,5 @@
 #include "Playground/Host/DesktopHost.h"
+#include "Playground/Platform/BuildTargetConfig.h"
 #include "Playground/Runtime/RuntimePlatform.h"
 
 #if defined(_WIN32)
@@ -35,7 +36,8 @@ bool onStart(void* opaque, PlaygroundDesktopHost* host)
 
     context.platform = std::make_unique<playground::runtime::RuntimePlatform>(
         context.installRoot, context.externalRoot,
-        playgroundDesktopHostGetGLProcAddress);
+        playgroundDesktopHostGetGLProcAddress,
+        PLAYGROUND_APP_INTEGRITY_DATABASE_URI);
     CPFInterface& interface = CPFInterface::getInstance();
     interface.setPlatformRequest(context.platform.get());
     if(!context.platform->init() || !GameSetup()) {

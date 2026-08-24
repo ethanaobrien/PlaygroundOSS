@@ -4,9 +4,11 @@ pkg_check_modules(PLAYGROUND_SWITCH_MBEDCRYPTO REQUIRED IMPORTED_TARGET
 
 add_library(playground_switch_runtime STATIC
     src/SwitchAlbum.cpp
+    src/SwitchPath.cpp
     src/SwitchStorage.cpp
     src/SwitchHash.cpp
     src/SwitchNetwork.cpp
+    src/SwitchNotifications.cpp
     src/SwitchSqlite.cpp)
 add_library(Playground::SwitchRuntime ALIAS playground_switch_runtime)
 target_compile_features(playground_switch_runtime PUBLIC cxx_std_17)

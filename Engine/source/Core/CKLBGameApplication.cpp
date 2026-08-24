@@ -84,6 +84,7 @@ CKLBGameApplication::CKLBGameApplication()
 , m_freezeOnNextFrame(false)
 , m_outStream       (NULL)
 , m_useDefaultDB    (false)
+, m_defaultDatabaseUri(NULL)
 , m_useDefaultFont  (true)
 , m_languageFolder  (NULL)
 , m_stringCallback  (NULL)
@@ -97,6 +98,7 @@ CKLBGameApplication::~CKLBGameApplication()
 	if(m_bootFile ) KLBDELETEA(m_bootFile);	// 2012.12.12  finidhGame内でコメントアウトした物をここへ移動
 	if(m_languageFolder) KLBDELETEA(m_languageFolder);
 	if(m_stringCallback) KLBDELETEA(m_stringCallback);
+	KLBDELETEA(m_defaultDatabaseUri);
 #if defined (DEBUG_MEMORY)
 	CTracker::End();
 #endif
@@ -168,6 +170,22 @@ CKLBGameApplication::resumeUITasks(CKLBNode* node)
 	for (CKLBNode* child = node->getChild(); child; child = child->getBrother()) {
 		resumeUITasks(child);
 	}
+}
+
+bool
+CKLBGameApplication::setDefaultDatabaseUri(const char *uri)
+{
+	char *replacement = NULL;
+	if (uri && uri[0]) {
+		const size_t length = strlen(uri);
+		replacement = KLBNEWA(char, length + 1);
+		if (!replacement)
+			return false;
+		memcpy(replacement, uri, length + 1);
+	}
+	KLBDELETEA(m_defaultDatabaseUri);
+	m_defaultDatabaseUri = replacement;
+	return true;
 }
 
 void
@@ -316,7 +334,12 @@ CKLBGameApplication::initGame()
 	if (res) {  res &= CKLBHTTPInterface::initHTTPLib(); }
 	if (res) {  res &= NetworkManager::startNetworkManager(); }
 
-	if (res) {  res &= CKLBDatabase::getInstance().init(m_useDefaultDB ? "file://install/gamedb.db" : NULL,SQLITE_OPEN_READONLY); }
+	if (res && m_useDefaultDB && !m_defaultDatabaseUri) {
+		CPFInterface::getInstance().platform().logging(
+			"ENGINE_USE_DEFAULTDB requires an application-supplied database URI");
+		res = false;
+	}
+	if (res) {  res &= CKLBDatabase::getInstance().init(m_useDefaultDB ? m_defaultDatabaseUri : NULL,SQLITE_OPEN_READONLY); }
 	if (res) {  res &= CKLBScriptEnv::getInstance().setupScriptEnv(); }
 	// Init database
 	if (res) {	res &= CKLBLanguageDatabase::getInstance().init();	}

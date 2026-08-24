@@ -1,5 +1,5 @@
 #include "Playground/Switch/StorageProvision.h"
-#include "Playground/Switch/SwitchSqlite.h"
+#include "Playground/Switch/SwitchStorage.h"
 
 #include <cassert>
 #include <cstdint>
@@ -30,21 +30,6 @@ playground::switch_runtime::StorageProvisionOutcome run(
 } // namespace
 
 int main() {
-  using playground::switch_runtime::selectSwitchDatabaseVfs;
-  assert(selectSwitchDatabaseVfs("asset://db/game.db_",
-                                 "pgcache:/content/db/game.db_", false) ==
-         nullptr);
-  assert(selectSwitchDatabaseVfs("file://install/db/game.db_",
-                                 "pgcache:/application/db/game.db_", true) ==
-         nullptr);
-  assert(std::string(
-             selectSwitchDatabaseVfs("file://external/unit_list.db_",
-                                     "pgcache:/content/unit_list.db_", false)) ==
-         "playground-switch-save-commit");
-  assert(std::string(selectSwitchDatabaseVfs(
-             "asset://db/missing.db_", nullptr, false)) ==
-         "playground-switch-save-commit");
-
   std::string events;
   auto outcome = run({0}, 99, events);
   assert(outcome.mounted && !outcome.creationAttempted && events == "M");

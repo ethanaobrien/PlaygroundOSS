@@ -30,6 +30,19 @@ enum {
 	POLYGON_POINTS_PER_BLOCK = 510
 };
 
+u32 packRenderColor(u32 rgb, u32 alpha) {
+	// CKLBDynSprite consumes this word as four bytes in RGBA order. Building
+	// an ABGR integer only happens to produce those bytes on little-endian
+	// CPUs; Wii U is big-endian.
+	u32 packed;
+	u8* bytes = reinterpret_cast<u8*>(&packed);
+	bytes[0] = static_cast<u8>(rgb >> 16);
+	bytes[1] = static_cast<u8>(rgb >> 8);
+	bytes[2] = static_cast<u8>(rgb);
+	bytes[3] = static_cast<u8>(alpha);
+	return packed;
+}
+
 struct PolygonPointBlock {
 	PolygonPointBlock()
 	: next(NULL)
@@ -381,10 +394,7 @@ CKLBUIPolygon::commandUI(CLuaState& lua, int argc, int cmd)
 			if(point->client_data.polygon.has_color) {
 				u32 rgb = static_cast<u32>(lua.getInt(5));
 				u32 alpha = static_cast<u32>(lua.getInt(6));
-				color = ((rgb & 0x00ff0000) >> 16)
-				      | ((rgb & 0x000000ff) << 16)
-				      | (rgb & 0xff00ff00)
-				      | (alpha << 24);
+					color = packRenderColor(rgb, alpha);
 			}
 			point->client_data.polygon.color = color;
 			builder->m_contours[
@@ -404,10 +414,7 @@ CKLBUIPolygon::commandUI(CLuaState& lua, int argc, int cmd)
 			if(alpha > 255) {
 				alpha = 255;
 			}
-			u32 color = ((rgb & 0x00ff0000) >> 16)
-			          | ((rgb & 0x000000ff) << 16)
-			          | (rgb & 0x0000ff00)
-			          | (alpha << 24);
+				u32 color = packRenderColor(rgb, alpha);
 
 			std::vector<u16> indices;
 			m_geometry.vertexCount = 0;

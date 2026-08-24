@@ -505,14 +505,22 @@ bool KLBOpenSLNewEngine::init() {
 }
 
 void KLBOpenSLNewEngine::shutdown() {
+	#if defined(__SWITCH__)
+	// Stop and join audout first. No platform callback can then race teardown,
+	// including while the applet is suspended and audout cannot acknowledge the
+	// legacy workerWaiting handshake.
+	shutdownOpenSLPlatform(this);
+	#endif
 	if (m_workerThread) {
 		m_workerEnabled = false;
 		while (!m_workerStopped) {
 		}
+		#if !defined(__SWITCH__)
 		while (!m_workerWaiting) {
 		}
 		while (m_workerAcknowledged) {
 		}
+		#endif
 		CPFInterface::getInstance().platform().deleteThread(m_workerThread);
 		m_workerThread = NULL;
 
@@ -531,7 +539,9 @@ void KLBOpenSLNewEngine::shutdown() {
 		m_codecs[i] = NULL;
 	}
 
+	#if !defined(__SWITCH__)
 	shutdownOpenSLPlatform(this);
+	#endif
 	terminate();
 }
 

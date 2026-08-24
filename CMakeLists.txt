@@ -10,6 +10,8 @@ set(PLAYGROUND_WEB_APP_ASSETS_METADATA_URL "AppAssets.metadata" CACHE STRING
     "URL of AppAssets integrity metadata fetched by the web build")
 set(PLAYGROUND_WEB_APP_ASSETS_METADATA "" CACHE FILEPATH
     "AppAssets metadata packaged with the web build")
+set(PLAYGROUND_APP_INTEGRITY_DATABASE_URI "" CACHE STRING
+    "Game-owned database URI hashed by the legacy device-integrity protocol")
 set(PLAYGROUND_SWITCH_ICON_JPEG "" CACHE FILEPATH
     "Path to a 256x256 JPEG used by installed Switch package staging")
 set(PLAYGROUND_SWITCH_TITLE_ID "0x0100F59153491000" CACHE STRING
@@ -24,7 +26,6 @@ set(PLAYGROUND_SWITCH_CACHE_JOURNAL_SIZE "0x04000000" CACHE STRING
     "CacheStorage journal size")
 set(PLAYGROUND_SWITCH_CACHE_MAX_SIZE "0x400000000" CACHE STRING
     "Maximum combined CacheStorage data and journal size")
-
 include(GNUInstallDirs)
 include(CTest)
 include(cmake/PlaygroundPlatform.cmake)
@@ -66,10 +67,21 @@ option(
     ${_playground_switch_host_default}
 )
 
+set(_playground_wiiu_host_default OFF)
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu)
+    set(_playground_wiiu_host_default ON)
+endif()
+option(
+    PLAYGROUND_BUILD_WIIU_HOST
+    "Build the Nintendo Wii U/WUT host"
+    ${_playground_wiiu_host_default}
+)
+
 set(_playground_engine_runtime_default OFF)
 if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux
    OR PLAYGROUND_TARGET_PLATFORM STREQUAL windows
-   OR PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
+   OR PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten
+   OR PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu)
     set(_playground_engine_runtime_default ON)
 endif()
 option(
@@ -80,11 +92,19 @@ option(
 
 add_subdirectory(Engine/modern/platform)
 
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu)
+    add_compile_options(
+        "-include${PROJECT_SOURCE_DIR}/Engine/modern/platform/include/Playground/Platform/WiiUCompilerWorkarounds.h")
+    include(cmake/PlaygroundWiiUANGLE.cmake)
+    include(cmake/PlaygroundWiiUFFmpeg.cmake)
+endif()
+
 # The generic archive bootstrap is consumed by the Switch host and exercised
 # by native host tests.  Android keeps its established Java/package bootstrap
 # and does not link this library, so do not compile a second copy of legacy
 # minizip into cross-ABI contract-only builds.
 if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch
+   OR PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu
    OR PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten
    OR PLAYGROUND_PLATFORM_CAN_RUN_HOST_TOOLS)
     add_subdirectory(Engine/modern/bootstrap)
@@ -119,6 +139,14 @@ if(PLAYGROUND_BUILD_SWITCH_HOST)
             "PLAYGROUND_BUILD_SWITCH_HOST requires the libnx Switch toolchain")
     endif()
     add_subdirectory(Engine/modern/host/switch)
+endif()
+
+if(PLAYGROUND_BUILD_WIIU_HOST)
+    if(NOT PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu)
+        message(FATAL_ERROR
+            "PLAYGROUND_BUILD_WIIU_HOST requires the WUT Wii U toolchain")
+    endif()
+    add_subdirectory(Engine/modern/host/wiiu)
 endif()
 
 message(STATUS "Playground target platform: ${PLAYGROUND_TARGET_PLATFORM}")

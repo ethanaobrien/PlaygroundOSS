@@ -13,6 +13,8 @@ struct SystemVersion {
 };
 
 SystemVersion systemVersion();
+const char *systemLanguageCode();
+const char *systemCountryCode();
 bool processMemory(std::uint64_t &used, std::uint64_t &total);
 bool setAutoSleepDisabled(bool disabled);
 bool showWebPage(const char *url);

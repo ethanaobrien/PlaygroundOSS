@@ -30,6 +30,7 @@ struct PlaygroundSwitchHost {
   EGLSurface surface;
   EGLConfig eglConfig;
   PadState pad;
+  bool padConnected;
   PlaygroundTouch touches[PLAYGROUND_MAX_TOUCHES];
   float controllerX;
   float controllerY;
@@ -288,6 +289,18 @@ static int touchSlot(PlaygroundSwitchHost *host, uint32_t id, bool create) {
 
 static void pumpInput(PlaygroundSwitchHost *host) {
   padUpdate(&host->pad);
+  const bool connected = padIsConnected(&host->pad);
+  if (!connected && host->padConnected && host->controllerPointerDown) {
+    // A disconnected controller does not have to produce an A-button release.
+    // Cancel the emulated pointer explicitly so the engine never retains a
+    // pressed touch across controller removal/reconnection.
+    if (host->callbacks.onPointer)
+      host->callbacks.onPointer(host->callbackContext, host, 0,
+                                PLAYGROUND_SWITCH_POINTER_CANCEL,
+                                host->controllerX, host->controllerY);
+    host->controllerPointerDown = false;
+  }
+  host->padConnected = connected;
   const u64 pressed = padGetButtonsDown(&host->pad);
   const u64 released = padGetButtonsUp(&host->pad);
   const u64 held = padGetButtons(&host->pad);

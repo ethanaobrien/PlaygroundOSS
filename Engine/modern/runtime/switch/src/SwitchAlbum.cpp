@@ -80,9 +80,24 @@ bool savePngToAlbum(const std::string &path, std::string &error) {
     error = resultError("capssuInitialize", result);
     return false;
   }
-  result = capssuSaveScreenShot(output.data(), output.size(),
-                                AlbumReportOption_Enable,
-                                AlbumImageOrientation_Unknown0, nullptr);
+  if (envIsNso() && hosversionAtLeast(6, 0, 0)) {
+    AccountUid user{};
+    result = accountGetPreselectedUser(&user);
+    if (R_SUCCEEDED(result) && accountUidIsValid(&user)) {
+      // The title is launched with a required, locked account and its durable
+      // state is owned by that account. Associate application-created album
+      // images with the same user instead of publishing an unowned entry.
+      result = capssuSaveScreenShotWithUserIds(
+          output.data(), output.size(), AlbumReportOption_Enable,
+          AlbumImageOrientation_Unknown0, &user, 1, nullptr);
+    } else if (R_SUCCEEDED(result)) {
+      result = MAKERESULT(Module_Libnx, LibnxError_BadInput);
+    }
+  } else {
+    result = capssuSaveScreenShot(output.data(), output.size(),
+                                  AlbumReportOption_Enable,
+                                  AlbumImageOrientation_Unknown0, nullptr);
+  }
   capssuExit();
   if (R_FAILED(result)) {
     error = resultError("capssuSaveScreenShot", result);

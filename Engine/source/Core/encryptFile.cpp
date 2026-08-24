@@ -16,9 +16,16 @@
 // ---------------------------------------------------------------
 #include <string.h>
 #include "encryptFile.h"
+
 #include "CKLBLuaEnv.h"
 
 namespace NMAsset {
+	#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && \
+		__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+	#define PLAYGROUND_ENCRYPT_BIG_ENDIAN 1
+	#else
+	#define PLAYGROUND_ENCRYPT_BIG_ENDIAN 0
+	#endif
 	typedef void (CDecryptBaseClass::*DecryptRoutine)(void*, u32);
 	typedef void (CDecryptBaseClass::*PositionRoutine)(u32);
 	typedef void (*InitializerRoutine)(CDecryptBaseClass*, const u8*, const char*);
@@ -605,6 +612,22 @@ namespace NMAsset {
 		return (value << amount) | (value >> (32 - amount));
 	}
 
+#if PLAYGROUND_ENCRYPT_BIG_ENDIAN
+	static u32 loadLittleEndianWord(const u8* bytes) {
+		return static_cast<u32>(bytes[0])
+			| (static_cast<u32>(bytes[1]) << 8)
+			| (static_cast<u32>(bytes[2]) << 16)
+			| (static_cast<u32>(bytes[3]) << 24);
+	}
+
+	static void storeLittleEndianWord(u8* bytes, u32 value) {
+		bytes[0] = static_cast<u8>(value);
+		bytes[1] = static_cast<u8>(value >> 8);
+		bytes[2] = static_cast<u8>(value >> 16);
+		bytes[3] = static_cast<u8>(value >> 24);
+	}
+#endif
+
 	/*!
 	    @brief  MD5 digest of the fixed prefix followed by an asset file name.
 
@@ -668,11 +691,18 @@ namespace NMAsset {
 			paddedBytes + s_md5BlockBytes - messageLength);
 		memcpy(message, text, messageLength);
 		message[messageLength] = 0x80;
+#if PLAYGROUND_ENCRYPT_BIG_ENDIAN
+		storeLittleEndianWord(message + paddedBytes,
+			static_cast<u32>(messageBits));
+#else
 		*reinterpret_cast<u32*>(message + paddedBytes) = messageBits;
+#endif
 
 		for (s32 offset = 0; offset < paddedBytes; offset += s_md5BlockBytes) {
-			const u32* const words =
-				reinterpret_cast<const u32*>(message + offset);
+			const u8* const block = message + offset;
+#if !PLAYGROUND_ENCRYPT_BIG_ENDIAN
+			const u32* const words = reinterpret_cast<const u32*>(block);
+#endif
 			u32 a = state[0];
 			u32 b = state[1];
 			u32 c = state[2];
@@ -693,8 +723,14 @@ namespace NMAsset {
 					mixed = c ^ (b | ~d);
 					word = (7 * step) & 15;
 				}
+				const u32 messageWord =
+#if PLAYGROUND_ENCRYPT_BIG_ENDIAN
+					loadLittleEndianWord(block + word * sizeof(u32));
+#else
+					words[word];
+#endif
 				const u32 rotated = rotateLeft(
-					mixed + a + g_md5RoundConstants[step] + words[word],
+					mixed + a + g_md5RoundConstants[step] + messageWord,
 					shiftAmounts[step]);
 				a = d;
 				d = c;

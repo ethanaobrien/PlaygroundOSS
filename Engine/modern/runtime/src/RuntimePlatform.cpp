@@ -17,7 +17,17 @@
 #if defined(__SWITCH__)
 #include "Playground/Switch/SwitchAlbum.h"
 #include "Playground/Switch/SwitchNetwork.h"
+#include "Playground/Switch/SwitchStorage.h"
 #include "Playground/Switch/SwitchSystem.h"
+#elif defined(__WIIU__)
+#include "Playground/Host/WiiUHost.h"
+#include "Playground/WiiU/WiiUPath.h"
+#include <coreinit/debug.h>
+#include <coreinit/energysaver.h>
+#include <coreinit/memexpheap.h>
+#include <coreinit/memheap.h>
+#include <coreinit/memory.h>
+#include <sysapp/switch.h>
 #else
 #include <SDL3/SDL_clipboard.h>
 #include <SDL3/SDL_cpuinfo.h>
@@ -39,6 +49,7 @@
 #include <map>
 #include <mutex>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -52,10 +63,12 @@
 #include <sys/stat.h>
 #endif
 
-#if defined(__SWITCH__)
+#if defined(__SWITCH__) || defined(__WIIU__)
 #include <pthread.h>
+#include <unistd.h>
 #elif defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+#include <io.h>
 #include <psapi.h>
 #include <windows.h>
 #else
@@ -94,6 +107,13 @@ private:
 
 namespace {
 
+bool uriUsesExplicitStateRoot(const char *uri) {
+  if (!uri)
+    return false;
+  constexpr const char *statePrefix = "file://state/";
+  return std::strncmp(uri, statePrefix, std::strlen(statePrefix)) == 0;
+}
+
 template <class T> void copyText(const T &text, char *buffer, int size) {
   if (!buffer || size <= 0)
     return;
@@ -125,6 +145,11 @@ DesktopHostInfo getDesktopHostInfo() {
                    std::to_string(version.micro);
   result.machine = "aarch64";
   result.hostname = "nintendo-switch";
+#elif defined(__WIIU__)
+  result.system = "CafeOS";
+  result.release = "Wii U";
+  result.machine = "powerpc";
+  result.hostname = "nintendo-wiiu";
 #elif defined(_WIN32)
   result.system = "Windows";
   OSVERSIONINFOW version{};
@@ -184,7 +209,7 @@ DesktopHostInfo getDesktopHostInfo() {
 }
 
 std::string getExecutablePath() {
-#if defined(__SWITCH__)
+#if defined(__SWITCH__) || defined(__WIIU__)
   // Horizon does not expose a stable filesystem path for an installed NSO.
   // The package identity is covered by NACP/NPDM and the content archive.
   return {};
@@ -212,7 +237,7 @@ std::filesystem::path cookieStoragePath(const std::string &stateRoot) {
 }
 
 void restrictStateFile(const std::filesystem::path &path) {
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__SWITCH__) && !defined(__WIIU__)
   chmod(path.c_str(), S_IRUSR | S_IWUSR);
 #else
   (void)path;
@@ -335,7 +360,11 @@ public:
     if (m_file) {
       const bool closed = std::fclose(m_file) == 0;
       m_file = nullptr;
-      if ((!closed || (m_commit && !m_commit())) && !m_failed)
+      if (!closed)
+        m_failed = true;
+      // Never publish a partial stream. Transactional mounted filesystems
+      // commit only after the complete file has closed successfully.
+      if (!m_failed && m_commit && !m_commit())
         m_failed = true;
     }
   }
@@ -408,11 +437,14 @@ public:
     std::filesystem::create_directories(
         std::filesystem::path(path).parent_path(), error);
     m_file = error ? nullptr : std::fopen(path.c_str(), "wb");
-    if (!m_file)
+    if (!m_file) {
+#if !defined(__WIIU__)
       std::fprintf(stderr,
                    "asset download: cannot open temporary file %s: %s\n",
                    m_path.c_str(),
                    error ? error.message().c_str() : std::strerror(errno));
+#endif
+    }
   }
   ~DesktopTmpFile() override { closeTmp(); }
   size_t writeTmp(void *p, size_t n) override {
@@ -420,11 +452,14 @@ public:
       return 0;
     const size_t written = std::fwrite(p, 1, n, m_file);
     m_bytesWritten += written;
-    if (written != n)
+    if (written != n) {
+#if !defined(__WIIU__)
       std::fprintf(stderr,
                    "asset download: short write to %s: requested=%zu "
                    "written=%zu error=%s\n",
                    m_path.c_str(), n, written, std::strerror(errno));
+#endif
+    }
     return written;
   }
   int closeTmp() override {
@@ -434,13 +469,16 @@ public:
     m_file = nullptr;
     if (!r && m_commit && !m_commit())
       r = -1;
-    const double seconds = std::chrono::duration<double>(
-                               std::chrono::steady_clock::now() - m_started)
-                               .count();
+#if !defined(__WIIU__)
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                     m_started)
+            .count();
     std::fprintf(stderr,
                  "asset download write: path=%s bytes=%zu elapsed=%.3fs "
                  "result=%d\n",
                  m_path.c_str(), m_bytesWritten, seconds, r);
+#endif
     return r;
   }
   bool ready() const { return m_file != nullptr; }
@@ -468,6 +506,20 @@ std::string withSeparator(std::string path) {
   if (!path.empty() && path.back() != '/' && path.back() != '\\')
     path.push_back('/');
   return path;
+}
+
+bool pathUsesRoot(const std::string &path, const std::string &root) {
+  if (path.empty() || root.empty())
+    return false;
+  if (path == root)
+    return true;
+  if (path.size() <= root.size() || path.compare(0, root.size(), root) != 0)
+    return false;
+  // RuntimePlatform normalizes its roots with a trailing separator. Keep the
+  // boundary check explicit as this helper is also used for mapped native
+  // paths, where a lexical prefix is not sufficient ownership evidence.
+  return root.back() == '/' || root.back() == '\\' ||
+         path[root.size()] == '/' || path[root.size()] == '\\';
 }
 
 std::string joinUriPath(const std::string &root, const std::string &relative) {
@@ -721,20 +773,30 @@ char *DesktopScriptRegistry::createHeader() {
 
 RuntimePlatform::RuntimePlatform(std::string installRoot,
                                  std::string contentRoot,
-                                 GLProcResolver resolver)
+                                 GLProcResolver resolver,
+                                 std::string integrityDatabaseUri)
     : RuntimePlatform(std::move(installRoot), contentRoot, contentRoot,
-                      resolver) {}
+                      resolver, {}, {}, {}, {},
+                      std::move(integrityDatabaseUri)) {}
 
 RuntimePlatform::RuntimePlatform(std::string installRoot,
                                  std::string contentRoot, std::string stateRoot,
                                  GLProcResolver resolver,
                                  StorageCommit commitState,
-                                 StorageCommit commitContent)
+                                 StorageCommit commitContent,
+                                 PathMapper pathMapper,
+                                 StorageRemove storageRemove,
+                                 std::string integrityDatabaseUri,
+                                 StorageList storageList)
     : m_installRoot(withSeparator(std::move(installRoot))),
       m_contentRoot(withSeparator(std::move(contentRoot))),
       m_stateRoot(withSeparator(std::move(stateRoot))),
+      m_integrityDatabaseUri(std::move(integrityDatabaseUri)),
       m_commitState(std::move(commitState)),
-      m_commitContent(std::move(commitContent)), m_glResolver(resolver) {
+      m_commitContent(std::move(commitContent)),
+      m_pathMapper(std::move(pathMapper)),
+      m_storageRemove(std::move(storageRemove)),
+      m_storageList(std::move(storageList)), m_glResolver(resolver) {
   std::error_code error;
   std::filesystem::create_directories(m_contentRoot, error);
   if (!error)
@@ -743,18 +805,44 @@ RuntimePlatform::RuntimePlatform(std::string installRoot,
       std::filesystem::path(m_stateRoot) / ".playground-state", m_commitState);
   m_scriptRegistry = std::make_unique<DesktopScriptRegistry>();
   m_widgetManager = std::make_unique<RuntimeWidgetManager>(this);
-  m_deviceId = m_state->get("system/device-id");
-  if (m_deviceId.empty()) {
-    m_deviceId = randomIdentifier();
-    if (!m_deviceId.empty())
-      m_state->set("system/device-id", m_deviceId);
+  if (m_state->valid()) {
+    m_deviceId = m_state->get("system/device-id");
+    if (m_deviceId.empty()) {
+      m_deviceId = randomIdentifier();
+      if (m_deviceId.empty() ||
+          !m_state->set("system/device-id", m_deviceId))
+        m_deviceId.clear();
+    }
   }
 }
 RuntimePlatform::~RuntimePlatform() = default;
 
+bool RuntimePlatform::usesStateStorage(const char *uri) const {
+  if (uriUsesExplicitStateRoot(uri))
+    return true;
+  const std::string resolved = resolvePath(uri, nullptr);
+  return pathUsesRoot(resolved, m_stateRoot);
+}
+
 bool RuntimePlatform::init() {
+  m_initializationError.clear();
+  if (!m_state || !m_state->valid()) {
+    m_initializationError = "persistent state is corrupt or unreadable";
+    logging("platform %s", m_initializationError.c_str());
+    return false;
+  }
+  if (m_deviceId.empty()) {
+    m_initializationError =
+        "persistent device identity could not be loaded or committed";
+    logging("platform %s", m_initializationError.c_str());
+    return false;
+  }
   m_audio = getNewAudioImplementation();
-  return m_audio && m_audio->init();
+  if (!m_audio || !m_audio->init()) {
+    m_initializationError = "audio system initialization failed";
+    return false;
+  }
+  return true;
 }
 
 bool RuntimePlatform::useEncryption() { return true; }
@@ -767,22 +855,38 @@ void RuntimePlatform::validateEnvironment() {
   if (error)
     logging("platform content root is unavailable: %s (%s)",
             m_contentRoot.c_str(), error.message().c_str());
+  error.clear();
+  std::filesystem::create_directories(m_stateRoot, error);
+  if (error)
+    logging("platform state root is unavailable: %s (%s)",
+            m_stateRoot.c_str(), error.message().c_str());
 }
 void RuntimePlatform::detailedLogging(const char *file, const char *fn,
                                       int line, const char *fmt, ...) {
+#if defined(__WIIU__)
+  (void)file;
+  (void)fn;
+  (void)line;
+  (void)fmt;
+#else
   std::fprintf(stderr, "%s:%d %s: ", file, line, fn);
   va_list a;
   va_start(a, fmt);
   std::vfprintf(stderr, fmt, a);
   va_end(a);
   std::fputc('\n', stderr);
+#endif
 }
 void RuntimePlatform::logging(const char *fmt, ...) {
+#if defined(__WIIU__)
+  (void)fmt;
+#else
   va_list a;
   va_start(a, fmt);
   std::vfprintf(stderr, fmt, a);
   va_end(a);
   std::fputc('\n', stderr);
+#endif
 }
 void *RuntimePlatform::ifopen(const char *n, const char *m) {
   return std::fopen(n, m);
@@ -803,6 +907,20 @@ u32 RuntimePlatform::ifwrite(const void *p, u32 s, u32 n, void *f) {
 int RuntimePlatform::ifflush(void *f) {
   return std::fflush(static_cast<FILE *>(f));
 }
+int RuntimePlatform::ifsync(void *f) {
+  FILE *file = static_cast<FILE *>(f);
+  if (!file || std::fflush(file) != 0)
+    return -1;
+#if defined(_WIN32)
+  return _commit(_fileno(file));
+#elif defined(__EMSCRIPTEN__)
+  // WasmFS OPFS synchronous writes complete at the filesystem-operation
+  // boundary and do not expose a native fsync descriptor operation.
+  return 0;
+#else
+  return fsync(fileno(file));
+#endif
+}
 long RuntimePlatform::iftell(void *f) {
   return std::ftell(static_cast<FILE *>(f));
 }
@@ -814,15 +932,83 @@ bool RuntimePlatform::icreateEmptyFile(const char *n) {
   return true;
 }
 int RuntimePlatform::irename(const char *a, const char *b) {
+  std::lock_guard<std::mutex> mutationLock(m_storageMutationMutex);
   const auto started = std::chrono::steady_clock::now();
-  const bool stateSource = a && !std::strncmp(a, "file://state/", 13);
-  const bool stateDestination = b && !std::strncmp(b, "file://state/", 13);
+  const std::string source = resolvePath(a, nullptr);
+  const bool stateSource = pathUsesRoot(source, m_stateRoot);
+  std::string destination = resolvePath(b, nullptr);
+  constexpr const char *externalPrefix = "file://external/";
+  const std::size_t externalPrefixLength = std::strlen(externalPrefix);
+  const bool externalSource =
+      a && std::strncmp(a, externalPrefix, externalPrefixLength) == 0;
+  const bool externalDestination =
+      b && std::strncmp(b, externalPrefix, externalPrefixLength) == 0;
+  if (stateSource && externalSource && b &&
+      std::strncmp(b, externalPrefix, externalPrefixLength) == 0) {
+    // Renaming within the legacy unified namespace preserves the source
+    // layer, including when a lower-layer destination already exists. This
+    // makes account-state files behave like ordinary files even though
+    // SaveData and CacheStorage are separate Horizon filesystems.
+    const std::string stateUri =
+        std::string("file://state/") + (b + externalPrefixLength);
+    destination = resolvePath(stateUri.c_str(), nullptr);
+  }
+  const bool stateDestination = pathUsesRoot(destination, m_stateRoot);
   if (stateSource != stateDestination) {
     errno = EXDEV;
     return -1;
   }
-  const std::string source = resolvePath(a, nullptr);
-  const std::string destination = resolvePath(b, nullptr);
+  // A platform path codec may represent one logical component with private
+  // intermediate directories. Ensure the destination representation exists
+  // before the ordinary atomic leaf rename; this is inert for native paths
+  // whose parent already exists.
+  std::error_code destinationError;
+  std::filesystem::create_directories(
+      std::filesystem::path(destination).parent_path(), destinationError);
+  if (destinationError) {
+    errno = EIO;
+    return -1;
+  }
+  if (stateSource && externalSource && externalDestination &&
+      m_contentRoot != m_stateRoot) {
+    // A copy-up leaves the replaceable source underneath the account copy.
+    // Remove and commit both lower names before publishing the upper rename.
+    // If CacheStorage cleanup fails, the caller receives failure while the
+    // authoritative SaveData source is still present at its original name.
+    // The inverse order reported failure after the logical rename was already
+    // durable and could expose the stale lower source on the next lookup.
+    const auto physical = [this](const std::string &value) {
+      return m_pathMapper
+                 ? m_pathMapper(std::filesystem::path(value))
+                 : std::filesystem::path(value);
+    };
+    const std::filesystem::path lowerSource = physical(
+        joinUriPath(m_contentRoot, a + externalPrefixLength));
+    const std::filesystem::path lowerDestination = physical(
+        joinUriPath(m_contentRoot, b + externalPrefixLength));
+    std::string removalError;
+    bool removedLower = false;
+    const auto removeLower = [&](const std::filesystem::path &path) {
+      if (!std::filesystem::exists(path))
+        return true;
+      removedLower = true;
+      if (m_storageRemove)
+        return m_storageRemove(path, removalError);
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+      if (error)
+        removalError = error.message();
+      return !error;
+    };
+    const bool cleaned = removeLower(lowerSource) &&
+                         removeLower(lowerDestination);
+    if (!cleaned ||
+        (removedLower && m_commitContent && !m_commitContent())) {
+      logging("external overlay cleanup failed before rename: %s",
+              !cleaned ? removalError.c_str() : "content commit failed");
+      return -1;
+    }
+  }
 #if defined(_WIN32)
   const bool moved =
       MoveFileExA(source.c_str(), destination.c_str(),
@@ -836,16 +1022,21 @@ int RuntimePlatform::irename(const char *a, const char *b) {
                  static_cast<unsigned long>(moveError));
 #else
   const int result = std::rename(source.c_str(), destination.c_str());
+#if !defined(__WIIU__)
   if (result)
     std::fprintf(stderr, "asset download: cannot publish %s -> %s: %s\n",
                  source.c_str(), destination.c_str(), std::strerror(errno));
 #endif
+#endif
   StorageCommit &commit = stateDestination ? m_commitState : m_commitContent;
   if (!result && commit && !commit()) {
+#if !defined(__WIIU__)
     std::fprintf(stderr, "asset download: storage commit failed after %s\n",
                  destination.c_str());
+#endif
     return -1;
   }
+#if !defined(__WIIU__)
   if (!result) {
     const double seconds = std::chrono::duration<double>(
                                std::chrono::steady_clock::now() - started)
@@ -855,11 +1046,15 @@ int RuntimePlatform::irename(const char *a, const char *b) {
                  "elapsed=%.3fs\n",
                  source.c_str(), destination.c_str(), seconds);
   }
+#endif
   return result;
 }
-const char *RuntimePlatform::getBundleVersion() { return "9.11-desktop"; }
+// The reconstructed clients run the 9.11 Android data/API contract even when
+// their native host is not Android. These values are application identity,
+// not a host-platform user-agent.
+const char *RuntimePlatform::getBundleVersion() { return "9.11"; }
 const char *RuntimePlatform::getBundleId() {
-  return "klb.android.lovelive.desktop";
+  return "klb.android.lovelive";
 }
 s64 RuntimePlatform::nanotime() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -874,6 +1069,11 @@ std::string RuntimePlatform::resolvePath(const char *input,
   if (!input)
     return {};
   std::string path(input);
+  const auto physical = [this](std::string value) {
+    return m_pathMapper
+               ? m_pathMapper(std::filesystem::path(value)).string()
+               : value;
+  };
   bool matched = false;
   auto map = [&](const char *prefix, const std::string &root,
                  bool ro) -> std::string {
@@ -882,14 +1082,20 @@ std::string RuntimePlatform::resolvePath(const char *input,
       matched = true;
       if (readOnly)
         *readOnly = ro;
-      return joinUriPath(root, path.substr(n));
+      return physical(joinUriPath(root, path.substr(n)));
     }
     return {};
   };
-  auto mapped = map("file://external/", m_contentRoot, false);
-  if (matched)
-    return mapped;
-  mapped = map("file://state/", m_stateRoot, false);
+  constexpr const char *externalPrefix = "file://external/";
+  const std::size_t externalPrefixLength = std::strlen(externalPrefix);
+  if (path.compare(0, externalPrefixLength, externalPrefix) == 0) {
+    const std::string relative = path.substr(externalPrefixLength);
+    const std::string state = physical(joinUriPath(m_stateRoot, relative));
+    if (!relative.empty() && !state.empty() && std::filesystem::exists(state))
+      return state;
+    return physical(joinUriPath(m_contentRoot, relative));
+  }
+  auto mapped = map("file://state/", m_stateRoot, false);
   if (matched)
     return mapped;
   mapped = map("file://install/", m_installRoot, true);
@@ -900,12 +1106,12 @@ std::string RuntimePlatform::resolvePath(const char *input,
     size_t n = std::strlen(prefix);
     if (path.compare(0, n, prefix) == 0) {
       std::string relative = path.substr(n);
-      std::string external = joinUriPath(m_contentRoot, relative);
+      std::string external = physical(joinUriPath(m_contentRoot, relative));
       if (external.empty())
         return {};
       if (std::filesystem::exists(external))
         return external;
-      std::string install = joinUriPath(m_installRoot, relative);
+      std::string install = physical(joinUriPath(m_installRoot, relative));
       if (install.empty() || !std::filesystem::exists(install))
         return {};
       if (readOnly)
@@ -913,7 +1119,108 @@ std::string RuntimePlatform::resolvePath(const char *input,
       return install;
     }
   }
-  return path;
+  return physical(path);
+}
+
+std::string RuntimePlatform::resolveDatabasePath(
+    const char *input, DatabaseOpenMode mode, bool *readOnly) {
+  if (!input) {
+    if (readOnly)
+      *readOnly = false;
+#if defined(__SWITCH__)
+    // SQLite's null filename asks the Unix VFS to create a private temporary
+    // file. Horizon does not provide that Unix temporary-file contract. Keep
+    // the platform substitution here, behind getDatabasePath(), rather than
+    // teaching either generic database frontend about libnx.
+    return ":memory:";
+#else
+    return {};
+#endif
+  }
+  std::string resolved;
+  constexpr const char *externalPrefix = "file://external/";
+  const std::size_t externalPrefixLength = std::strlen(externalPrefix);
+  const std::string logical(input);
+  if (logical.compare(0, externalPrefixLength, externalPrefix) == 0 &&
+      mode != DatabaseOpenMode::ReadOnly) {
+    // The legacy external namespace represented one app-private filesystem on
+    // mobile platforms. On hosts which separate account SaveData from
+    // replaceable content, explicit database write intent selects SaveData.
+    // A later read observes the same object through resolvePath's state-first
+    // overlay. No game identity, filename, extension, or directory shape is
+    // involved in this decision.
+    if (readOnly)
+      *readOnly = false;
+    const std::string relative = logical.substr(externalPrefixLength);
+    const auto physical = [this](const std::string &value) {
+      return m_pathMapper
+                 ? m_pathMapper(std::filesystem::path(value)).string()
+                 : value;
+    };
+    resolved = physical(joinUriPath(m_stateRoot, relative));
+    const std::string content = physical(joinUriPath(m_contentRoot, relative));
+    std::lock_guard<std::mutex> mutationLock(m_storageMutationMutex);
+    if (!resolved.empty() && !content.empty() &&
+        !std::filesystem::exists(resolved) &&
+        std::filesystem::is_regular_file(content)) {
+      // The external URI historically named one app-private filesystem. A
+      // writable open of a lower-layer database therefore needs an ordinary
+      // copy-up before mutation, just like a union filesystem. Copy encrypted
+      // bytes verbatim; the engine VFS continues to own page decryption.
+      std::error_code error;
+      const std::filesystem::path destination(resolved);
+      std::filesystem::create_directories(destination.parent_path(), error);
+
+      // Copying directly to the visible upper-layer name lets an unrelated
+      // SaveData commit persist a partial object. Publish through a unique
+      // same-directory temporary file instead: copy_file closes it before the
+      // atomic rename, and only the complete name is then committed. The
+      // temporary basename is intentionally unrelated to the database name;
+      // no database identity or encryption behavior is inferred here.
+      std::filesystem::path temporary;
+      for (unsigned attempt = 0; !error && attempt < 8; ++attempt) {
+        const std::string identifier = randomIdentifier();
+        if (identifier.empty()) {
+          error = std::make_error_code(std::errc::io_error);
+          break;
+        }
+        temporary = destination.parent_path() /
+                    (".pg-copyup-" + identifier + ".tmp");
+        if (!std::filesystem::exists(temporary, error))
+          break;
+        temporary.clear();
+      }
+      if (!error && temporary.empty())
+        error = std::make_error_code(std::errc::file_exists);
+      if (!error)
+        std::filesystem::copy_file(content, temporary,
+                                   std::filesystem::copy_options::none, error);
+      if (!error)
+        std::filesystem::rename(temporary, destination, error);
+
+      const std::string copyError = error ? error.message() : std::string();
+      const bool committed = !error && (!m_commitState || m_commitState());
+      if (error || !committed) {
+        std::error_code cleanupError;
+        if (!temporary.empty())
+          std::filesystem::remove(temporary, cleanupError);
+        cleanupError.clear();
+        std::filesystem::remove(destination, cleanupError);
+        // If publication reached the final name but its archive commit failed,
+        // make the rollback durable when the device has recovered. Failure of
+        // this best-effort second commit still leaves no partial file in the
+        // mounted view and is reported as an open failure.
+        if (!error && m_commitState)
+          m_commitState();
+        logging("database copy-up failed for %s: %s", input,
+                error ? copyError.c_str() : "state commit failed");
+        return {};
+      }
+    }
+  } else {
+    resolved = resolvePath(input, readOnly);
+  }
+  return resolved;
 }
 IReadStream *RuntimePlatform::openReadStream(const char *n, bool decrypt,
                                              u32 mode) {
@@ -933,7 +1240,7 @@ IReadStream *RuntimePlatform::openWriteStream(const char *n, bool encrypt,
   const char *key = !std::strncmp(n, "file://", 7) ? n + 7 : n;
   return reinterpret_cast<IReadStream *>(new DesktopWriteStream(
       resolvePath(n, nullptr), key, encrypt,
-      !std::strncmp(n, "file://state/", 13) ? m_commitState : m_commitContent));
+      usesStateStorage(n) ? m_commitState : m_commitContent));
 }
 void RuntimePlatform::beforeAssertFunction(const char *function, bool) {
   logging("assert callback: %s", function ? function : "");
@@ -960,6 +1267,8 @@ char *RuntimePlatform::createRequestIdHeader() {
 void RuntimePlatform::copyToClipboard(const char *text) {
 #if defined(__SWITCH__)
   logging("clipboard unavailable on Nintendo Switch: %s", text ? text : "");
+#elif defined(__WIIU__)
+  logging("clipboard unavailable on Nintendo Wii U: %s", text ? text : "");
 #else
   if (!SDL_SetClipboardText(text ? text : ""))
     logging("clipboard write failed: %s", SDL_GetError());
@@ -971,6 +1280,15 @@ double RuntimePlatform::getUsedMemorySize() {
   std::uint64_t total = 0;
   return switch_runtime::processMemory(used, total) ? static_cast<double>(used)
                                                     : 0.0;
+#elif defined(__WIIU__)
+  MEMHeapHandle heap = MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM2);
+  if (!heap)
+    return 0.0;
+  const auto total = static_cast<std::uint64_t>(
+      reinterpret_cast<std::uintptr_t>(heap->dataEnd) -
+      reinterpret_cast<std::uintptr_t>(heap->dataStart));
+  const auto free = static_cast<std::uint64_t>(MEMGetTotalFreeSizeForExpHeap(heap));
+  return static_cast<double>(total > free ? total - free : 0);
 #elif defined(_WIN32)
   PROCESS_MEMORY_COUNTERS counters{};
   return GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))
@@ -993,6 +1311,9 @@ double RuntimePlatform::getFreeMemorySize() {
   if (!switch_runtime::processMemory(used, total))
     return 0.0;
   return static_cast<double>(total > used ? total - used : 0);
+#elif defined(__WIIU__)
+  MEMHeapHandle heap = MEMGetBaseHeapHandle(MEM_BASE_HEAP_MEM2);
+  return heap ? static_cast<double>(MEMGetTotalFreeSizeForExpHeap(heap)) : 0.0;
 #elif defined(_WIN32)
   MEMORYSTATUSEX status{};
   status.dwLength = sizeof(status);
@@ -1057,6 +1378,14 @@ void RuntimePlatform::setIdleTimerActivity(bool active) {
 #if defined(__SWITCH__)
   if (!switch_runtime::setAutoSleepDisabled(active))
     logging("failed to change Switch auto-sleep state");
+#elif defined(__WIIU__)
+  if (active) {
+    IMDisableAPD();
+    IMDisableDim();
+  } else {
+    IMEnableDim();
+    IMEnableAPD();
+  }
 #else
   if (active)
     SDL_DisableScreenSaver();
@@ -1066,9 +1395,8 @@ void RuntimePlatform::setIdleTimerActivity(bool active) {
 }
 ITmpFile *RuntimePlatform::openTmpFile(const char *p) {
   auto *f = new DesktopTmpFile(resolvePath(p, nullptr),
-                               p && !std::strncmp(p, "file://state/", 13)
-                                   ? m_commitState
-                                   : m_commitContent);
+                               usesStateStorage(p) ? m_commitState
+                                                   : m_commitContent);
   if (!f->ready()) {
     delete f;
     return nullptr;
@@ -1077,28 +1405,156 @@ ITmpFile *RuntimePlatform::openTmpFile(const char *p) {
 }
 int RuntimePlatform::removeTmpFile(const char *p) {
   int result = std::remove(resolvePath(p, nullptr).c_str());
-  StorageCommit &commit = p && !std::strncmp(p, "file://state/", 13)
-                              ? m_commitState
-                              : m_commitContent;
+  StorageCommit &commit =
+      usesStateStorage(p) ? m_commitState : m_commitContent;
   return !result && commit && !commit() ? -1 : result;
 }
 bool RuntimePlatform::removeFileOrFolder(const char *p) {
-  std::error_code e;
-  std::filesystem::remove_all(resolvePath(p, nullptr), e);
-  StorageCommit &commit = p && !std::strncmp(p, "file://state/", 13)
-                              ? m_commitState
-                              : m_commitContent;
-  return !e && (!commit || commit());
+  if (!p)
+    return false;
+  std::lock_guard<std::mutex> mutationLock(m_storageMutationMutex);
+  const auto removePhysical = [&](const std::filesystem::path &target) {
+    if (m_storageRemove) {
+      std::string error;
+      const bool removed = m_storageRemove(target, error);
+      if (!removed)
+        logging("storage removal failed for %s: %s", target.c_str(),
+                error.c_str());
+      return removed;
+    }
+    std::error_code error;
+    std::filesystem::remove_all(target, error);
+    return !error;
+  };
+
+  constexpr const char *externalPrefix = "file://external/";
+  const std::size_t externalPrefixLength = std::strlen(externalPrefix);
+  if (std::strncmp(p, externalPrefix, externalPrefixLength) == 0) {
+    const std::string relative(p + externalPrefixLength);
+    if (relative.empty()) {
+      logging("refusing to remove the mounted external-storage root");
+      return false;
+    }
+    const auto physical = [this](const std::string &value) {
+      return m_pathMapper
+                 ? m_pathMapper(std::filesystem::path(value))
+                 : std::filesystem::path(value);
+    };
+    const std::filesystem::path state =
+        physical(joinUriPath(m_stateRoot, relative));
+    const std::filesystem::path content =
+        physical(joinUriPath(m_contentRoot, relative));
+    if (state.empty() || content.empty())
+      return false;
+
+    const bool stateExists = std::filesystem::exists(state);
+    const bool contentExists = content != state && std::filesystem::exists(content);
+    if ((stateExists && !removePhysical(state)) ||
+        (contentExists && !removePhysical(content)))
+      return false;
+    if (stateExists && m_commitState && !m_commitState())
+      return false;
+    if (contentExists && m_commitContent && !m_commitContent())
+      return false;
+    return true;
+  }
+
+  const std::filesystem::path target = resolvePath(p, nullptr);
+  const bool removed = removePhysical(target);
+  StorageCommit &commit =
+      usesStateStorage(p) ? m_commitState : m_commitContent;
+  return removed && (!commit || commit());
+}
+bool RuntimePlatform::listFiles(const char *p,
+                                std::vector<std::string> &names) {
+  names.clear();
+  if (!p)
+    return false;
+
+  std::lock_guard<std::mutex> mutationLock(m_storageMutationMutex);
+  std::set<std::string> merged;
+  bool found = false;
+  bool listingFailed = false;
+  const auto collect = [&](const std::filesystem::path &directory) {
+    std::error_code error;
+    if (!std::filesystem::is_directory(directory, error))
+      return;
+    found = true;
+    if (m_storageList) {
+      std::vector<std::string> physicalNames;
+      std::string listError;
+      if (!m_storageList(directory, physicalNames, listError)) {
+        logging("storage listing failed for %s: %s", directory.c_str(),
+                listError.c_str());
+        listingFailed = true;
+        return;
+      }
+      merged.insert(physicalNames.begin(), physicalNames.end());
+      return;
+    }
+    for (std::filesystem::directory_iterator entry(directory, error), end;
+         !error && entry != end; entry.increment(error))
+      merged.insert(entry->path().filename().string());
+  };
+
+  constexpr const char *externalPrefix = "file://external/";
+  const std::size_t externalPrefixLength = std::strlen(externalPrefix);
+  if (std::strncmp(p, externalPrefix, externalPrefixLength) == 0) {
+    const std::string relative(p + externalPrefixLength);
+    const auto physical = [this](const std::string &value) {
+      return m_pathMapper
+                 ? m_pathMapper(std::filesystem::path(value))
+                 : std::filesystem::path(value);
+    };
+    collect(physical(joinUriPath(m_stateRoot, relative)));
+    collect(physical(joinUriPath(m_contentRoot, relative)));
+  } else {
+    collect(resolvePath(p, nullptr));
+  }
+
+  if (!found || listingFailed)
+    return false;
+  // The historical readdir-backed API exposed these entries, and existing
+  // scripts commonly filter them explicitly.
+  names.emplace_back(".");
+  names.emplace_back("..");
+  names.insert(names.end(), merged.begin(), merged.end());
+  return true;
 }
 void RuntimePlatform::excludePathFromBackup(const char *) {
   // Desktop save data is not managed by a mobile cloud-backup service.
 }
 u32 RuntimePlatform::getFreeSpaceExternalKB() {
+#if defined(__SWITCH__)
+  if (switch_runtime::isInstalledApplication()) {
+    std::uint64_t bytes = 0;
+    std::string error;
+    if (!switch_runtime::freeCacheStorageBytes(bytes, error)) {
+      logging("Switch free-space query failed: %s", error.c_str());
+      return 0;
+    }
+    return static_cast<u32>(
+        std::min<std::uint64_t>(bytes / 1024, UINT32_MAX));
+  }
+  // An NRO explicitly uses an SD development root, not title CacheStorage.
+  std::error_code e;
+  const auto s = std::filesystem::space(m_contentRoot, e);
+  return e ? 0
+           : static_cast<u32>(
+                 std::min<uintmax_t>(s.available / 1024, UINT32_MAX));
+#elif defined(__WIIU__)
+  std::uint64_t bytes = 0;
+  return playground::wiiu_runtime::freeStorageBytes(m_contentRoot, bytes)
+             ? static_cast<u32>(
+                   std::min<std::uint64_t>(bytes / 1024, UINT32_MAX))
+             : 0;
+#else
   std::error_code e;
   auto s = std::filesystem::space(m_contentRoot, e);
   return e ? 0
            : static_cast<u32>(
                  std::min<uintmax_t>(s.available / 1024, UINT32_MAX));
+#endif
 }
 u32 RuntimePlatform::getPhysicalMemKB() {
 #if defined(__SWITCH__)
@@ -1107,6 +1563,13 @@ u32 RuntimePlatform::getPhysicalMemKB() {
   return switch_runtime::processMemory(used, total)
              ? static_cast<u32>(std::min<u64>(total / 1024, UINT32_MAX))
              : 0;
+#elif defined(__WIIU__)
+  std::uint32_t address = 0;
+  std::uint32_t size = 0;
+  return OSGetMemBound(OS_MEM2, &address, &size)
+             ? 0
+             : static_cast<u32>(std::min<std::uint64_t>(size / 1024,
+                                                        UINT32_MAX));
 #else
   const int megabytes = SDL_GetSystemRAM();
   return megabytes <= 0
@@ -1120,29 +1583,39 @@ char *RuntimePlatform::getDeviceIntegrityInfo(const char *request) {
 
   std::map<std::string, std::string> properties;
   properties["ro.build.version.release"] = system.release;
+#if defined(__SWITCH__)
+  properties["ro.product.name"] = "Nintendo Switch";
+  properties["ro.product.manufacturer"] = "Nintendo";
+  properties["ro.product.brand"] = "Nintendo";
+  properties["ro.build.tags"] = "horizon-release";
+#else
   properties["ro.product.name"] = "PlaygroundOSS Desktop";
   properties["ro.product.manufacturer"] = "Community";
   properties["ro.product.brand"] = "PlaygroundOSS";
+  properties["ro.build.tags"] = "desktop-release";
+#endif
   properties["ro.product.device"] = system.hostname;
   properties["ro.product.model"] = system.machine;
   properties["ro.product.board"] = system.machine;
   properties["ro.build.fingerprint"] =
       system.system + "/" + system.release + "/" + system.machine;
-  properties["ro.build.tags"] = "desktop-release";
   properties["Hardware"] = system.machine;
   properties["basePath"] = m_installRoot;
   properties["adbEnabled"] = "false";
   properties["device_id"] = m_deviceId;
 
-  const std::string unitDatabase =
-      resolvePath("asset://db/unit/unit.db_", nullptr);
   char databaseHash[64]{};
+  const std::string integrityDatabase =
+      !m_integrityDatabaseUri.empty()
+          ? resolvePath(m_integrityDatabaseUri.c_str(), nullptr)
+          : std::string();
 #if defined(PLAYGROUND_WEB)
-  const std::string webDatabaseHash = sha1FileForWeb(unitDatabase);
+  const std::string webDatabaseHash = sha1FileForWeb(integrityDatabase);
   std::snprintf(databaseHash, sizeof(databaseHash), "%s",
                 webDatabaseHash.c_str());
 #else
-  CKLBUtility::sha1File(unitDatabase.c_str(), databaseHash, 40);
+  if (!integrityDatabase.empty())
+    CKLBUtility::sha1File(integrityDatabase.c_str(), databaseHash, 40);
 #endif
   properties["db_sha1"] = databaseHash[0] ? databaseHash : "NOT_FOUND";
 
@@ -1226,6 +1699,26 @@ const char *RuntimePlatform::getFullPath(const char *p, bool *ro) {
   std::memcpy(out, v.c_str(), v.size() + 1);
   return out;
 }
+const char *RuntimePlatform::getDatabasePath(const char *p,
+                                             DatabaseOpenMode mode,
+                                             bool *ro) {
+  std::string v = resolveDatabasePath(p, mode, ro);
+  if (v.empty())
+    return nullptr;
+  char *out = new char[v.size() + 1];
+  std::memcpy(out, v.c_str(), v.size() + 1);
+  return out;
+}
+bool RuntimePlatform::commitDatabasePath(const char *resolvedPath) {
+  if (!resolvedPath)
+    return true;
+  const std::string path(resolvedPath);
+  if (pathUsesRoot(path, m_stateRoot))
+    return !m_commitState || m_commitState();
+  if (pathUsesRoot(path, m_contentRoot))
+    return !m_commitContent || m_commitContent();
+  return true;
+}
 const char *RuntimePlatform::getPlatform() {
   static const std::string platform = [] {
     const DesktopHostInfo system = getDesktopHostInfo();
@@ -1248,12 +1741,26 @@ void *RuntimePlatform::getGLExtension(const char *n) {
 }
 const char *RuntimePlatform::getShaderExtension(int) { return ""; }
 bool RuntimePlatform::setFrameRate(int n) {
+#if defined(__SWITCH__)
+  // The Switch host is synchronized to the 60 Hz display and has no dynamic
+  // frame-pacing implementation. Match the original Android contract: do not
+  // claim that an arbitrary requested rate was applied.
+  (void)n;
+  return false;
+#else
   if (n <= 0)
     return false;
   m_frameRate = n;
   return true;
+#endif
 }
-int RuntimePlatform::getMaxFrameRate() { return 240; }
+int RuntimePlatform::getMaxFrameRate() {
+#if defined(__SWITCH__)
+  return 60;
+#else
+  return 240;
+#endif
+}
 IWidget *RuntimePlatform::createControl(IWidget::CONTROL type, int id,
                                         const char *caption, int x, int y,
                                         int width, int height, ...) {
@@ -1319,7 +1826,13 @@ bool RuntimePlatform::callApplication(APP_TYPE type, ...) {
     (void)va_arg(arguments, const char *);
     copyToClipboard(contents);
     va_end(arguments);
+#if defined(__SWITCH__)
+    // Horizon has no application clipboard API. Do not tell Lua that content
+    // was shared when the platform only logged it.
+    return false;
+#else
     return true;
+#endif
   }
   case APP_ATT: {
     const char *callback = va_arg(arguments, const char *);
@@ -1353,6 +1866,16 @@ bool RuntimePlatform::openExternalUrl(const char *url) {
   if (!shown)
     logging("Switch web applet failed");
   return shown;
+#elif defined(__WIIU__)
+  if (!url || !url[0])
+    return false;
+  SysAppBrowserArgs arguments{};
+  arguments.url = const_cast<char *>(url);
+  arguments.urlSize = static_cast<std::uint32_t>(std::strlen(url) + 1);
+  const int result = SYSSwitchToBrowserForViewer(&arguments);
+  if (result != 0)
+    logging("Wii U browser launch failed: %d", result);
+  return result == 0;
 #else
   return url && url[0] && SDL_OpenURL(url);
 #endif
@@ -1565,17 +2088,32 @@ bool RuntimePlatform::initNetwork() {
     logging("persistent cookie storage initialization failed");
     CurlObjectInternal::shutdownLibrary();
 #if defined(__SWITCH__)
-    switch_runtime::sharedSwitchNetwork().shutdown();
+    std::string rollbackError;
+    if (!switch_runtime::sharedSwitchNetwork().rollbackInitialization(
+            rollbackError))
+      logging("Switch network rollback failed: %s", rollbackError.c_str());
 #endif
     return false;
   }
 #if defined(__SWITCH__)
-  if (!initialized)
-    switch_runtime::sharedSwitchNetwork().shutdown();
+  if (!initialized) {
+    std::string rollbackError;
+    if (!switch_runtime::sharedSwitchNetwork().rollbackInitialization(
+            rollbackError))
+      logging("Switch network rollback failed: %s", rollbackError.c_str());
+  }
 #endif
   return initialized;
 }
 void RuntimePlatform::shutdownNetwork() {
+#if defined(__SWITCH__)
+  // A transfer owns both libcurl state and, for downloads, an open
+  // CacheStorage writer. Request cancellation and wait for every transfer
+  // lease before touching the process-wide cookie engine or curl globals.
+  // Reversing this order can run curl_global_cleanup beneath a worker and
+  // later unmount storage while its write callback is still active.
+  switch_runtime::sharedSwitchNetwork().shutdownAndWait();
+#endif
   bool changed = false;
   if (CurlObjectInternal::flushCookieStorage(&changed) && changed) {
     restrictStateFile(cookieStoragePath(m_stateRoot));
@@ -1583,9 +2121,6 @@ void RuntimePlatform::shutdownNetwork() {
       logging("cookie SaveData shutdown commit failed");
   }
   CurlObjectInternal::shutdownLibrary();
-#if defined(__SWITCH__)
-  switch_runtime::sharedSwitchNetwork().shutdown();
-#endif
 }
 CurlObjectInternal *RuntimePlatform::createNetworkOperation() {
   return CurlObjectInternal::create();
@@ -1671,12 +2206,26 @@ long RuntimePlatform::getNetworkHttpCode(CurlObjectInternal *o) {
   return o->getHttpCode();
 }
 void RuntimePlatform::startAlertDialog(const char *t, const char *m) {
+#if defined(__SWITCH__)
+  if (!switch_runtime::showApplicationMessage(t ? t : "Alert", m ? m : ""))
+    logging("failed to show Switch alert: %s: %s", t ? t : "Alert",
+            m ? m : "");
+#else
   logging("%s: %s", t ? t : "Alert", m ? m : "");
+#endif
 }
 void RuntimePlatform::forbidSleep(bool forbidden) {
 #if defined(__SWITCH__)
   if (!switch_runtime::setAutoSleepDisabled(forbidden))
     logging("failed to change Switch auto-sleep state");
+#elif defined(__WIIU__)
+  if (forbidden) {
+    IMDisableAPD();
+    IMDisableDim();
+  } else {
+    IMEnableDim();
+    IMEnableAPD();
+  }
 #else
   if (forbidden)
     SDL_DisableScreenSaver();
@@ -1715,22 +2264,44 @@ void RuntimePlatform::eventWakeup(void *p) {
   e->condition.notify_one();
 }
 const char *RuntimePlatform::getLangCodeRAW() {
+#if defined(__SWITCH__)
+  return switch_runtime::systemLanguageCode();
+#else
   const char *configured = std::getenv("PLAYGROUND_LANGUAGE");
   return configured && configured[0] ? configured : "ja";
+#endif
 }
 const char *RuntimePlatform::getCountryCodeRAW() {
+#if defined(__SWITCH__)
+  return switch_runtime::systemCountryCode();
+#else
   const char *configured = std::getenv("PLAYGROUND_COUNTRY");
   return configured && configured[0] ? configured : "JP";
+#endif
 }
 const char *RuntimePlatform::getPreferredLangCodeRAW() {
   return getLangCodeRAW();
 }
 bool RuntimePlatform::getGyroPolar(float *a, float *e) {
+#if defined(__SWITCH__)
+  float azimuth = 0.0f;
+  float elevation = 0.0f;
+  const bool available =
+      switch_runtime::readMotionAngles(azimuth, elevation);
+  if (a)
+    *a = azimuth;
+  if (e)
+    *e = elevation;
+  return available;
+#elif defined(__WIIU__)
+  return playgroundWiiUHostGetMotionAngles(a, e);
+#else
   if (a)
     *a = 0;
   if (e)
     *e = 0;
   return false;
+#endif
 }
 void *RuntimePlatform::getFont(int s, const char *n, float *a) {
   auto *f = static_cast<FontObject *>(getFont(s, n));
@@ -1756,11 +2327,17 @@ bool RuntimePlatform::handleEditingKey(int key, bool pressed) {
   return m_widgetManager->inputKey(key, pressed);
 }
 
+bool RuntimePlatform::handleWidgetPointerDown(float x, float y) {
+  return m_widgetManager->pointerDown(x, y);
+}
+
 void RuntimePlatform::pumpPlatformEvents() {
 #if defined(__EMSCRIPTEN__)
   pumpWebPlatformServices();
 #endif
   m_widgetManager->pumpEvents();
 }
+
+void RuntimePlatform::renderWidgets() { m_widgetManager->render(); }
 
 } // namespace playground::runtime

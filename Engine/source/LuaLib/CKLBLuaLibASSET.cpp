@@ -343,7 +343,22 @@ CKLBLuaLibASSET::luaGetFileList(lua_State * L)
 		return 1;
 	}
 
-	const char* fullPath = CPFInterface::getInstance().platform().getFullPath(path);
+	IPlatformRequest& platform = CPFInterface::getInstance().platform();
+	std::vector<std::string> logicalNames;
+	if (platform.listFiles(path, logicalNames)) {
+		lua_newtable(L);
+		int index = 1;
+		for (std::vector<std::string>::const_iterator entry = logicalNames.begin();
+			 entry != logicalNames.end(); ++entry) {
+			lua_newtable(L);
+			lua_pushstring(L, entry->c_str());
+			lua_setfield(L, -2, "name");
+			lua_rawseti(L, -2, index++);
+		}
+		return 1;
+	}
+
+	const char* fullPath = platform.getFullPath(path);
 	DIR* directory = opendir(fullPath);
 	if(directory) {
 		lua_newtable(L);

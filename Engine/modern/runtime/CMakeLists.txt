@@ -6,6 +6,42 @@ if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
     pkg_check_modules(PLAYGROUND_ZLIB REQUIRED IMPORTED_TARGET zlib)
     pkg_check_modules(PLAYGROUND_EGL REQUIRED IMPORTED_TARGET egl)
     pkg_check_modules(PLAYGROUND_GLES2 REQUIRED IMPORTED_TARGET glesv2)
+elseif(PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(PLAYGROUND_CURL REQUIRED IMPORTED_TARGET libcurl)
+    pkg_check_modules(PLAYGROUND_FREETYPE REQUIRED IMPORTED_TARGET freetype2)
+    pkg_check_modules(PLAYGROUND_PNG REQUIRED IMPORTED_TARGET libpng)
+    pkg_check_modules(PLAYGROUND_ZLIB REQUIRED IMPORTED_TARGET zlib)
+    pkg_check_modules(PLAYGROUND_WIIU_MBEDCRYPTO REQUIRED IMPORTED_TARGET
+        mbedcrypto)
+    find_library(PLAYGROUND_WIIU_MBEDCRYPTO_ARCHIVE NAMES libmbedcrypto.a
+        HINTS ${PLAYGROUND_WIIU_MBEDCRYPTO_LIBRARY_DIRS} REQUIRED)
+    find_library(PLAYGROUND_WIIU_CURL_ARCHIVE NAMES libcurl.a
+        HINTS ${PLAYGROUND_CURL_LIBRARY_DIRS} REQUIRED)
+    find_library(PLAYGROUND_WIIU_MBEDTLS_ARCHIVE NAMES libmbedtls.a
+        HINTS ${PLAYGROUND_CURL_LIBRARY_DIRS} REQUIRED)
+    find_library(PLAYGROUND_WIIU_MBEDX509_ARCHIVE NAMES libmbedx509.a
+        HINTS ${PLAYGROUND_CURL_LIBRARY_DIRS} REQUIRED)
+    set(PLAYGROUND_WIIU_MBEDCRYPTO_OVERRIDE
+        "${CMAKE_CURRENT_BINARY_DIR}/wiiu-libs/libmbedcrypto.a")
+    add_custom_command(OUTPUT "${PLAYGROUND_WIIU_MBEDCRYPTO_OVERRIDE}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${CMAKE_CURRENT_BINARY_DIR}/wiiu-libs"
+        COMMAND "${CMAKE_COMMAND}" -E copy
+            "${PLAYGROUND_WIIU_MBEDCRYPTO_ARCHIVE}"
+            "${PLAYGROUND_WIIU_MBEDCRYPTO_OVERRIDE}"
+        COMMAND "${CMAKE_OBJCOPY}" --weaken-symbol=mbedtls_hardware_poll
+            "${PLAYGROUND_WIIU_MBEDCRYPTO_OVERRIDE}"
+        DEPENDS "${PLAYGROUND_WIIU_MBEDCRYPTO_ARCHIVE}"
+        COMMENT "Preparing mbedTLS for the Wii U persistent entropy provider"
+        VERBATIM)
+    add_custom_target(playground_wiiu_mbedcrypto_override
+        DEPENDS "${PLAYGROUND_WIIU_MBEDCRYPTO_OVERRIDE}")
+    add_library(playground_wiiu_mbedcrypto STATIC IMPORTED GLOBAL)
+    set_target_properties(playground_wiiu_mbedcrypto PROPERTIES
+        IMPORTED_LOCATION "${PLAYGROUND_WIIU_MBEDCRYPTO_OVERRIDE}")
+    add_library(Playground::WiiUMbedCrypto ALIAS
+        playground_wiiu_mbedcrypto)
 elseif(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
     include(FetchContent)
     set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
@@ -42,6 +78,8 @@ endif()
 if(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
     add_library(playground_web_media INTERFACE)
     add_library(Playground::FFmpeg ALIAS playground_web_media)
+elseif(PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu)
+    # The pinned cross-compiled target is provided at the project root.
 elseif(WIN32)
     find_path(PLAYGROUND_FFMPEG_INCLUDE_DIR libavcodec/avcodec.h REQUIRED)
     if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
@@ -113,9 +151,10 @@ file(GLOB playground_lua_sources CONFIGURE_DEPENDS
 file(GLOB playground_minizip_sources CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/Engine/libs/minizip/*.c"
 )
-if(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
-    # The web host links Playground::AssetBootstrap, which owns the same
-    # legacy minizip implementation. Keep one copy in the final Wasm module.
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten
+   OR PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu)
+    # These hosts link Playground::AssetBootstrap, which owns the same legacy
+    # minizip implementation. Keep one copy in the final executable.
     set(playground_minizip_sources)
 endif()
 file(GLOB playground_sha1_sources CONFIGURE_DEPENDS
@@ -180,6 +219,24 @@ if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
         src/RuntimeWidgets.cpp
         src/RuntimeMoviePlatform.cpp
     )
+elseif(PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu)
+    # Keep the complete native WUT implementation explicit so a CafeOS
+    # cross-build cannot select desktop SDL/OpenSSL sources accidentally.
+    list(APPEND playground_runtime_platform_sources
+        wiiu/src/WiiUCrypto.cpp
+        wiiu/src/WiiURandom.cpp
+        wiiu/src/WiiUPath.cpp
+        wiiu/src/WiiUArchive.cpp
+        wiiu/src/WiiUCompilerWorkarounds.c
+        wiiu/src/WiiUStorage.cpp
+        wiiu/src/WiiUSqlite.cpp
+        wiiu/src/WiiUServices.cpp
+        wiiu/src/WiiUAudioOutput.cpp
+        wiiu/src/WiiUAudioPlatform.cpp
+        src/RuntimePlatform.cpp
+        src/RuntimeWidgets.cpp
+        src/RuntimeMoviePlatform.cpp
+        "${PROJECT_SOURCE_DIR}/Engine/porting/Android/jni/Android/KLBOpenSLNewEngine.cpp")
 elseif(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
     list(APPEND playground_runtime_platform_sources
         src/WebCrypto.cpp
@@ -261,6 +318,7 @@ target_compile_definitions(playground_engine_runtime
         $<$<PLATFORM_ID:Windows>:NOMINMAX>
 )
 if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch
+   OR PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu
    OR PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
     set_source_files_properties(
         "${PROJECT_SOURCE_DIR}/Engine/libs/SQLite/sqlite3.c"
@@ -329,6 +387,30 @@ if(PLAYGROUND_TARGET_PLATFORM STREQUAL switch)
         PkgConfig::PLAYGROUND_GLES2
         Playground::FFmpeg
         Playground::SwitchRuntime)
+elseif(PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu)
+    add_dependencies(playground_engine_runtime
+        playground_wiiu_ffmpeg_external
+        playground_wiiu_mbedcrypto_override)
+    target_include_directories(playground_engine_runtime
+      PUBLIC
+        "${PROJECT_SOURCE_DIR}/Engine/modern/runtime/wiiu/include"
+      PRIVATE
+        "${PROJECT_SOURCE_DIR}/Engine/modern/runtime/wiiu/compat"
+        "${PROJECT_SOURCE_DIR}/Engine/modern/host/wiiu/include"
+        ${PLAYGROUND_CURL_INCLUDE_DIRS}
+        "${PLAYGROUND_CURL_INCLUDE_DIRS}/curl")
+    target_compile_definitions(playground_engine_runtime PRIVATE
+        PLAYGROUND_CURL_CA_BUNDLE="/vol/content/cacert.pem")
+    target_link_libraries(playground_engine_runtime PUBLIC
+        Playground::WiiUANGLE
+        Playground::FFmpeg
+        "${PLAYGROUND_WIIU_CURL_ARCHIVE}"
+        "${PLAYGROUND_WIIU_MBEDTLS_ARCHIVE}"
+        "${PLAYGROUND_WIIU_MBEDX509_ARCHIVE}"
+        Playground::WiiUMbedCrypto
+        PkgConfig::PLAYGROUND_FREETYPE
+        PkgConfig::PLAYGROUND_PNG
+        PkgConfig::PLAYGROUND_ZLIB)
 elseif(PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
     target_link_libraries(playground_engine_runtime PUBLIC
         Freetype::Freetype
@@ -364,15 +446,22 @@ if(WIN32)
         psapi
     )
 elseif(NOT PLAYGROUND_TARGET_PLATFORM STREQUAL switch
+       AND NOT PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu
        AND NOT PLAYGROUND_TARGET_PLATFORM STREQUAL emscripten)
     find_library(PLAYGROUND_GLES2_LIBRARY GLESv2 REQUIRED)
     target_link_libraries(playground_engine_runtime PUBLIC
         ${PLAYGROUND_GLES2_LIBRARY})
 endif()
 
-set_target_properties(playground_engine_runtime PROPERTIES
-    POSITION_INDEPENDENT_CODE ON
-)
+if(PLAYGROUND_TARGET_PLATFORM STREQUAL wiiu)
+    # RPX is a fixed-address executable image. PIC emits
+    # R_PPC_PLTREL24/R_PPC_LOCAL24PC relocations that elf2rpl cannot represent.
+    set_target_properties(playground_engine_runtime PROPERTIES
+        POSITION_INDEPENDENT_CODE OFF)
+else()
+    set_target_properties(playground_engine_runtime PROPERTIES
+        POSITION_INDEPENDENT_CODE ON)
+endif()
 
 function(playground_copy_sdl_runtime target)
     if(WIN32)
@@ -401,7 +490,10 @@ if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux
         PRIVATE playground_engine_runtime)
     playground_copy_sdl_runtime(playground-platform-services-probe)
     add_executable(playground-runtime-path-policy-probe
-        tools/runtime_path_policy_probe.cpp)
+        tools/runtime_path_policy_probe.cpp
+        switch/src/SwitchPath.cpp)
+    target_include_directories(playground-runtime-path-policy-probe PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/switch/include")
     target_link_libraries(playground-runtime-path-policy-probe
         PRIVATE playground_engine_runtime)
     playground_copy_sdl_runtime(playground-runtime-path-policy-probe)

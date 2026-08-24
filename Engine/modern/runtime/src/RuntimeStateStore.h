@@ -18,6 +18,7 @@ public:
   std::string get(const std::string &key) const;
   bool set(const std::string &key, const std::string &value);
   bool erase(const std::string &key);
+  bool valid() const { return m_valid; }
 
 private:
   bool load();
@@ -25,6 +26,7 @@ private:
 
   std::filesystem::path m_path;
   Commit m_commit;
+  bool m_valid{};
   mutable std::mutex m_mutex;
   std::unordered_map<std::string, std::string> m_values;
 };

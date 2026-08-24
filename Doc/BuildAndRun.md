@@ -10,12 +10,16 @@ repository root unless noted otherwise.
 | Linux x86-64 | Complete reconstructed engine and SDL3/GLES2 host | Full game, host diagnostic, and engine probes |
 | Windows x86-64 | Complete reconstructed engine and SDL3/ANGLE host | Full game, host diagnostic, and engine probes |
 | WebAssembly (Emscripten wasm32) | Complete threaded engine and SDL3/WebGL host | Full game in a cross-origin-isolated browser |
+| Nintendo Wii U (PowerPC) | Complete engine, GX2 host, and WUHB package | Full game in Cemu or on Aroma hardware |
 | macOS | Portable contract and SDL3 host | Host and platform diagnostics; the full engine adapter is not connected yet |
 | Android ARM64, ARMv7, x86, x86-64 | Portable contract static library | Cross-build validation only; these presets do not create or install an APK |
 
 CMake 3.24 or newer and Git are required everywhere. The first desktop
 configuration may download the SDL 3.4.12 source archive pinned in
 `cmake/PlaygroundSDL.cmake`.
+
+Wii U uses the devkitPro PowerPC/WUT toolchain and has its own complete build,
+run, storage, and packaging guide in [`WiiUPort.md`](WiiUPort.md).
 
 ## Application assets
 
@@ -322,7 +326,8 @@ transactional first-run installer:
 
 ```sh
 cmake --preset web-release \
-  -DPLAYGROUND_APP_ASSETS_ZIP=/path/to/AppAssets.zip
+  -DPLAYGROUND_APP_ASSETS_ZIP=/path/to/AppAssets.zip \
+  -DPLAYGROUND_APP_INTEGRITY_DATABASE_URI=asset://db/unit/unit.db_
 cmake --build --preset web-release -j"$(nproc)"
 ```
 
@@ -433,6 +438,11 @@ title-screen click and observe the login transition after boot.
 - `PLAYGROUND_BUILD_PLATFORM_PROBE` is disabled while cross-compiling.
 - `PLAYGROUND_APP_ASSETS_ZIP` packages the original archive for the targets
   with transactional first-run extraction, including Emscripten.
+- `PLAYGROUND_APP_INTEGRITY_DATABASE_URI` is an application-owned logical URI
+  whose contents the legacy integrity protocol hashes. The modern runtime is
+  passed this value by each host and contains no game database path itself.
+  Its engine default is empty; an application integration which uses that
+  legacy protocol must supply its own URI at configure time.
 - `PLAYGROUND_LANGUAGE`, `PLAYGROUND_COUNTRY`, `PLAYGROUND_LOCATION` (formatted
   as `latitude,longitude`), and `PLAYGROUND_MOTION` (formatted as
   `azimuth,elevation`) override deterministic desktop defaults at runtime.

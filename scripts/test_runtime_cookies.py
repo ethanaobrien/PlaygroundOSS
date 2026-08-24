@@ -13,6 +13,13 @@ from pathlib import Path
 
 class CookieHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
+        if self.headers.get("User-Agent") != "PlaygroundOSS-network-probe/1":
+            body = b"wrong-user-agent"
+            self.send_response(400)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/set":
             body = b"set"
             self.send_response(200)

@@ -177,6 +177,8 @@ yajl_alloc(const yajl_callbacks * callbacks,
     }
 
     hand = (yajl_handle) YA_MALLOC(afs, sizeof(struct yajl_handle_t));
+    if (hand == NULL) return NULL;
+    memset(hand, 0, sizeof(struct yajl_handle_t));
 
     /* copy in pointers to allocation routines */
     memcpy((void *) &(hand->alloc), (void *) afs, sizeof(yajl_alloc_funcs));
@@ -200,12 +202,13 @@ yajl_alloc(const yajl_callbacks * callbacks,
 	//
 	// Binary JSon Parser
 	//
-	hand->bj.afs		= afs;
+	hand->bj.afs		= &hand->alloc;
 	hand->bj.callbacks	= callbacks;
-	hand->bj.cp			= NULL;
 	hand->bj.ctx		= ctx;
-	hand->bj.strs		= NULL;
-	hand->bj.used		= 0;
+
+	hand->msgpack.afs		= &hand->alloc;
+	hand->msgpack.callbacks	= callbacks;
+	hand->msgpack.ctx		= ctx;
 
     return hand;
 }

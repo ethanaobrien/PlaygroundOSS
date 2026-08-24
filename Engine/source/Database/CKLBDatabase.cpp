@@ -20,7 +20,9 @@
 #include "CPFInterface.h"
 #include "encryptFile.h"
 #if defined(__SWITCH__)
-#include "Playground/Switch/SwitchSqlite.h"
+#include <unistd.h>
+#elif defined(__WIIU__)
+#include "Playground/WiiU/WiiUSqlite.h"
 #endif
 
 extern void KLBUnregisterObjectName(void* object, const char* className);
@@ -35,10 +37,17 @@ extern "C" {
 sqlite3_io_methods		gSQLiteEncryptIO;
 int						gBaseSizeOsFile;
 bool					gInitOnce = true;
+bool					gEncryptedVfsReady = false;
 int (*gOpenDefaultSQLite)	(sqlite3_vfs*, const char *zName, sqlite3_file*,int flags, int *pOutFlags);
 #if defined(__SWITCH__)
 sqlite3_vfs			gSwitchEncryptedVfs;
 const char*			gSwitchEncryptedVfsName = "playground-encrypted-assets";
+#elif defined(__WIIU__)
+sqlite3_vfs			gWiiUEncryptedVfs;
+sqlite3_vfs			gWiiUDurabilityVfs;
+sqlite3_vfs*			gWiiUBaseVfs = NULL;
+sqlite3_vfs*			gWiiUDurabilityBaseVfs = NULL;
+const char*			gWiiUEncryptedVfsName = "playground-wiiu-encrypted";
 #endif
 
 #define	getFileDecrypt(a)			(WrapperFileDecrypt*)(&(((unsigned char*)a)[gBaseSizeOsFile]))
@@ -52,10 +61,36 @@ struct WrapperFileDecrypt {
 	void*				m_file;
 	bool				m_no_op;
 	u32					m_headerSize;
+	#if defined(__SWITCH__)
+	char*				m_commitPath;
+	bool				m_dirty;
+	#endif
 };
 
 // === SQLite OS Methods ===
 int fEncryptOpen					(sqlite3_vfs*, const char *zName, sqlite3_file*, int flags, int *pOutFlags);
+
+#if defined(__WIIU__)
+static int wiiuEncryptedFullPathname(sqlite3_vfs* vfs, const char* name,
+	int outputSize, char* output)
+{
+	// WUT/newlib device paths are already absolute. SQLite's Unix VFS treats
+	// the colon form as relative and prefixes the process working directory,
+	// after which the engine's encrypted-file wrapper cannot reopen the asset.
+	if (name && (strncmp(name, "fs:/", 4) == 0 ||
+			   strncmp(name, "/vol/", 5) == 0)) {
+		size_t length = strlen(name);
+		if (length + 1 > (size_t)outputSize) {
+			return SQLITE_CANTOPEN;
+		}
+		memcpy(output, name, length + 1);
+		return SQLITE_OK;
+	}
+	sqlite3_vfs* base = vfs == &gWiiUDurabilityVfs
+		? gWiiUDurabilityBaseVfs : gWiiUBaseVfs;
+	return base->xFullPathname(base, name, outputSize, output);
+}
+#endif
 
 // === SQLite IO Methods ===
 int fEncryptClose					(sqlite3_file*);
@@ -79,12 +114,31 @@ int fEncryptShmUnmap				(sqlite3_file*, int deleteFlag);
 int fEncryptClose					(sqlite3_file* file)
 {
 	WrapperFileDecrypt* fileDecrypt = getFileDecrypt(file);
+	int result = SQLITE_OK;
 	if (!fileDecrypt->m_no_op) {
+		#if defined(__SWITCH__)
+		IPlatformRequest& platform = CPFInterface::getInstance().platform();
+		const bool dirty = fileDecrypt->m_dirty;
+		if (dirty && platform.ifsync(fileDecrypt->m_file) != 0)
+			result = SQLITE_IOERR_FSYNC;
+		#endif
 		CPFInterface::getInstance().platform().ifclose(fileDecrypt->m_file);
+		#if defined(__SWITCH__)
+		// libnx requires transactional filesystem publication after the writer
+		// has closed. xSync still provides SQLite's explicit durability point;
+		// this close-time boundary covers dirty handles SQLite closes directly.
+		if (dirty && result == SQLITE_OK &&
+			!platform.commitDatabasePath(fileDecrypt->m_commitPath)) {
+			result = SQLITE_IOERR_FSYNC;
+			platform.logging("SQLite database close commit failed: %s",
+				fileDecrypt->m_commitPath ? fileDecrypt->m_commitPath : "(unknown)");
+		}
+		delete[] fileDecrypt->m_commitPath;
+		fileDecrypt->m_commitPath = NULL;
+		#endif
 	}
 
-	// SQLITE_IOERR_CLOSE
-	return SQLITE_OK;
+	return result;
 }
 
 int fEncryptRead					(sqlite3_file* file, void* buff, int iAmt, sqlite3_int64 iOfst)
@@ -95,7 +149,12 @@ int fEncryptRead					(sqlite3_file* file, void* buff, int iAmt, sqlite3_int64 iO
 		fileDecrypt->m_decrypt.gotoOffset((u32)iOfst);
 
 		IPlatformRequest& pltf = CPFInterface::getInstance().platform();
-		pltf.ifseek(fileDecrypt->m_file, (long)(iOfst + fileDecrypt->m_headerSize), SEEK_SET);
+		if (pltf.ifseek(fileDecrypt->m_file,
+			(long)(iOfst + fileDecrypt->m_headerSize), SEEK_SET) != 0) {
+			#if defined(__SWITCH__)
+			return SQLITE_IOERR_SEEK;
+			#endif
+		}
 		u32 readSize = pltf.ifread(buff, 1, iAmt, fileDecrypt->m_file);
 
 		fileDecrypt->m_decrypt.decryptBlck(buff, readSize);
@@ -136,29 +195,76 @@ int fEncryptWrite					(sqlite3_file* file, const void* data, int iAmt, sqlite3_i
 					memcpy(buff,data,iAmt);
 					// Encrypt Buffer. (NOTE : could optimize memcpy by having a SOURCE AND DEST BUFFER)
 					fileDecrypt->m_decrypt.decryptBlck(buff, iAmt);
-					pltf.ifwrite(buff, 1, iAmt, fileDecrypt->m_file);		
-					pltf.ifflush(fileDecrypt->m_file);
+					u32 written = pltf.ifwrite(buff, 1, iAmt, fileDecrypt->m_file);
+					int flushed = pltf.ifflush(fileDecrypt->m_file);
 					free(buff);
+					#if defined(__SWITCH__)
+					if (written != (u32)iAmt)
+						return SQLITE_IOERR_WRITE;
+					if (flushed != 0)
+						return SQLITE_IOERR_FSYNC;
+					fileDecrypt->m_dirty = true;
+					#else
+					(void)written;
+					(void)flushed;
+					#endif
 				} else {
+					#if defined(__SWITCH__)
+					return SQLITE_NOMEM;
+					#else
 					return SQLITE_ERROR;
+					#endif
 				}
 			}
 			return SQLITE_OK;
 		}
-		return SQLITE_ERROR;
+			#if defined(__SWITCH__)
+			return SQLITE_IOERR_SEEK;
+			#else
+			return SQLITE_ERROR;
+			#endif
 	} else {
 		return SQLITE_OK;
 	}
 }
 
-int fEncryptTruncate				(sqlite3_file* /*file*/, sqlite3_int64 /*size*/)
+int fEncryptTruncate				(sqlite3_file* file, sqlite3_int64 size)
 {
+	#if defined(__SWITCH__)
+	WrapperFileDecrypt* fileDecrypt = getFileDecrypt(file);
+	if (fileDecrypt->m_no_op || size < 0)
+		return SQLITE_IOERR_TRUNCATE;
+	FILE* nativeFile = static_cast<FILE*>(fileDecrypt->m_file);
+	IPlatformRequest& platform = CPFInterface::getInstance().platform();
+	if (platform.ifflush(nativeFile) != 0 ||
+		ftruncate(fileno(nativeFile),
+			static_cast<off_t>(size + fileDecrypt->m_headerSize)) != 0)
+		return SQLITE_IOERR_TRUNCATE;
+	fileDecrypt->m_size = static_cast<int>(size);
+	fileDecrypt->m_dirty = true;
+	return SQLITE_OK;
+	#else
 	while (1) {	printf("Unsupported"); }
 	return SQLITE_OK;
+	#endif
 }
 
-int fEncryptSync					(sqlite3_file* /*file*/, int /*flags*/) 
+int fEncryptSync					(sqlite3_file* file, int /*flags*/)
 {
+	#if defined(__SWITCH__)
+	WrapperFileDecrypt* fileDecrypt = getFileDecrypt(file);
+	if (!fileDecrypt->m_no_op && fileDecrypt->m_dirty) {
+		IPlatformRequest& platform = CPFInterface::getInstance().platform();
+		if (platform.ifsync(fileDecrypt->m_file) != 0)
+			return SQLITE_IOERR_FSYNC;
+		if (!platform.commitDatabasePath(fileDecrypt->m_commitPath)) {
+			platform.logging("SQLite database sync commit failed: %s",
+				fileDecrypt->m_commitPath ? fileDecrypt->m_commitPath : "(unknown)");
+			return SQLITE_IOERR_FSYNC;
+		}
+		fileDecrypt->m_dirty = false;
+	}
+	#endif
 	return SQLITE_OK;
 }
 
@@ -170,9 +276,21 @@ int fEncryptFileSize				(sqlite3_file* file, sqlite3_int64 *pSize)
 			IPlatformRequest& pltf = CPFInterface::getInstance().platform();
 			int err = pltf.ifseek(fileDecrypt->m_file, 0, SEEK_END);
 			if (err == 0) {
-				*pSize = pltf.iftell(fileDecrypt->m_file) - fileDecrypt->m_headerSize;
+				const sqlite3_int64 physicalSize = pltf.iftell(fileDecrypt->m_file);
+				if (physicalSize < fileDecrypt->m_headerSize) {
+					#if defined(__SWITCH__)
+					return SQLITE_IOERR_FSTAT;
+					#else
+					return SQLITE_ERROR;
+					#endif
+				}
+				*pSize = physicalSize - fileDecrypt->m_headerSize;
 			} else {
+				#if defined(__SWITCH__)
+				return SQLITE_IOERR_FSTAT;
+				#else
 				return SQLITE_ERROR;
+				#endif
 			}
 		} else {
 			*pSize = 0;
@@ -196,15 +314,23 @@ int fEncryptUnlock					(sqlite3_file* /*file*/, int /*unlock*/)
 	return SQLITE_OK;
 }
 
-int fEncryptCheckReservedLock		(sqlite3_file* /*file*/, int* /*pResOut*/)
+int fEncryptCheckReservedLock		(sqlite3_file* /*file*/, int* pResOut)
 {
 	// WrapperFileDecrypt* fileDecrypt = (WrapperFileDecrypt*)file;
+	#if defined(__SWITCH__)
+	if (pResOut)
+		*pResOut = 0;
+	#endif
 	return SQLITE_OK;
 }
 
 int fEncryptFileControl				(sqlite3_file* /*file*/, int /*op*/, void* /*pArg*/)
 {
+	#if defined(__SWITCH__)
+	return SQLITE_NOTFOUND;
+	#else
 	return SQLITE_OK;
+	#endif
 }
 
 int fEncryptSectorSize				(sqlite3_file* /*file*/)
@@ -215,35 +341,59 @@ int fEncryptSectorSize				(sqlite3_file* /*file*/)
 int fEncryptDeviceCharacteristics	(sqlite3_file* /*file*/)
 {
 	// printf("fEncryptDeviceCharacteristics %8X\n", SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN | SQLITE_IOCAP_POWERSAFE_OVERWRITE);
+	#if defined(__SWITCH__)
+	// Archive commits provide durability at xSync, but libnx's stdio bridge
+	// does not promise atomic or power-safe individual sector overwrites.
+	return 0;
+	#else
 	return SQLITE_IOCAP_UNDELETABLE_WHEN_OPEN | SQLITE_IOCAP_POWERSAFE_OVERWRITE;
+	#endif
 }
 
 int fEncryptShmMap					(sqlite3_file*, int /*iPg*/, int /*pgsz*/, int, void volatile**)
 {
+	#if defined(__SWITCH__)
+	return SQLITE_IOERR_SHMMAP;
+	#else
 	while (1) {	printf("Unsupported Memory Mapped Files"); }
 	return SQLITE_OK;
+	#endif
 }
 
 int fEncryptShmLock					(sqlite3_file*, int /*offset*/, int /*n*/, int /*flags*/)
 {
+	#if defined(__SWITCH__)
+	return SQLITE_IOERR_SHMLOCK;
+	#else
 	while (1) {	printf("Unsupported Memory Mapped Files"); }
 	return SQLITE_OK;
+	#endif
 }
 
 void fEncryptShmBarrier				(sqlite3_file*)
 {
+	#if !defined(__SWITCH__)
 	while (1) {	printf("Unsupported Memory Mapped Files"); }
+	#endif
 	// Do nothing.
 }
 
 int fEncryptShmUnmap				(sqlite3_file*, int /*deleteFlag*/)
 {
+	#if defined(__SWITCH__)
+	return SQLITE_OK;
+	#else
 	while (1) {	printf("Unsupported Memory Mapped Files"); }
 	return SQLITE_OK;
+	#endif
 }
 
 int fEncryptOpen					(sqlite3_vfs* vfs, const char *zName, sqlite3_file* file, int flags, int *pOutFlags) {
 	WrapperFileDecrypt* fileDecrypt = getFileDecrypt(file);
+	#if defined(__SWITCH__)
+	fileDecrypt->m_commitPath = NULL;
+	fileDecrypt->m_dirty = false;
+	#endif
 
 	u32			dwFlagsAndAttributes = 0;
 	u32			dwCreationDisposition;
@@ -396,6 +546,19 @@ int fEncryptOpen					(sqlite3_vfs* vfs, const char *zName, sqlite3_file* file, i
 	void* f = pltf.ifopen(zName, openMode);	// Read and write possible, but must exist.
 	
 	if (f) {
+		if (pOutFlags)
+			*pOutFlags = flags;
+		#if defined(__SWITCH__)
+		if (isReadWrite && zName) {
+			size_t pathLength = strlen(zName);
+			fileDecrypt->m_commitPath = new (std::nothrow) char[pathLength + 1];
+			if (!fileDecrypt->m_commitPath) {
+				pltf.ifclose(f);
+				return SQLITE_NOMEM;
+			}
+			memcpy(fileDecrypt->m_commitPath, zName, pathLength + 1);
+		}
+		#endif
 		new (&fileDecrypt->m_decrypt) CDecryptBaseClass(14);
 		fileDecrypt->m_file	= f;
 		u8 header[4];
@@ -430,7 +593,10 @@ int fEncryptOpen					(sqlite3_vfs* vfs, const char *zName, sqlite3_file* file, i
 	return SQLITE_ERROR;
 }
 
-static bool initEncryptedVFS() {
+bool initializeEncryptedSQLiteVFS() {
+	if (gEncryptedVfsReady) {
+		return true;
+	}
 	// 1. Need initialize first to init vfsList global variable containing the default fileSystem.
 	if ((sqlite3_initialize() == SQLITE_OK) && gInitOnce) {
 		gInitOnce = false;
@@ -460,10 +626,11 @@ static bool initEncryptedVFS() {
 		// 2.2 Patch the fileSystem vfs->szOsFile, add our own structure. (need to keep original because we wrap open)
 		gBaseSizeOsFile		= (gVfsList->szOsFile + 7) & 0xFFFFFFF8;	// Align 8 byte.
 		#if defined(__SWITCH__)
-		// Preserve the named durability VFS unchanged. Read-only asset databases
-		// use this independently registered encrypted VFS as SQLite's default;
-		// writable state/cache databases select the durability VFS by name at the
-		// sqlite3_open_v2 call site, where logical URI ownership is still known.
+		// Keep the path VFS intact and install the engine's encrypted file wrapper
+		// as a separate default. All file-backed databases use this default, which
+		// preserves Android's format and avoids the Unix VFS's unsupported Horizon
+		// descriptor queries. Connection-local missing databases use :memory: and
+		// never reach xOpen.
 		gSwitchEncryptedVfs = *gVfsList;
 		gSwitchEncryptedVfs.pNext = NULL;
 		gSwitchEncryptedVfs.zName = gSwitchEncryptedVfsName;
@@ -471,18 +638,66 @@ static bool initEncryptedVFS() {
 		gSwitchEncryptedVfs.szOsFile =
 			((gBaseSizeOsFile + sizeof(WrapperFileDecrypt)) + 7) & 0xFFFFFFF8;
 		if (sqlite3_vfs_register(&gSwitchEncryptedVfs, 1) != SQLITE_OK) {
+			gInitOnce = true;
 			return false;
 		}
 		gVfsList = &gSwitchEncryptedVfs;
+		#elif defined(__WIIU__)
+		// Register an independent default VFS so SQLite retains WUT's absolute
+		// device paths while the engine continues to decrypt database pages via
+		// its original IPlatformRequest wrapper.
+		gWiiUBaseVfs = gVfsList;
+		// WUT's devoptab does not provide POSIX advisory locks. The process is
+		// the sole owner of its title/user directory, so unix-none retains real
+		// rollback journals and fsync without failing every write transaction.
+		gWiiUDurabilityBaseVfs = sqlite3_vfs_find("unix-none");
+		if (!gWiiUDurabilityBaseVfs) {
+			return false;
+		}
+		gWiiUDurabilityVfs = *gWiiUDurabilityBaseVfs;
+		gWiiUDurabilityVfs.pNext = NULL;
+		gWiiUDurabilityVfs.zName =
+			playground::wiiu_runtime::wiiuDurabilityVfsName();
+		gWiiUDurabilityVfs.xFullPathname = wiiuEncryptedFullPathname;
+		if (sqlite3_vfs_register(&gWiiUDurabilityVfs, 0) != SQLITE_OK) {
+			gInitOnce = true;
+			return false;
+		}
+		gWiiUEncryptedVfs = *gVfsList;
+		gWiiUEncryptedVfs.pNext = NULL;
+		gWiiUEncryptedVfs.zName = gWiiUEncryptedVfsName;
+		gWiiUEncryptedVfs.xFullPathname = wiiuEncryptedFullPathname;
+		gWiiUEncryptedVfs.xOpen = fEncryptOpen;
+		gWiiUEncryptedVfs.szOsFile =
+			((gBaseSizeOsFile + sizeof(WrapperFileDecrypt)) + 7) & 0xFFFFFFF8;
+		if (sqlite3_vfs_register(&gWiiUEncryptedVfs, 1) != SQLITE_OK) {
+			sqlite3_vfs_unregister(&gWiiUDurabilityVfs);
+			gInitOnce = true;
+			return false;
+		}
+		gVfsList = &gWiiUEncryptedVfs;
 		#else
 		gVfsList->xOpen		= fEncryptOpen;
 		gVfsList->szOsFile	= ((gBaseSizeOsFile + sizeof(WrapperFileDecrypt)) + 7) & 0xFFFFFFF8;
 		#endif
+		gEncryptedVfsReady = true;
 		return true;
 	} else {
 		return false;
 	}
 }
+
+#if defined(__SWITCH__)
+void shutdownEncryptedSQLiteVFS() {
+	if (!gEncryptedVfsReady)
+		return;
+	sqlite3_vfs_unregister(&gSwitchEncryptedVfs);
+	gEncryptedVfsReady = false;
+	gInitOnce = true;
+	gVfsList = sqlite3_vfs_find(NULL);
+	gOpenDefaultSQLite = NULL;
+}
+#endif
 
 static int callbackFct (void* ctx,int colNum,char** columnText,char** columnName) {
 	return ((CKLBDatabase*)ctx)->callBack(colNum,columnText,columnName);
@@ -492,7 +707,10 @@ bool CKLBDatabase::init(const char* dbFile, int flags) {
 	// At least initialize the encryption module for DBs, even without default DB.
 	IPlatformRequest& platform = CPFInterface::getInstance().platform();
 	if (platform.useEncryption()) {
-		initEncryptedVFS();
+		if (!initializeEncryptedSQLiteVFS()) {
+			platform.logging("Could not initialize encrypted SQLite VFS");
+			return false;
+		}
 	}
 
 	if ((dbFile == NULL) || (m_dataBase && m_lastDB && strcmp(m_lastDB,dbFile) == 0)) {
@@ -512,17 +730,32 @@ bool CKLBDatabase::init(const char* dbFile, int flags) {
 
 		// Convert Logical path to OS Dependant path
 		bool isReadOnly = false;
-		const char* fullPath = platform.getFullPath(dbFile, &isReadOnly);
+		const IPlatformRequest::DatabaseOpenMode openMode =
+			(flags & SQLITE_OPEN_CREATE)
+				? IPlatformRequest::DatabaseOpenMode::ReadWriteCreate
+				: ((flags & SQLITE_OPEN_READWRITE)
+					? IPlatformRequest::DatabaseOpenMode::ReadWrite
+					: IPlatformRequest::DatabaseOpenMode::ReadOnly);
+		const char* fullPath = platform.getDatabasePath(dbFile, openMode,
+			&isReadOnly);
+		if (!fullPath || !fullPath[0]) {
+			platform.logging("Database path could not be resolved: %s", dbFile);
+			delete[] fullPath;
+			_release();
+			return false;
+		}
 
 		//int rc = sqlite3_open(fullPath, &m_dataBase);
-		#if defined(__SWITCH__)
+		#if defined(__WIIU__)
+		const char* sqlitePath = fullPath;
 		const char* sqliteVfs =
-			playground::switch_runtime::selectSwitchDatabaseVfs(
+			playground::wiiu_runtime::selectWiiUDatabaseVfs(
 				dbFile, fullPath, isReadOnly);
 		#else
+		const char* sqlitePath = fullPath;
 		const char* sqliteVfs = NULL;
 		#endif
-		int rc = sqlite3_open_v2(fullPath, &m_dataBase, flags, sqliteVfs);
+		int rc = sqlite3_open_v2(sqlitePath, &m_dataBase, flags, sqliteVfs);
 		delete[] fullPath;
 
 		if (rc) {
@@ -533,14 +766,7 @@ bool CKLBDatabase::init(const char* dbFile, int flags) {
 
 		char * errMsg;
 		m_pragmaJournal = true;
-		#if defined(__SWITCH__)
-		const char* journalPolicy = isReadOnly
-			? "PRAGMA journal_mode = OFF;"
-			: "PRAGMA journal_mode = DELETE; PRAGMA synchronous = FULL;";
-		rc = sqlite3_exec(m_dataBase, journalPolicy, callbackFct, this, &errMsg);
-		#else
 		rc = sqlite3_exec(m_dataBase, "PRAGMA journal_mode = OFF;", callbackFct, this, &errMsg);
-		#endif
 		m_pragmaJournal = false;
 
 		if (rc) {
