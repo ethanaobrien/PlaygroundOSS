@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -24,6 +25,7 @@ def main() -> int:
         ))
     generic_forbidden = (
         "Playground/Switch/",
+        "__SWITCH__",
         "pgstate",
         "pgcache",
         "file://state/",
@@ -39,12 +41,18 @@ def main() -> int:
         raise SystemExit(
             "generic database engine contains Switch/game storage policy: " +
             ", ".join(generic_leaks))
-    if ("DatabaseOpenMode" not in generic_database_source or
-            "flags |= SQLITE_OPEN_CREATE" in generic_database_source or
-            "flags &= ~SQLITE_OPEN_READONLY" in generic_database_source):
+    discarded_database_files = (
+        repository / "Engine/modern/runtime/switch/include/Playground/Switch/"
+        "SwitchSqlite.h",
+        repository / "Engine/modern/runtime/switch/src/SwitchSqlite.cpp",
+    )
+    surviving_database_files = [str(path.relative_to(repository))
+                                for path in discarded_database_files
+                                if path.exists()]
+    if surviving_database_files:
         raise SystemExit(
-            "database frontends must preserve caller flags and pass explicit "
-            "open intent to the platform")
+            "discarded Switch database implementation remains: " +
+            ", ".join(surviving_database_files))
 
     switch_policy_source = "\n".join(
         path.read_text(encoding="utf-8-sig")
@@ -59,6 +67,9 @@ def main() -> int:
         "new_basic_settings",
         "unit_list",
         "asset://db/",
+        "SwitchSqlite",
+        "initializeSwitchSqlitePaths",
+        "shutdownSwitchSqlitePaths",
     )
     switch_policy_leaks = [value for value in switch_policy_forbidden
                            if value in switch_policy_source]
@@ -66,6 +77,11 @@ def main() -> int:
         raise SystemExit(
             "Switch platform contains game database policy: " +
             ", ".join(switch_policy_leaks))
+    # SQLite registration is now owned by one explicit platform adapter.
+    # Other Switch production components still must not implement DB policy.
+    for path in (repository / "Engine/modern/runtime/switch").rglob("*.cpp"):
+        if path.name != "SwitchDatabase.cpp" and "sqlite3_" in path.read_text():
+            raise SystemExit("SQLite escaped the database adapter: " + str(path))
     database_literals = sorted(set(re.findall(
         r'"[^"\n]*\.(?:db_?|sqlite|sqlite3)"', switch_policy_source,
         flags=re.IGNORECASE)))
@@ -137,44 +153,20 @@ def main() -> int:
             "!defined(__SWITCH__)" not in restrict_source):
         raise SystemExit(
             "Switch state files must not call unsupported chmod")
-    database_path_begin = runtime_platform_source.find(
-        "std::string RuntimePlatform::resolveDatabasePath(")
-    database_path_end = runtime_platform_source.find(
-        "IReadStream *RuntimePlatform::openReadStream(", database_path_begin)
-    database_path_source = runtime_platform_source[
-        database_path_begin:database_path_end]
-    copy_file = database_path_source.find("std::filesystem::copy_file")
-    publish_rename = database_path_source.find("std::filesystem::rename",
-                                               copy_file)
-    archive_commit = database_path_source.find("m_commitState()",
-                                               publish_rename)
-    if (database_path_begin < 0 or database_path_end < 0 or
-            "mode != DatabaseOpenMode::ReadOnly" not in database_path_source or
-            "m_stateRoot" not in database_path_source or
-            "m_storageMutationMutex" not in database_path_source or
-            "resolvePath(input, readOnly)" not in database_path_source or
-            ".pg-copyup-" not in database_path_source or
-            min(copy_file, publish_rename, archive_commit) < 0 or
-            not copy_file < publish_rename < archive_commit or
-            "std::filesystem::remove(destination" not in
-            database_path_source):
+    discarded_database_contract = (
+        "DatabaseOpenMode",
+        "resolveDatabasePath(",
+        "getDatabasePath(",
+        "commitDatabasePath(",
+        ".pg-copyup-",
+    )
+    surviving_database_contract = [value for value in
+                                   discarded_database_contract
+                                   if value in runtime_platform_source]
+    if surviving_database_contract:
         raise SystemExit(
-            "database path resolution must use explicit open intent for "
-            "atomic, durable account-state copy-up and preserve read-only "
-            "overlay resolution")
-    for forbidden in (
-            ".db\"", ".sqlite\"", "basic_setting", "unit_list",
-            "relative.find('/')", "relative.find(\"/\")"):
-        if forbidden in database_path_source:
-            raise SystemExit(
-                "database path resolution contains an ownership classifier: " +
-                forbidden)
-    if ('return ":memory:";' not in database_path_source or
-            database_path_source.count('return ":memory:";') != 1 or
-            "if (resolved.empty())" in database_path_source):
-        raise SystemExit(
-            "only explicitly unnamed Switch databases may use SQLite's "
-            "connection-local in-memory behavior")
+            "discarded database policy remains in the shared runtime: " +
+            ", ".join(surviving_database_contract))
     if generic_database_source.count(
             'Database path could not be resolved: %s') != 2:
         raise SystemExit(
@@ -217,22 +209,6 @@ def main() -> int:
             raise SystemExit(
                 "external overlay contract is incomplete: " + required)
 
-    encrypted_vfs_source = (
-        repository / "Engine/source/Database/CKLBDatabase.cpp"
-    ).read_text(encoding="utf-8-sig")
-    close_candidates = [match.start() for match in re.finditer(
-        r"int fEncryptClose", encrypted_vfs_source)]
-    close_begin = close_candidates[-1] if close_candidates else -1
-    close_end = encrypted_vfs_source.find("int fEncryptRead", close_begin)
-    close_source = encrypted_vfs_source[close_begin:close_end]
-    close_file = close_source.find("platform().ifclose")
-    close_commit = close_source.find("commitDatabasePath")
-    if (close_begin < 0 or close_end < 0 or close_file < 0 or
-            close_commit < 0 or close_file > close_commit or
-            "platform.ifsync" not in close_source):
-        raise SystemExit(
-            "dirty Switch databases must sync the file and close before the "
-            "archive commit")
     write_stream_begin = runtime_platform_source.find(
         "~DesktopWriteStream() override")
     write_stream_end = runtime_platform_source.find(
@@ -325,19 +301,42 @@ def main() -> int:
     pause_source = switch_host_source[pause_begin:pause_end]
     uninitialized = pause_source.find("if (!context.initialized)")
     bootstrap_state_commit = pause_source.find(
-        "context.storage.commitState", uninitialized)
+        "commitState(context, error)", uninitialized)
     bootstrap_cache_commit = pause_source.find(
-        "context.storage.commitCache", uninitialized)
+        "commitCache(context, error)", uninitialized)
     initialized_client = pause_source.find(
         "CPFInterface &interface", uninitialized)
     if (pause_begin < 0 or pause_end < 0 or min(
             uninitialized, bootstrap_state_commit, bootstrap_cache_commit,
             initialized_client) < 0 or not (
-                uninitialized < bootstrap_state_commit <
-                bootstrap_cache_commit < initialized_client)):
+                uninitialized < bootstrap_cache_commit <
+                bootstrap_state_commit < initialized_client)):
         raise SystemExit(
             "Switch bootstrap HOME/sleep handling must commit mounted storage "
             "before the initialized engine lifecycle exists")
+    if ("context.database->commitState(error)" not in switch_host_source or
+            "context.storage.commitState(error)" not in switch_host_source or
+            "::commitState(context, commitError)" not in switch_host_source or
+            "SwitchDatabase>(" not in switch_host_source):
+        raise SystemExit("Switch host must route live SaveData commits through its database coordinator")
+    for required in ("context.cacheWriters->commit(error)",
+                     "context.cacheWriters->requestCommit(commitError)",
+                     "setContentWriteBatch", "context.cacheWriters->endBatch(success, error)",
+                     "setContentWriterFactory", "context.cacheWriters->open(path)"):
+        if required not in switch_host_source:
+            raise SystemExit("Switch CacheStorage writer coordination missing: " + required)
+    # Per-file/per-transaction archive commits stalled downloads and frames on
+    # hardware. Content is bounded by journal usage, SaveData is coalesced at
+    # SQLite transaction boundaries, and content always commits first.
+    for required in ("context.cacheWriters->setCommitPolicy(CacheCommitBytes, CacheCommitOps)",
+                     "context.database->setDeferredCommit(true)",
+                     "context.cacheWriters->commitIfDirty(failure)",
+                     "database.commitPending(error)"):
+        if required not in switch_host_source:
+            raise SystemExit("Switch bounded commit policy missing: " + required)
+    if not (0 <= release_source.find("context.durability.stop()") <
+            release_source.find("context.database.reset()")):
+        raise SystemExit("Switch deferred SaveData committer must stop before databases close")
 
     switch_network_source = (
         repository / "Engine/modern/runtime/switch/src/SwitchNetwork.cpp"
@@ -382,6 +381,15 @@ def main() -> int:
         repository /
         "Engine/modern/runtime/switch/src/SwitchAudioOutput.cpp"
     ).read_text(encoding="utf-8-sig")
+    audio_worker = (repository /
+        "Engine/modern/runtime/switch/src/SwitchAudioPlatform.cpp").read_text()
+    npdm = json.loads((repository /
+        "Engine/modern/host/switch/packaging/application.npdm.json.in").read_text())
+    syscalls = next(item["value"] for item in npdm["kernel_capabilities"]
+                    if item["type"] == "syscalls")
+    if ("svcSetThreadPriority" in syscalls or
+            "setAudioThreadPriority(" in switch_audio_source + audio_worker):
+        raise SystemExit("diagnostic rollback must retain baseline audio priorities")
     wait = switch_audio_source.find("audoutWaitPlayFinish")
     timeout = switch_audio_source.find("KernelError_TimedOut", wait)
     wait_failure = switch_audio_source.find(
@@ -463,13 +471,12 @@ def main() -> int:
 
     image = args.elf.read_bytes()
     required_strings = (
-        b"unix-none",
-        b"playground-switch-paths",
-        b"playground-encrypted-assets",
         b"pgstate",
         b"pgcache",
     )
     forbidden_strings = (
+        b"playground-switch-paths",
+        b"playground-encrypted-assets",
         b"playground-switch-durability",
         b"yuzu 1734",
         b"Yuzu 1734",
@@ -491,11 +498,6 @@ def main() -> int:
         [str(args.nm), "-C", str(args.elf)], check=True, text=True,
         capture_output=True).stdout
     required_symbols = (
-        "initializeEncryptedSQLiteVFS()",
-        "shutdownEncryptedSQLiteVFS()",
-        "playground::runtime::RuntimePlatform::getDatabasePath(",
-        "playground::runtime::RuntimePlatform::commitDatabasePath(",
-        "playground::switch_runtime::initializeSwitchSqlitePaths(",
         "playground::switch_runtime::SwitchNetwork::suspend(",
         "playground::switch_runtime::SwitchNetwork::shutdownAndWait(",
         "playground::switch_runtime::SwitchNetwork::rollbackInitialization(",
@@ -517,7 +519,6 @@ def main() -> int:
         "fsFsGetFreeSpace",
         "playground::switch_runtime::encodeStoragePath(",
         "playground::switch_runtime::listStorageDirectory(",
-        "ftruncate",
     )
     missing_symbols = [value for value in required_symbols
                        if value not in symbols]
@@ -525,10 +526,10 @@ def main() -> int:
         raise SystemExit("Switch runtime symbols are missing: " +
                          ", ".join(missing_symbols))
 
-    print("Switch runtime contract audit passed: game-agnostic encrypted SQLite, "
-          "typed database copy-up, account storage overlay, native FS, native "
-          "network recovery, account-scoped Album/alarms, reconnecting input, "
-          "and suspend leases linked")
+    print("Switch runtime contract audit passed: no discarded database adapter, "
+          "account storage overlay, native FS, native network recovery, "
+          "account-scoped Album/alarms, reconnecting input, and suspend leases "
+          "linked")
     return 0
 
 

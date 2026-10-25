@@ -71,7 +71,11 @@ s32 KLBOpenSLNewEngine::workerThread(void *, void *data) {
   auto *engine = static_cast<KLBOpenSLNewEngine *>(data);
   engine->m_workerEnabled = true;
   while (engine->m_workerEnabled) {
+    const auto started = std::chrono::steady_clock::now();
     engine->processAudio();
+    playground::switch_runtime::recordAudioDecodeTime(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started).count());
     std::this_thread::sleep_for(std::chrono::milliseconds(15));
   }
   engine->m_workerStopped = true;

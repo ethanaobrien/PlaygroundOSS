@@ -1,4 +1,5 @@
 find_package(PkgConfig REQUIRED)
+option(PLAYGROUND_SWITCH_FILE_DIAGNOSTICS "Temporary bounded SD diagnostic log (adds SD permission)" OFF)
 pkg_check_modules(PLAYGROUND_SWITCH_EGL REQUIRED IMPORTED_TARGET egl)
 pkg_check_modules(PLAYGROUND_SWITCH_GLES2 REQUIRED IMPORTED_TARGET glesv2)
 
@@ -29,6 +30,75 @@ nx_create_nro(playground-switch-host-nro
 
 if(PLAYGROUND_BUILD_ENGINE_RUNTIME)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_executable(playground-switch-database-probe tools/switch_database_probe.cpp
+        ../../runtime/tools/database_contract_probe.cpp
+        ../../runtime/switch/src/SwitchStorage.cpp)
+    target_compile_features(playground-switch-database-probe PRIVATE cxx_std_17)
+    target_compile_definitions(playground-switch-database-probe PRIVATE
+        PLAYGROUND_SWITCH_SAVE_SIZE=0x1000000
+        PLAYGROUND_SWITCH_SAVE_JOURNAL_SIZE=0x800000
+        PLAYGROUND_SWITCH_CACHE_SIZE=0x1000000
+        PLAYGROUND_SWITCH_CACHE_JOURNAL_SIZE=0x800000)
+    target_link_libraries(playground-switch-database-probe PRIVATE
+        Playground::SwitchHost Playground::SwitchRuntime
+        "-Wl,--start-group" playground_engine_runtime Playground::SwitchRuntime
+        "-Wl,--end-group")
+    add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/playground-switch-database-probe.nacp"
+        COMMAND "${NX_NACPTOOL_EXE}" --create "PlaygroundOSS DB probe" "PlaygroundOSS"
+            "1.0.0" "${CMAKE_CURRENT_BINARY_DIR}/playground-switch-database-probe.nacp"
+            --titleid=0100F59153492000
+        VERBATIM)
+    nx_create_nro(playground-switch-database-probe-nro
+        TARGET playground-switch-database-probe
+        NACP "${CMAKE_CURRENT_BINARY_DIR}/playground-switch-database-probe.nacp")
+    # A separate installed title is required to test Horizon SaveData. NRO/SD
+    # success is not a substitute, and the probe must never access game saves.
+    function(playground_database_probe_package)
+        set(PLAYGROUND_SWITCH_TITLE_ID "0x0100F59153492000")
+        set(probe_dir "${CMAKE_CURRENT_BINARY_DIR}/database-probe")
+        file(MAKE_DIRECTORY "${probe_dir}")
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/packaging/application.npdm.json.in" probe_descriptor)
+        string(REPLACE "\"fatal:u\"," "" probe_descriptor "${probe_descriptor}")
+        string(REPLACE "\"svcOutputDebugString\": \"0x27\"," "" probe_descriptor "${probe_descriptor}")
+        string(CONFIGURE "${probe_descriptor}" probe_descriptor @ONLY)
+        file(GENERATE OUTPUT "${probe_dir}/application.json" CONTENT "${probe_descriptor}")
+        add_custom_command(OUTPUT "${probe_dir}/main.npdm" "${probe_dir}/control.nacp"
+            COMMAND "${DEVKITPRO}/tools/bin/npdmtool"
+                "${probe_dir}/application.json" "${probe_dir}/main.npdm"
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/configure_switch_nacp.py"
+                "${CMAKE_CURRENT_BINARY_DIR}/playground-switch-database-probe.nacp"
+                "${probe_dir}/control.nacp" --title-id=0x0100F59153492000
+                --save-size=0x1000000 --save-journal=0x800000
+                --cache-size=0x1000000 --cache-journal=0x800000 --cache-max=0x2000000
+            DEPENDS "${probe_dir}/application.json"
+                "${CMAKE_CURRENT_BINARY_DIR}/playground-switch-database-probe.nacp"
+                "${PROJECT_SOURCE_DIR}/scripts/configure_switch_nacp.py"
+            VERBATIM)
+        if(PLAYGROUND_SWITCH_ICON_JPEG)
+            add_custom_target(playground-switch-database-probe-audit
+                COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/audit_switch_npdm.py"
+                    --elf "$<TARGET_FILE:playground-switch-database-probe>"
+                    --json "${probe_dir}/application.json" --npdm "${probe_dir}/main.npdm"
+                    --nm "${CMAKE_NM}"
+                COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/audit_switch_nacp.py"
+                    --nacp "${probe_dir}/control.nacp" --title-id=0x0100F59153492000
+                    --save-size=0x1000000 --save-journal=0x800000
+                    --cache-size=0x1000000 --cache-journal=0x800000 --cache-max=0x2000000
+                DEPENDS playground-switch-database-probe "${probe_dir}/main.npdm"
+                    "${probe_dir}/control.nacp"
+                VERBATIM)
+            add_custom_target(playground-switch-database-probe-stage
+                COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/stage_switch_package.py"
+                    --database-probe --elf "$<TARGET_FILE:playground-switch-database-probe>"
+                    --npdm "${probe_dir}/main.npdm" --nacp "${probe_dir}/control.nacp"
+                    --icon "${PLAYGROUND_SWITCH_ICON_JPEG}" --elf2nso "${NX_ELF2NSO_EXE}"
+                    --output "${probe_dir}/package-stage" --title-id=0x0100F59153492000
+                DEPENDS playground-switch-database-probe playground-switch-database-probe-audit "${probe_dir}/main.npdm"
+                    "${probe_dir}/control.nacp"
+                VERBATIM)
+        endif()
+    endfunction()
+    playground_database_probe_package()
     add_executable(playground-switch-engine tools/switch_engine_main.cpp)
     target_compile_features(playground-switch-engine PRIVATE cxx_std_17)
     target_link_libraries(playground-switch-engine PRIVATE
@@ -58,6 +128,17 @@ if(PLAYGROUND_BUILD_ENGINE_RUNTIME)
     set(_engine_npdm
         "${CMAKE_CURRENT_BINARY_DIR}/playground-switch-engine.npdm")
     configure_file(packaging/application.npdm.json.in "${_engine_npdm_json}" @ONLY)
+    set(_diagnostic_audit_args)
+    if(PLAYGROUND_SWITCH_FILE_DIAGNOSTICS)
+        target_compile_definitions(playground_switch_runtime PRIVATE PLAYGROUND_SWITCH_FILE_DIAGNOSTICS=1)
+        file(READ "${_engine_npdm_json}" _diagnostic_descriptor)
+        string(REPLACE "\"permissions\": \"0x21\"" "\"permissions\": \"0x200021\""
+            _diagnostic_descriptor "${_diagnostic_descriptor}")
+        string(REPLACE "\"svcSleepThread\": \"0x0b\"," "\"svcSleepThread\": \"0x0b\",\n        \"svcGetResourceLimitCurrentValue\": \"0x31\","
+            _diagnostic_descriptor "${_diagnostic_descriptor}")
+        file(WRITE "${_engine_npdm_json}" "${_diagnostic_descriptor}")
+        list(APPEND _diagnostic_audit_args --allow-diagnostic-sd)
+    endif()
     add_custom_command(OUTPUT "${_engine_npdm}"
         COMMAND "${DEVKITPRO}/tools/bin/npdmtool"
             "${_engine_npdm_json}" "${_engine_npdm}"
@@ -71,6 +152,7 @@ if(PLAYGROUND_BUILD_ENGINE_RUNTIME)
             "${PROJECT_SOURCE_DIR}/scripts/audit_switch_npdm.py"
             --elf "$<TARGET_FILE:playground-switch-engine>"
             --json "${_engine_npdm_json}"
+            ${_diagnostic_audit_args}
             --npdm "${_engine_npdm}"
             --nm "${CMAKE_NM}"
         DEPENDS playground-switch-engine playground-switch-engine-npdm

@@ -2,6 +2,7 @@
 #define PLAYGROUND_SWITCH_AUDIO_OUTPUT_H
 
 #include <cstdint>
+#include <string>
 
 namespace playground::switch_runtime {
 
@@ -14,6 +15,8 @@ bool initializeAudioOutput(void *context, AudioFillCallback callback,
 void shutdownAudioOutput();
 void pauseAudioOutput();
 void resumeAudioOutput();
+void recordAudioDecodeTime(std::uint64_t nanoseconds);
+std::string audioTimingProfile();
 
 } // namespace playground::switch_runtime
 

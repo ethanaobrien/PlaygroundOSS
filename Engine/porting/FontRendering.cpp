@@ -18,6 +18,10 @@
 #include "CPFInterface.h"
 #include "CKLBUtility.h"
 #include "utf8.h"
+#include <cstdio>
+#include <map>
+#include <string>
+#include <vector>
 
 // Prototype to avoid warning.
 void test();
@@ -735,6 +739,40 @@ bool IPlatformRequest::registerFont(const char* logicalName, const char* physica
 */
 #define FIXED_DPI	(60)
 
+// Labels release their FontObject after rendering, so a text update creates
+// a new face each time. A file-backed face re-opens the font and streams it
+// with many small seek/read calls, which costs tens of milliseconds per
+// update where file IO is an IPC (Horizon CacheStorage). Keep each font
+// file's bytes resident for the process lifetime and open memory faces.
+static FT_Error newCachedFace(FT_Library library, const char* path, FT_Face* face) {
+	static std::map<std::string, std::vector<FT_Byte> > s_fontFiles;
+	if (!path) {
+		return FT_New_Face(library, path, 0, face);
+	}
+	std::map<std::string, std::vector<FT_Byte> >::iterator found = s_fontFiles.find(path);
+	if (found == s_fontFiles.end()) {
+		std::vector<FT_Byte> bytes;
+		if (FILE* file = fopen(path, "rb")) {
+			if (fseek(file, 0, SEEK_END) == 0) {
+				const long size = ftell(file);
+				if (size > 0 && fseek(file, 0, SEEK_SET) == 0) {
+					bytes.resize(static_cast<size_t>(size));
+					if (fread(&bytes[0], 1, bytes.size(), file) != bytes.size()) {
+						bytes.clear();
+					}
+				}
+			}
+			fclose(file);
+		}
+		if (bytes.empty()) {
+			return FT_New_Face(library, path, 0, face);
+		}
+		found = s_fontFiles.insert(std::make_pair(std::string(path), bytes)).first;
+	}
+	return FT_New_Memory_Face(library, &found->second[0],
+		static_cast<FT_Long>(found->second.size()), 0, face);
+}
+
 /*static*/ FontObject* FontObject::createFont(const char* fontName, u32 size) {
 	// 0. Init library if not done yet.
 	s32 error;
@@ -789,7 +827,7 @@ bool IPlatformRequest::registerFont(const char* logicalName, const char* physica
 	// Internal Font
 	char buff[512];
 
-	error = FT_New_Face( s_library, FontObject::getFileFromFontName(fontName, buff, &fallbackFont, &useHinting), 0, &face );/* create face object */
+	error = newCachedFace( s_library, FontObject::getFileFromFontName(fontName, buff, &fallbackFont, &useHinting), &face );/* create face object */
 	if ( !error ) {
 		error = FT_Set_Char_Size( 	face, 		/* handle to face object			*/ 
 									0,			/* char_width same as char_height	*/

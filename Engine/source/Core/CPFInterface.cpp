@@ -36,20 +36,6 @@ IPlatformRequest::IPlatformRequest()
 {}
 IPlatformRequest::~IPlatformRequest() {}
 
-const char *IPlatformRequest::getDatabasePath(const char *assetPath,
-                                              DatabaseOpenMode,
-                                              bool *isReadOnly) {
-	return getFullPath(assetPath, isReadOnly);
-}
-
-bool IPlatformRequest::commitDatabasePath(const char * /*resolvedPath*/) {
-	return true;
-}
-
-int IPlatformRequest::ifsync(void *stream) {
-	return ifflush(stream);
-}
-
 bool IPlatformRequest::listFiles(const char *, std::vector<std::string>&) {
 	return false;
 }

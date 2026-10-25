@@ -7,6 +7,66 @@ does not substitute for an installed-title result.
 
 ## Build identity
 
+### V7 hardware result and subsequent download test, 2026-09-19
+
+Screenshots `2026091913551600` and `2026091913552300` show the v7 probe passed
+its suite and separate-launch database/publication persistence. The user also
+reports that the game boots without the previous database errors. This is not
+blanket acceptance of every database transaction/lifecycle scenario.
+
+Screenshot `2026091914023600` shows a generic download failure. The overlapping
+CacheStorage-writer failure was reproduced locally and a coordinator added;
+see `SwitchCacheWriterCoordination.md`. Its hardware acceptance is pending.
+
+### Shared-handle/root correction, 2026-09-19 (physical test pending)
+
+Game package `out/package/switch-game-shared-handles/0100f59153491000.nsp`, SHA-256
+`e6d8406499f014d7aef543b9fc474e0e23c7d75d853604c5287e83c4f13519db`.
+Matching ELFs are retained alongside both the game and v7 probe packages.
+
+Game screenshot `2026091913421400` identifies an incorrect `pgstate://` prefix
+check. Probe v6 screenshots `2026091913403100` / `2026091913403900` independently
+identify TargetLocked on the second native writable handle to one file. Both
+are corrected generically in the Switch adapter; the v7 probe adds regression
+coverage and a fresh run marker. No game saves or caches are cleared. Local
+tests/builds do not constitute physical acceptance; nothing is approved to push.
+
+### Isolated database probe evidence, 2026-09-19
+
+Probe v4 (`0100F59153492000`, not the game title) passed its implemented suite
+on physical hardware and passed encrypted-database persistence on the next
+launch. Evidence: screenshots `2026091913072000` and `2026091913073000`;
+NSP SHA-256 `31f3538dd9a622ec3eb485997f7e77e0eb69a2c7116ee162b91860ad81485c02`.
+See `SwitchDatabaseProbe.md` for scope and remaining gates. No game-release
+status below is promoted by this isolated result, and console pushes remain
+unapproved.
+
+### Game build (not the isolated probe)
+
+The initial boot test reached a Lua database-open assertion (screenshot
+`2026091913305800`); the old assertion omitted the underlying SQLite error.
+Current diagnostic game package:
+`out/package/switch-game-open-diagnostics/0100f59153491000.nsp`, SHA-256
+`22a919a77811a5ff421e853c456c12dee47168700598acb44613a40ac0d0e1cc`.
+It reports SQLite primary/extended codes and captured native open/create or
+header-validation errors. Native errors are captured before cleanup, not read
+later from stale errno. Device behavior is pending; no existing saves cleared.
+
+Current exploratory boot package: `out/package/switch-game-boot-20260919/0100f59153491000.nsp`,
+SHA-256 `fa31e9a42617e3ad7f92c873f53ab96b37d3f3f278ccd0afb74a6da5524e8858`.
+The game host now registers the tested adapter and routes SaveData callbacks
+through it. A local worker-commit/read serialization regression passes, and
+the Web engine rebuild and Switch packaging audits pass. Existing saves and
+assets are not cleared. Physical boot and full game behavior are PENDING;
+this is not a release approval.
+
+Probe v5 also passed on physical hardware: screenshots `2026091913192000`
+and `2026091913193100` show suite success and next-launch persistence for both
+the encrypted database and non-database publication. NSP SHA-256:
+`cfd5e15c0da024894c6f197b2bf5d9976c4a2b15c4a0e895569f4ebf61e3efb0`.
+This includes the tested external-commit callback coordination, not actual
+sleep/resume or network-worker cancellation. Production host wiring is pending.
+
 | Field | Value |
 | --- | --- |
 | Git commit | PENDING |
@@ -21,13 +81,13 @@ does not substitute for an installed-title result.
 
 | Test | Handheld | Docked | Evidence/notes |
 | --- | --- | --- | --- |
-| Fresh install selects a user and creates private SaveData | PENDING | N/A | Runtime audit replaced the incorrect writable-database VFS; fresh hardware rerun required. |
+| Fresh install selects a user and creates private SaveData | BLOCKED | N/A | Database integration was removed after repeated physical-hardware failure; implement the approved adapter first. |
 | First boot verifies/extracts the bundled ZIP | PENDING | PENDING | Hardware previously completed extraction; rerun against the audited package is required. |
 | Relaunch validates existing generation without extraction | PENDING | PENDING | Rerun against the audited package is required. |
 | Interrupted extraction retains previous valid generation | PENDING | PENDING | |
 | Archive upgrade publishes new generation then removes old | PENDING | PENDING | |
 | CacheStorage eviction triggers clean reinstall, preserving user state | PENDING | PENDING | |
-| Two accounts have distinct identity/credentials/preferences/mutable databases | PENDING | PENDING | Replaceable read-only content may be shared; writable databases must copy up independently. |
+| Two accounts have distinct identity/credentials/preferences/mutable databases | BLOCKED | BLOCKED | Requires the isolated database adapter and a fresh two-account hardware run. |
 | Login cookies survive relaunch, clear completely, and remain user-private | PENDING | PENDING | |
 | User-selector cancellation fails closed | PENDING | N/A | |
 | No production data appears under `sdmc:/switch/PlaygroundOSS-SIF` | PENDING | N/A | |
@@ -72,7 +132,7 @@ Run twenty cycles at title, home screen, gameplay, and active download.
 | HOME/resume x20 at each required scene | PENDING | PENDING | |
 | Sleep/wake during gameplay | PENDING | PENDING | |
 | Sleep/wake during SaveData mutation | PENDING | PENDING | |
-| Interrupt/relaunch during SQLite writes and SaveData commit | PENDING | PENDING | |
+| Interrupt/relaunch during SQLite writes and SaveData commit | BLOCKED | BLOCKED | Database integration is intentionally absent. |
 | Sleep/wake during download returns/cancels promptly | PENDING | PENDING | |
 | Dock/undock repeatedly recreates surface and viewport | PENDING | PENDING | |
 | Touch cancellation on focus loss has no stuck pointers | PENDING | N/A | |
@@ -140,39 +200,29 @@ workspace. If a previously interrupted staging tree cannot be traversed and
 there is no completed generation to preserve, the runtime recreates only the
 title's replaceable CacheStorage and retries; account SaveData is not involved.
 
-The first successful hardware extraction exposed a path-ownership error. An
-intermediate fix inferred ownership from slash depth, which was not a platform
-contract; mapping every external database to CacheStorage then shared mutable
-user databases across accounts. The audited runtime now uses explicit database
-open intent and a generic overlay: `file://state/` maps directly to account
-SaveData, ordinary new external downloads use CacheStorage, and writable
-external databases copy up into account SaveData. Reads and directory listings
-observe the upper layer first. The Switch runtime contains no game database
-names, extension, call-site, or slash-depth classifier.
+The first successful hardware extraction exposed a database/storage ownership
+error. Subsequent attempts added raw and encrypted VFS variants, open-mode
+routing through `IPlatformRequest`, copy-up, synthetic file metadata,
+filename and slash-depth classifiers, `:memory:` fallback, and database-close
+archive commits. These changes repeatedly moved the failure without producing
+a physically accepted implementation. The last package still failed to open
+`file://external/client_settings.db`.
 
-The earlier modernization had also changed Switch and Wii U alone from the
-engine's established `journal_mode=OFF` policy to `DELETE/FULL`, creating an
-auxiliary-file path that neither Android nor the known-working Switch build
-used. That divergence was removed. A later attempt to compensate for observed
-devoptab `fstat()` failures wrapped every SQLite file operation and maintained
-a synthetic file size. That was another unproven divergence and still produced
-empty first-boot databases on hardware. It has also been removed.
+That experiment is now rejected in full. The cleanup was checked against the
+pre-Switch baseline `f56fe3a4977988053b76765b1bfe5c2617b0873c`: Switch
+database source files, host initialization and shutdown, common-engine Switch
+branches, the database-specific `IPlatformRequest` API, RuntimePlatform
+database routing/copy-up, and assertions that claimed the design worked have
+been removed. Android's established writable-path flag behavior is restored.
 
-The Switch now uses the same actual I/O seam as the earlier working draft:
-`unix-none` is cloned only to preserve devoptab paths, then the engine's
-encrypted file wrapper becomes SQLite's default VFS. The discarded
-implementation instead selected a named raw Unix VFS for writable databases;
-that was not equivalent, reached unsupported Horizon descriptor operations,
-and caused the repeated empty `basic_setting` database failure. Dirty
-databases now report short-write/flush/commit failures to SQLite and ask the
-platform to make their resolved path durable at sync/close boundaries. The
-generic database engine contains no Switch mount names or storage selection.
-An explicitly unnamed temporary database uses SQLite's connection-local
-`:memory:` behavior. A named packaged database must resolve to an existing
-asset or its open fails; it can no longer become a valid but empty temporary
-database and hide a packaging/storage defect. The encrypted VFS also rejects
-failed seeks and file-size queries and no longer advertises power-safe sector
-overwrite semantics that libnx does not guarantee.
+The 2026-09-19 candidate adapter is currently linked only into the standalone
+[database probe](SwitchDatabaseProbe.md), not the game host. Compilation
+or a title-screen boot must not be reported as database support. The
+implementation must follow
+[SwitchDatabaseArchitectureProposal.md](SwitchDatabaseArchitectureProposal.md),
+remain game-agnostic, live in the Switch runtime directory, and pass a
+synthetic encrypted-database conformance program on physical hardware before
+the game is used as an acceptance test.
 
 The audit also removed two quieter uses of desktop assumptions. Cache free
 space is queried through Horizon's native filesystem service rather than
@@ -187,13 +237,12 @@ account and update an existing tag without a delete/register gap. Controller
 disconnect cancels a held synthetic touch, and six-axis input reacquires a
 handle after controller disconnect or Npad style changes.
 
-The external namespace behaves as one filesystem even though Horizon requires
-two storage classes. A writable database open copies an existing CacheStorage
-object into SaveData before mutation; read-only opens see the same upper copy.
-Logical delete and rename also clean obsolete lower copies so data cannot
-reappear. Durable engine state uses the explicit state namespace.
-Unrecoverable key/value-state corruption now fails startup instead of silently
-replacing the account's device identity and credentials.
+The non-database external namespace still behaves as one filesystem even
+though Horizon requires two storage classes. Logical delete and rename clean
+obsolete lower copies so data cannot reappear. Durable engine state uses the
+explicit state namespace. Unrecoverable key/value-state corruption fails
+startup instead of silently replacing the account's device identity and
+credentials.
 
 The v2 fresh-title run supplied the missing physical evidence: extraction
 failed on
@@ -211,7 +260,7 @@ reserved `~pg*` components of at most 64 bytes. Literal logical names using
 that prefix are escaped too, making the mapping injective. Directory listings
 decode the representation, so the engine and game retain their exact logical
 names. The mapper is applied to bootstrap extraction, validation, runtime
-reads/writes, downloads, databases, rename, removal, and merged enumeration;
+reads/writes, downloads, rename, removal, and merged enumeration;
 NRO/SD mode remains unencoded. The complete supplied archive has been checked
 for collisions and maps to a maximum 64-byte physical component and 161-byte
 physical path. This is distinct from the independently required periodic

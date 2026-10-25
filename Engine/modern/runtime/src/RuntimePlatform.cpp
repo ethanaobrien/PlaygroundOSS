@@ -68,7 +68,6 @@
 #include <unistd.h>
 #elif defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
-#include <io.h>
 #include <psapi.h>
 #include <windows.h>
 #else
@@ -336,18 +335,19 @@ private:
 class DesktopWriteStream final : public IWriteStream {
 public:
   DesktopWriteStream(const std::string &path, const char *key, bool encrypt,
-                     RuntimePlatform::StorageCommit commit)
+                     RuntimePlatform::StorageCommit commit,
+                     const RuntimePlatform::WriterFactory& factory)
       : m_decrypter(0), m_encrypt(encrypt), m_commit(std::move(commit)) {
     std::error_code error;
     std::filesystem::create_directories(
         std::filesystem::path(path).parent_path(), error);
-    m_file = std::fopen(path.c_str(), "wb");
+    if (!error) m_file = factory ? factory(path) : openStorageWriter(path);
     if (m_file && m_encrypt) {
       u8 header[16]{};
       u32 headerSize = 0;
       m_decrypter.encryptSetup(reinterpret_cast<const u8 *>(key), header,
                                &headerSize);
-      if (std::fwrite(header, 1, headerSize, m_file) != headerSize) {
+      if (m_file->write(header, headerSize) != headerSize) {
         m_failed = true;
         return;
       }
@@ -358,7 +358,7 @@ public:
   }
   ~DesktopWriteStream() override {
     if (m_file) {
-      const bool closed = std::fclose(m_file) == 0;
+      const bool closed = m_file->close() == 0;
       m_file = nullptr;
       if (!closed)
         m_failed = true;
@@ -372,7 +372,7 @@ public:
     return m_file && !m_failed ? NORMAL : CAN_NOT_WRITE;
   }
   s32 getPosition() override {
-    return m_file ? static_cast<s32>(std::ftell(m_file) -
+    return m_file ? static_cast<s32>(m_file->position() -
                                      m_decrypter.getHeaderSize())
                   : -1;
   }
@@ -389,12 +389,12 @@ public:
   void writeBlock(void *p, u32 n) override {
     if (m_encrypt)
       m_decrypter.decryptBlck(p, n);
-    if (m_file && std::fwrite(p, 1, n, m_file) != n)
+    if (m_file && m_file->write(p, n) != n)
       m_failed = true;
   }
 
 private:
-  FILE *m_file{};
+  std::unique_ptr<StorageWriter> m_file;
   CDecryptBaseClass m_decrypter;
   bool m_encrypt{};
   bool m_failed{};
@@ -430,13 +430,14 @@ public:
 
 class DesktopTmpFile final : public ITmpFile {
 public:
-  DesktopTmpFile(const std::string &path, RuntimePlatform::StorageCommit commit)
+  DesktopTmpFile(const std::string &path, RuntimePlatform::StorageCommit commit,
+                 const RuntimePlatform::WriterFactory& factory)
       : m_path(path), m_commit(std::move(commit)),
         m_started(std::chrono::steady_clock::now()) {
     std::error_code error;
     std::filesystem::create_directories(
         std::filesystem::path(path).parent_path(), error);
-    m_file = error ? nullptr : std::fopen(path.c_str(), "wb");
+    if (!error) m_file = factory ? factory(path) : openStorageWriter(path);
     if (!m_file) {
 #if !defined(__WIIU__)
       std::fprintf(stderr,
@@ -450,7 +451,7 @@ public:
   size_t writeTmp(void *p, size_t n) override {
     if (!m_file)
       return 0;
-    const size_t written = std::fwrite(p, 1, n, m_file);
+    const size_t written = m_file->write(p, n);
     m_bytesWritten += written;
     if (written != n) {
 #if !defined(__WIIU__)
@@ -465,7 +466,7 @@ public:
   int closeTmp() override {
     if (!m_file)
       return 0;
-    int r = std::fclose(m_file);
+    int r = m_file->close();
     m_file = nullptr;
     if (!r && m_commit && !m_commit())
       r = -1;
@@ -474,7 +475,9 @@ public:
         std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                      m_started)
             .count();
-    std::fprintf(stderr,
+    // Packages hold thousands of small files; report only the notable ones.
+    if (r != 0 || seconds >= 0.05)
+      std::fprintf(stderr,
                  "asset download write: path=%s bytes=%zu elapsed=%.3fs "
                  "result=%d\n",
                  m_path.c_str(), m_bytesWritten, seconds, r);
@@ -485,7 +488,7 @@ public:
 
 private:
   std::string m_path;
-  FILE *m_file;
+  std::unique_ptr<StorageWriter> m_file;
   RuntimePlatform::StorageCommit m_commit;
   std::chrono::steady_clock::time_point m_started;
   std::size_t m_bytesWritten{};
@@ -907,29 +910,16 @@ u32 RuntimePlatform::ifwrite(const void *p, u32 s, u32 n, void *f) {
 int RuntimePlatform::ifflush(void *f) {
   return std::fflush(static_cast<FILE *>(f));
 }
-int RuntimePlatform::ifsync(void *f) {
-  FILE *file = static_cast<FILE *>(f);
-  if (!file || std::fflush(file) != 0)
-    return -1;
-#if defined(_WIN32)
-  return _commit(_fileno(file));
-#elif defined(__EMSCRIPTEN__)
-  // WasmFS OPFS synchronous writes complete at the filesystem-operation
-  // boundary and do not expose a native fsync descriptor operation.
-  return 0;
-#else
-  return fsync(fileno(file));
-#endif
-}
 long RuntimePlatform::iftell(void *f) {
   return std::ftell(static_cast<FILE *>(f));
 }
 bool RuntimePlatform::icreateEmptyFile(const char *n) {
-  FILE *f = std::fopen(n, "wb");
+  // Match the original Android/Win32 hosts: ensure existence without truncating
+  // an existing file if creation races another opener.
+  FILE *f = std::fopen(n, "ab");
   if (!f)
     return false;
-  std::fclose(f);
-  return true;
+  return std::fclose(f) == 0;
 }
 int RuntimePlatform::irename(const char *a, const char *b) {
   std::lock_guard<std::mutex> mutationLock(m_storageMutationMutex);
@@ -1122,106 +1112,6 @@ std::string RuntimePlatform::resolvePath(const char *input,
   return physical(path);
 }
 
-std::string RuntimePlatform::resolveDatabasePath(
-    const char *input, DatabaseOpenMode mode, bool *readOnly) {
-  if (!input) {
-    if (readOnly)
-      *readOnly = false;
-#if defined(__SWITCH__)
-    // SQLite's null filename asks the Unix VFS to create a private temporary
-    // file. Horizon does not provide that Unix temporary-file contract. Keep
-    // the platform substitution here, behind getDatabasePath(), rather than
-    // teaching either generic database frontend about libnx.
-    return ":memory:";
-#else
-    return {};
-#endif
-  }
-  std::string resolved;
-  constexpr const char *externalPrefix = "file://external/";
-  const std::size_t externalPrefixLength = std::strlen(externalPrefix);
-  const std::string logical(input);
-  if (logical.compare(0, externalPrefixLength, externalPrefix) == 0 &&
-      mode != DatabaseOpenMode::ReadOnly) {
-    // The legacy external namespace represented one app-private filesystem on
-    // mobile platforms. On hosts which separate account SaveData from
-    // replaceable content, explicit database write intent selects SaveData.
-    // A later read observes the same object through resolvePath's state-first
-    // overlay. No game identity, filename, extension, or directory shape is
-    // involved in this decision.
-    if (readOnly)
-      *readOnly = false;
-    const std::string relative = logical.substr(externalPrefixLength);
-    const auto physical = [this](const std::string &value) {
-      return m_pathMapper
-                 ? m_pathMapper(std::filesystem::path(value)).string()
-                 : value;
-    };
-    resolved = physical(joinUriPath(m_stateRoot, relative));
-    const std::string content = physical(joinUriPath(m_contentRoot, relative));
-    std::lock_guard<std::mutex> mutationLock(m_storageMutationMutex);
-    if (!resolved.empty() && !content.empty() &&
-        !std::filesystem::exists(resolved) &&
-        std::filesystem::is_regular_file(content)) {
-      // The external URI historically named one app-private filesystem. A
-      // writable open of a lower-layer database therefore needs an ordinary
-      // copy-up before mutation, just like a union filesystem. Copy encrypted
-      // bytes verbatim; the engine VFS continues to own page decryption.
-      std::error_code error;
-      const std::filesystem::path destination(resolved);
-      std::filesystem::create_directories(destination.parent_path(), error);
-
-      // Copying directly to the visible upper-layer name lets an unrelated
-      // SaveData commit persist a partial object. Publish through a unique
-      // same-directory temporary file instead: copy_file closes it before the
-      // atomic rename, and only the complete name is then committed. The
-      // temporary basename is intentionally unrelated to the database name;
-      // no database identity or encryption behavior is inferred here.
-      std::filesystem::path temporary;
-      for (unsigned attempt = 0; !error && attempt < 8; ++attempt) {
-        const std::string identifier = randomIdentifier();
-        if (identifier.empty()) {
-          error = std::make_error_code(std::errc::io_error);
-          break;
-        }
-        temporary = destination.parent_path() /
-                    (".pg-copyup-" + identifier + ".tmp");
-        if (!std::filesystem::exists(temporary, error))
-          break;
-        temporary.clear();
-      }
-      if (!error && temporary.empty())
-        error = std::make_error_code(std::errc::file_exists);
-      if (!error)
-        std::filesystem::copy_file(content, temporary,
-                                   std::filesystem::copy_options::none, error);
-      if (!error)
-        std::filesystem::rename(temporary, destination, error);
-
-      const std::string copyError = error ? error.message() : std::string();
-      const bool committed = !error && (!m_commitState || m_commitState());
-      if (error || !committed) {
-        std::error_code cleanupError;
-        if (!temporary.empty())
-          std::filesystem::remove(temporary, cleanupError);
-        cleanupError.clear();
-        std::filesystem::remove(destination, cleanupError);
-        // If publication reached the final name but its archive commit failed,
-        // make the rollback durable when the device has recovered. Failure of
-        // this best-effort second commit still leaves no partial file in the
-        // mounted view and is reported as an open failure.
-        if (!error && m_commitState)
-          m_commitState();
-        logging("database copy-up failed for %s: %s", input,
-                error ? copyError.c_str() : "state commit failed");
-        return {};
-      }
-    }
-  } else {
-    resolved = resolvePath(input, readOnly);
-  }
-  return resolved;
-}
 IReadStream *RuntimePlatform::openReadStream(const char *n, bool decrypt,
                                              u32 mode) {
   if (!n)
@@ -1240,7 +1130,8 @@ IReadStream *RuntimePlatform::openWriteStream(const char *n, bool encrypt,
   const char *key = !std::strncmp(n, "file://", 7) ? n + 7 : n;
   return reinterpret_cast<IReadStream *>(new DesktopWriteStream(
       resolvePath(n, nullptr), key, encrypt,
-      usesStateStorage(n) ? m_commitState : m_commitContent));
+      usesStateStorage(n) ? m_commitState : m_commitContent,
+      usesStateStorage(n) ? WriterFactory{} : m_contentWriterFactory));
 }
 void RuntimePlatform::beforeAssertFunction(const char *function, bool) {
   logging("assert callback: %s", function ? function : "");
@@ -1396,12 +1287,19 @@ void RuntimePlatform::setIdleTimerActivity(bool active) {
 ITmpFile *RuntimePlatform::openTmpFile(const char *p) {
   auto *f = new DesktopTmpFile(resolvePath(p, nullptr),
                                usesStateStorage(p) ? m_commitState
-                                                   : m_commitContent);
+                                                   : m_commitContent,
+                               usesStateStorage(p) ? WriterFactory{} : m_contentWriterFactory);
   if (!f->ready()) {
     delete f;
     return nullptr;
   }
   return f;
+}
+bool RuntimePlatform::beginFileWriteBatch(const char* root) {
+  return !m_contentWriteBatch || usesStateStorage(root) || m_contentWriteBatch(true, false);
+}
+bool RuntimePlatform::endFileWriteBatch(const char* root, bool success) {
+  return !m_contentWriteBatch || usesStateStorage(root) || m_contentWriteBatch(false, success);
 }
 int RuntimePlatform::removeTmpFile(const char *p) {
   int result = std::remove(resolvePath(p, nullptr).c_str());
@@ -1698,26 +1596,6 @@ const char *RuntimePlatform::getFullPath(const char *p, bool *ro) {
   char *out = new char[v.size() + 1];
   std::memcpy(out, v.c_str(), v.size() + 1);
   return out;
-}
-const char *RuntimePlatform::getDatabasePath(const char *p,
-                                             DatabaseOpenMode mode,
-                                             bool *ro) {
-  std::string v = resolveDatabasePath(p, mode, ro);
-  if (v.empty())
-    return nullptr;
-  char *out = new char[v.size() + 1];
-  std::memcpy(out, v.c_str(), v.size() + 1);
-  return out;
-}
-bool RuntimePlatform::commitDatabasePath(const char *resolvedPath) {
-  if (!resolvedPath)
-    return true;
-  const std::string path(resolvedPath);
-  if (pathUsesRoot(path, m_stateRoot))
-    return !m_commitState || m_commitState();
-  if (pathUsesRoot(path, m_contentRoot))
-    return !m_commitContent || m_commitContent();
-  return true;
 }
 const char *RuntimePlatform::getPlatform() {
   static const std::string platform = [] {

@@ -15,6 +15,8 @@
 */
 #include "CKLBLanguageDatabase.h"
 #include "CKLBUtility.h"
+#include "DatabasePlatform.h"
+#include "CKLBDatabase.h"
 
 extern void KLBRegisterObjectName(void* object, const char* className, int flags);
 extern void KLBUnregisterObjectName(void* object, const char* className);
@@ -76,7 +78,9 @@ bool CKLBLanguageDatabase::preLoadGroup(const char* groupID) {
 bool CKLBLanguageDatabase::setupDB(const char* dbFile, const char* tableName, const char* keyField, const char* valueField, const char* groupField)
 {
 	IPlatformRequest& platform = CPFInterface::getInstance().platform();
-	const char* fullPath = platform.getFullPath(dbFile);
+	if (platform.useEncryption() && !initializeEncryptedSQLiteVFS()) return false;
+	const char* fullPath = resolveDatabaseOpenPath(dbFile, SQLITE_OPEN_READONLY, false, NULL);
+	if (!fullPath) return false;
 
 	//int rc = sqlite3_open(fullPath, &m_dataBase);
 	int rc = sqlite3_open_v2(fullPath, &m_db, SQLITE_OPEN_READONLY, NULL);

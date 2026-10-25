@@ -79,6 +79,10 @@ SwitchNetwork::~SwitchNetwork() { shutdownAndWait(); }
 
 bool SwitchNetwork::initialize(std::string &error) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_shuttingDown) {
+    error = "Switch networking is shutting down";
+    return false;
+  }
   if (m_suspendRequested.load(std::memory_order_acquire)) {
     error = "Switch networking cannot initialize while the title is suspended";
     return false;
@@ -135,6 +139,10 @@ SwitchNetwork::Transfer SwitchNetwork::beginTransfer(std::string &error) {
   if (!initialize(error))
     return {};
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_shuttingDown || !m_socketReady) {
+    error = "Switch networking stopped before the transfer began";
+    return {};
+  }
   if (m_suspendRequested.load(std::memory_order_acquire)) {
     error = "A network transfer cannot begin while the title is suspended";
     return {};
@@ -191,10 +199,15 @@ bool SwitchNetwork::resume(std::string &error) {
 
 void SwitchNetwork::shutdownAndWait() {
   std::unique_lock<std::mutex> lock(m_mutex);
+  m_idle.wait(lock, [this] { return !m_shuttingDown; });
+  m_shuttingDown = true;
   m_cancellationEpoch.fetch_add(1, std::memory_order_acq_rel);
-  m_suspendRequested.store(true, std::memory_order_release);
   m_idle.wait(lock, [this] { return m_metrics.activeTransfers == 0; });
   shutdownLocked();
+  // Service teardown is not a HOME/sleep transition. Preserve actual applet
+  // suspension, but allow initGame() to initialize again after a soft reboot.
+  m_shuttingDown = false;
+  m_idle.notify_all();
 }
 
 bool SwitchNetwork::rollbackInitialization(std::string &error) {
@@ -226,6 +239,12 @@ void SwitchNetwork::shutdownLocked() {
 NetworkMetrics SwitchNetwork::metrics() const {
   std::lock_guard<std::mutex> lock(m_mutex);
   return m_metrics;
+}
+bool SwitchNetwork::tryMetrics(NetworkMetrics& result) const {
+  std::unique_lock<std::mutex> lock(m_mutex, std::try_to_lock);
+  if (!lock.owns_lock()) return false;
+  result = m_metrics;
+  return true;
 }
 
 SwitchNetwork &sharedSwitchNetwork() {

@@ -14,6 +14,7 @@ typedef struct PlaygroundSwitchHost PlaygroundSwitchHost;
 // translation units, whose legacy BaseType aliases conflict with libnx.
 #define PLAYGROUND_SWITCH_BUTTON_B (UINT64_C(1) << 1)
 #define PLAYGROUND_SWITCH_BUTTON_PLUS (UINT64_C(1) << 10)
+#define PLAYGROUND_SWITCH_BUTTON_MINUS (UINT64_C(1) << 11)
 
 typedef enum PlaygroundSwitchVisibility {
   PLAYGROUND_SWITCH_VISIBILITY_FOREGROUND,

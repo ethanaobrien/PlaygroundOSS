@@ -68,11 +68,19 @@ def verify_stage(stage: pathlib.Path) -> str:
         for path in stage.rglob("*")
         if path.is_file() and path != manifest_path
     }
-    if actual != STAGE_FILES:
+    kind = manifest.get("kind", "game")
+    if kind not in {"game", "database-probe"}:
+        raise SystemExit("unsupported package kind")
+    expected = STAGE_FILES
+    if kind == "database-probe":
+        if title_id != 0x0100F59153492000:
+            raise SystemExit("database probe must use its isolated title ID")
+        expected = STAGE_FILES - {"romfs/AppAssets.zip", "romfs/AppAssets.metadata"}
+    if actual != expected:
         raise SystemExit(
             f"package stage has an invalid production file set: "
-            f"missing={sorted(STAGE_FILES - actual)}, "
-            f"unexpected={sorted(actual - STAGE_FILES)}"
+            f"missing={sorted(expected - actual)}, "
+            f"unexpected={sorted(actual - expected)}"
         )
     if set(declared) != actual:
         raise SystemExit(
@@ -148,9 +156,6 @@ def main() -> int:
     parser.add_argument("--output", type=pathlib.Path, required=True)
     args = parser.parse_args()
     stage = args.stage.resolve()
-    for relative in (*sorted(STAGE_FILES), "package-manifest.json"):
-        if not (stage / relative).is_file():
-            raise SystemExit(f"incomplete package stage: missing {relative}")
     expected_package_name = verify_stage(stage)
     if not args.keys.is_file():
         raise SystemExit("--keys must name a user-owned keyset file")

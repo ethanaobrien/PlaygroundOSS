@@ -16,6 +16,7 @@ def main() -> int:
     parser.add_argument("--json", type=pathlib.Path, required=True)
     parser.add_argument("--npdm", type=pathlib.Path, required=True)
     parser.add_argument("--nm", type=pathlib.Path, required=True)
+    parser.add_argument("--allow-diagnostic-sd", action="store_true")
     args = parser.parse_args()
 
     descriptor = json.loads(args.json.read_text(encoding="utf-8"))
@@ -32,7 +33,7 @@ def main() -> int:
     # 0x1 is the ordinary application-content permission.  0x20 is the
     # narrow creation permission needed to provision this title's NACP-sized
     # SaveData/CacheStorage when Horizon has not done so before first launch.
-    if permissions != 0x21:
+    if permissions != (0x200021 if args.allow_diagnostic_sd else 0x21):
         raise SystemExit(
             "installed title may only request ApplicationInfo and SaveData "
             "creation FS access"

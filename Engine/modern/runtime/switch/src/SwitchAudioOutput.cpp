@@ -29,6 +29,12 @@ struct OutputState {
 };
 
 OutputState g_output;
+std::atomic<std::uint64_t> maxFillNs{0}, maxDecodeNs{0};
+void recordMaximum(std::atomic<std::uint64_t>& maximum, std::uint64_t value) {
+  auto previous = maximum.load(std::memory_order_relaxed);
+  while (previous < value && !maximum.compare_exchange_weak(
+      previous, value, std::memory_order_relaxed)) {}
+}
 
 bool reportResult(const char *operation, Result result) {
   if (R_SUCCEEDED(result))
@@ -39,12 +45,14 @@ bool reportResult(const char *operation, Result result) {
 }
 
 void fill(AudioOutBuffer &buffer) {
+  const auto started = armGetSystemTick();
   auto *samples = static_cast<std::int16_t *>(buffer.buffer);
   if (g_output.callback && !g_output.paused)
     g_output.callback(g_output.context, samples, FramesPerBuffer);
   else
     std::memset(samples, 0, BytesPerBuffer);
   armDCacheFlush(buffer.buffer, buffer.buffer_size);
+  recordMaximum(maxFillNs, armTicksToNs(armGetSystemTick() - started));
 }
 
 void outputThread() {
@@ -82,6 +90,18 @@ void releaseAllocations() {
 }
 
 } // namespace
+
+void recordAudioDecodeTime(std::uint64_t nanoseconds) {
+  recordMaximum(maxDecodeNs, nanoseconds);
+}
+
+std::string audioTimingProfile() {
+  char text[192];
+  std::snprintf(text, sizeof(text),
+      "\nAudio longest decode/fill: %.1f / %.1f ms (default priorities)\n",
+      maxDecodeNs.load() / 1000000.0, maxFillNs.load() / 1000000.0);
+  return text;
+}
 
 bool initializeAudioOutput(void *context, AudioFillCallback callback,
                            std::uint32_t &sampleRate,

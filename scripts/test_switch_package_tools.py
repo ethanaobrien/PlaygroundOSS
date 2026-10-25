@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import pathlib
+import runpy
 import struct
 import subprocess
 import sys
@@ -139,6 +140,26 @@ def main() -> int:
             json.dumps(records, indent=2, sort_keys=True) + "\n"
         )
         invoke(tool, stage, keyset, packer, root / "extra-output", False)
+
+        probe = make_stage(root / "probe")
+        for relative in ("romfs/AppAssets.zip", "romfs/AppAssets.metadata"):
+            (probe / relative).unlink()
+        manifest = json.loads((probe / "package-manifest.json").read_text())
+        manifest.update(kind="database-probe", title_id="0x0100F59153492000")
+        manifest["files"] = [record for record in manifest["files"]
+                             if not record["path"].startswith("romfs/")]
+        (probe / "package-manifest.json").write_text(json.dumps(manifest))
+        verify = runpy.run_path(str(tool))["verify_stage"]
+        if verify(probe) != "0100f59153492000.nsp":
+            raise AssertionError("asset-free probe stage was rejected")
+        manifest["title_id"] = "0x0100F59153491000"
+        (probe / "package-manifest.json").write_text(json.dumps(manifest))
+        try:
+            verify(probe)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("probe accepted the game's title ID")
 
         if hasattr(os, "symlink"):
             stage = make_stage(root / "symlink")

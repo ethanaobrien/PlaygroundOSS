@@ -9,12 +9,16 @@ add_library(playground_switch_runtime STATIC
     src/SwitchHash.cpp
     src/SwitchNetwork.cpp
     src/SwitchNotifications.cpp
-    src/SwitchSqlite.cpp)
+    src/SwitchDiagnostics.cpp
+    src/SwitchPosixCompat.cpp)
+target_sources(playground_switch_runtime PRIVATE src/SwitchDatabase.cpp)
+target_include_directories(playground_switch_runtime PRIVATE
+    "${PROJECT_SOURCE_DIR}/Engine/source/Database"
+    "${PROJECT_SOURCE_DIR}/Engine/libs/SQLite")
 add_library(Playground::SwitchRuntime ALIAS playground_switch_runtime)
 target_compile_features(playground_switch_runtime PUBLIC cxx_std_17)
 target_include_directories(playground_switch_runtime PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    PRIVATE ${PROJECT_SOURCE_DIR}/Engine/libs/SQLite)
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_compile_definitions(playground_switch_runtime PRIVATE
     PLAYGROUND_SWITCH_SAVE_SIZE=${PLAYGROUND_SWITCH_SAVE_SIZE}
     PLAYGROUND_SWITCH_SAVE_JOURNAL_SIZE=${PLAYGROUND_SWITCH_SAVE_JOURNAL_SIZE}

@@ -322,11 +322,6 @@ class IPlatformRequest
 {
 public:
 	typedef std::list<const char*> ExtensionEventArgs;
-	enum class DatabaseOpenMode {
-		ReadOnly,
-		ReadWrite,
-		ReadWriteCreate
-	};
 	IPlatformRequest();
 	virtual ~IPlatformRequest();
 
@@ -357,10 +352,6 @@ public:
 	virtual u32			ifread	(void* ptr, u32 size, u32 count, void* file ) = 0;
 	virtual u32			ifwrite	(const void * ptr, u32 size, u32 count, void* file) = 0;
 	virtual int			ifflush	(void* file) = 0;
-	// Flush language-runtime buffering and make the underlying file durable.
-	// Transactional filesystems may still require commitDatabasePath() after
-	// this file-level boundary.
-	virtual int			ifsync	(void* file);
 	virtual long int	iftell	(void* file) = 0;
 	virtual bool		icreateEmptyFile(const char* name) = 0;
 	virtual int			irename(const char* oldName, const char* newName) = 0;
@@ -431,6 +422,11 @@ public:
 
 	virtual ITmpFile *	openTmpFile				(const char * filePath) = 0;
 	virtual int			removeTmpFile			(const char * filePath) = 0;
+	// Optional durability boundary for a related sequence of file writes.
+	// Calls must be paired on the same thread. This is not an atomic rollback
+	// transaction; finish failure must prevent reporting the operation complete.
+	virtual bool beginFileWriteBatch(const char*) { return true; }
+	virtual bool endFileWriteBatch(const char*, bool) { return true; }
 	virtual bool		removeFileOrFolder		(const char * filePath) = 0;
 	// Enumerate one logical directory. The default returns false so legacy
 	// platform implementations retain the historical direct-directory path;
@@ -599,16 +595,6 @@ public:
 	//! 指定アセットパスを各プラットフォーム上のフルパスに変換した文字列を返す。
 	// 返された文字列は、別途 delete [] で削除の必要がある。
 	virtual const char * getFullPath(const char * assetPath, bool* isReadOnly=NULL) = 0;
-	// Resolve a database according to the access contract requested by the
-	// database frontend. Platforms with separate user-state and replaceable-
-	// content stores use this explicit mode rather than guessing from a game
-	// filename or directory shape.
-	virtual const char * getDatabasePath(const char * assetPath,
-		DatabaseOpenMode mode, bool* isReadOnly=NULL);
-	// Make writes to the filesystem containing a resolved database path durable.
-	// Most platforms need no operation beyond the file flush performed by the
-	// database VFS. Transactional mounted filesystems override this contract.
-	virtual bool commitDatabasePath(const char * resolvedPath);
 
 	//! 動作環境情報文字列を返す。
 	virtual const char * getPlatform() = 0;

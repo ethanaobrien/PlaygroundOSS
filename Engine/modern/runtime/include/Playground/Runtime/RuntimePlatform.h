@@ -2,6 +2,7 @@
 #define PLAYGROUND_RUNTIME_RUNTIME_PLATFORM_H
 
 #include "CPFInterface.h"
+#include "Playground/Runtime/StorageWriter.h"
 
 #include <atomic>
 #include <filesystem>
@@ -21,6 +22,13 @@ class RuntimePlatform final : public IPlatformRequest {
 public:
   using GLProcResolver = void *(*)(const char *name);
   using StorageCommit = std::function<bool()>;
+  using WriterFactory = std::function<std::unique_ptr<StorageWriter>(const std::string&)>;
+  using WriteBatch = std::function<bool(bool begin, bool success)>;
+  void setContentWriteBatch(WriteBatch batch) { m_contentWriteBatch = std::move(batch); }
+  bool beginFileWriteBatch(const char* root) override;
+  bool endFileWriteBatch(const char* root, bool success) override;
+  // Configure before starting workers; an empty factory uses ordinary stdio.
+  void setContentWriterFactory(WriterFactory factory) { m_contentWriterFactory = std::move(factory); }
   using PathMapper =
       std::function<std::filesystem::path(const std::filesystem::path &)>;
   using StorageRemove = std::function<bool(const std::filesystem::path &,
@@ -53,7 +61,6 @@ public:
   u32 ifread(void *, u32, u32, void *) override;
   u32 ifwrite(const void *, u32, u32, void *) override;
   int ifflush(void *) override;
-  int ifsync(void *) override;
   long iftell(void *) override;
   bool icreateEmptyFile(const char *) override;
   int irename(const char *, const char *) override;
@@ -91,8 +98,6 @@ public:
   void *getFont(int, const char *) override;
   void deleteFont(void *) override;
   const char *getFullPath(const char *, bool *) override;
-  const char *getDatabasePath(const char *, DatabaseOpenMode, bool *) override;
-  bool commitDatabasePath(const char *) override;
   const char *getPlatform() override;
   void *getGLExtension(const char *) override;
   const char *getShaderExtension(int) override;
@@ -186,9 +191,10 @@ public:
   bool openExternalUrl(const char *url);
 
 private:
+  WriterFactory m_contentWriterFactory;
+  WriteBatch m_contentWriteBatch;
   bool usesStateStorage(const char *) const;
   std::string resolvePath(const char *, bool *) const;
-  std::string resolveDatabasePath(const char *, DatabaseOpenMode, bool *);
   std::string m_installRoot;
   std::string m_contentRoot;
   std::string m_stateRoot;

@@ -61,11 +61,13 @@ public:
   // changing foreground/suspended lifecycle state, so a transient higher-
   // layer initialization failure can be retried.
   bool rollbackInitialization(std::string &error);
-  // Final teardown has no safe timeout: the platform object, curl globals,
+  // Teardown (including an in-process game reboot) has no safe timeout:
+  // the platform object, curl globals,
   // and mounted filesystems are all still reachable by an active lease.
   // Cancel and drain every lease before their owners are destroyed.
   void shutdownAndWait();
   NetworkMetrics metrics() const;
+  bool tryMetrics(NetworkMetrics& result) const;
 
 private:
   void finishTransfer(std::uint64_t startedAt, std::size_t receivedBytes);
@@ -76,6 +78,7 @@ private:
   bool m_nifmReady{};
   bool m_requestReady{};
   bool m_socketReady{};
+  bool m_shuttingDown{};
   std::atomic<bool> m_suspendRequested{};
   std::atomic<std::uint64_t> m_cancellationEpoch{};
 };

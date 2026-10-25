@@ -27,9 +27,6 @@
 // frontends call this before their first open; initialization order is not a
 // hidden requirement of the runtime.
 bool initializeEncryptedSQLiteVFS();
-#if defined(__SWITCH__)
-void shutdownEncryptedSQLiteVFS();
-#endif
 
 /**
 	Database Singleton.

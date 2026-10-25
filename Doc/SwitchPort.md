@@ -46,7 +46,7 @@ SaveData upper layer and a replaceable CacheStorage lower layer.
 | --- | --- | --- |
 | `install` | CacheStorage | Transactionally extracted `AppAssets.zip` |
 | `content` | CacheStorage | Downloaded packages, temporary downloads, and other reproducible assets |
-| `state` | Launch user's account SaveData | Credentials, device identity, preferences, cookies, explicit state, and copy-on-write mutable databases |
+| `state` | Launch user's account SaveData | Credentials, device identity, preferences, cookies, and explicit durable state |
 
 The package contains the original `AppAssets.zip` as one RomFS file. It does
 not contain an extracted AppAssets tree. On first launch or archive upgrade,
@@ -86,9 +86,9 @@ Bootstrap requirements:
 - Treat CacheStorage eviction as a reinstall condition, not as loss of user
   state.
 
-State writes and SQLite transactions must use an archive-aware durability
-boundary. Engine-level state publication commits the SaveData device after
-the completed file operation and at lifecycle boundaries. Multi-file state
+State writes must use an archive-aware durability boundary. Engine-level state
+publication commits the SaveData device after the completed file operation and
+at lifecycle boundaries. Multi-file state
 publication uses a recoverable journal or dual-slot protocol; deleting a live
 destination before rename is not an atomic update strategy.
 
@@ -96,21 +96,27 @@ The libcurl cookie engine is process-wide and shared by every transfer. Its
 Netscape cookie jar lives in per-user SaveData, is reloaded before the first
 request, and is flushed and committed only when the cookie set changes (plus
 shutdown/suspend). Clearing cookies removes both the shared in-memory set and
-the durable jar. Cookie, key/value, SQLite, and lifecycle commits are
+the durable jar. Cookie, key/value, and lifecycle commits are
 serialized with one SaveData commit boundary; parallel downloads use the same
 serialized boundary for CacheStorage publication.
 
-New engine-owned writable state uses `file://state/`. The database frontend
-also carries its actual open mode to the platform. A read-only external
-database observes the SaveData upper layer first and then CacheStorage. The
-first writable open copies an existing lower-layer database byte-for-byte to
-SaveData, commits that copy, and opens it there; a genuinely new writable
-database is created there directly. SQLite's requested read/create flags are
-not rewritten merely because a mount is writable. Ordinary external downloads
-remain in CacheStorage. Directory enumeration merges both layers, rename
-preserves the source layer, and logical deletion removes every physical layer
-of that object so an obsolete lower copy cannot reappear. These are generic
-union-filesystem rules, not knowledge of Lua or a particular game database.
+New engine-owned writable state uses `file://state/`. Ordinary external
+downloads remain in CacheStorage. Directory enumeration merges the state and
+content layers, rename preserves the source layer, and logical deletion
+removes every physical layer of that object so an obsolete lower copy cannot
+reappear.
+
+Switch database integration is intentionally absent. The rejected
+implementation passed database-specific open modes and commit callbacks
+through `IPlatformRequest`, added Switch branches to the shared database
+engine, and still failed repeatedly on physical hardware. Its code and claims
+have been removed. [SwitchDatabaseArchitectureProposal.md](SwitchDatabaseArchitectureProposal.md)
+defines the replacement gate; until that design is implemented and accepted
+on real hardware, database-dependent Switch startup remains blocked. The
+2026-09-19 candidate is available only in the isolated
+[database conformance probe](SwitchDatabaseProbe.md); the game host does not
+register it yet.
+
 The separate `PLAYGROUND_APP_INTEGRITY_DATABASE_URI` build setting belongs to
 the application protocol adapter. The Switch host passes it into the generic
 runtime; neither Switch storage nor `RuntimePlatform.cpp` names that database,
@@ -122,21 +128,6 @@ engine no longer embeds a `gamedb.db` path; an application that enables the
 flag must first call `CKLBGameApplication::setDefaultDatabaseUri()`. Enabling
 the feature without an application URI fails startup instead of guessing a
 game-owned filename.
-
-All Switch databases use the engine's established encrypted SQLite file
-wrapper and `journal_mode=OFF`, matching Android and the first hardware-working
-Switch draft. A cloned `unix-none` VFS supplies only absolute devoptab path,
-time, and randomness helpers; it is not the database I/O layer. The wrapper
-checks short writes and flush failures, implements truncate through Horizon,
-rejects unsupported WAL shared-memory operations instead of hanging, and
-asks the platform to make each dirty database path durable at SQLite
-sync/close boundaries. The generic database layer knows neither Switch mount
-names nor which filesystem owns a path; the configured runtime root selects
-the appropriate commit callback. Lifecycle commits remain a second durability
-boundary. Only an explicitly unnamed temporary database uses connection-local
-`:memory:` storage on Switch. A named database whose asset path cannot be
-resolved fails its open; it is never replaced by a valid-but-empty database.
-The generic database frontends do not include or call a Switch helper.
 
 The per-user key/value state store fails closed if both its active and recovery
 generations are malformed or unreadable. It does not manufacture a new device
@@ -230,7 +221,8 @@ Host-side and static gates:
   rollback, cache-eviction, and upgrade tests;
 - path-policy tests covering every engine `file://external`, `file://asset`,
   and `file://install` producer;
-- recoverable state-store interruption tests and static SQLite VFS checks;
+- recoverable state-store interruption tests and a fail-closed audit proving
+  that the rejected Switch database adapter is absent;
 - NPDM/NACP manifest validation and absence of bundled secrets.
 
 Real hardware gates, performed for both handheld and docked operation where
@@ -258,18 +250,16 @@ boot is not sufficient.
 ## Runtime-platform audit (2026-08-22)
 
 The complete Switch boundary was re-audited after hardware repeatedly exposed
-an empty writable database. The review compared the current implementation,
-the Android contract, the earlier hardware-working Switch draft, libnx service
-ownership, linked symbols, and every engine-facing platform method. It found
-and corrected these architectural problems rather than adding another
-database-specific exception:
+an empty writable database. The review compared the implementation with the
+pre-Switch baseline `f56fe3a4977988053b76765b1bfe5c2617b0873c`, Android, the
+earlier hardware-working draft, libnx service ownership, linked symbols, and
+every engine-facing platform method. The database experiment was rejected and
+removed rather than described as fixed:
 
 | Area | Incorrect/overcomplicated behavior removed | Audited behavior |
 | --- | --- | --- |
-| SQLite | A second raw Unix I/O wrapper routed writable databases around the engine's encryption VFS and reached unsupported Horizon/newlib descriptor operations. | `unix-none` supplies path/time/random helpers only; the established encrypted engine VFS performs all database I/O. Initialization is explicit and idempotent for both database entry points. |
-| Database durability | Short writes, seeks, file-size queries, flushes, archive commits, and unsupported VFS operations were ignored, misreported, or could spin forever; the VFS also claimed unproven power-safe sector overwrites. A later fallback silently converted any unresolved named database to `:memory:`, masking a missing asset as a valid empty database. | Errors propagate as specific SQLite I/O results; truncate uses the mounted file's real size operation, dirty SaveData/CacheStorage files flush and commit at sync/close, unsupported WAL shared-memory calls fail immediately, and device capability flags remain conservative. Named database paths fail closed when unresolved; only an explicitly unnamed temporary database uses memory. |
-| Storage ownership | One-off database-name patches coupled the platform to a particular game's Lua files; later slash-depth classifiers guessed whether a path was state. Mapping every external database to CacheStorage then shared mutable user databases across accounts. | The generic database API supplies read-only/read-write/create intent. Mutable external databases copy up into selected-account SaveData; replaceable downloads remain in CacheStorage; reads and listings form one overlay. Switch contains no game name, filename, extension, call-site, or path-shape classifier. |
-| Overlay mutation | Redirecting a writable open without copying the existing lower database created an empty file. Deleting or renaming only the upper copy could reveal stale CacheStorage data. | Copy-up is byte-preserving and committed before open. Logical deletion clears all realizations of an object, and upper-layer rename cleans obsolete lower names, preserving single-filesystem behavior. |
+| SQLite/database routing | Multiple incompatible VFS wrappers, `:memory:` fallback, filename and slash-depth guesses, hard-coded game databases, copy-up, and archive commits were tried in shared code. None passed physical hardware. | All Switch-specific database files, host registration, shared database-routing APIs, common-engine Switch branches, and database-specific probe claims are removed. The port is explicitly blocked pending the isolated adapter design. |
+| Storage ownership | Mapping all external data to one archive either shared user state or misplaced reproducible downloads. | The non-database state/content overlay remains generic. Database ownership will be supplied only by the scoped database adapter, never by `RuntimePlatform`, filename, extension, caller, or game identity. |
 | Persistent identity | Corrupt active and recovery state generations were treated like first launch, allowing a new device identity to overwrite damaged user state; recovery publication commit failures were ignored. | Corruption and failed recovery publication stop startup. The runtime never invents replacement credentials or identity over unreadable SaveData. |
 | Asset publication | An old-emulator fingerprint selected malformed FS IPC and a copy-based publication protocol. Some stale-tree deletion bypassed the native cleanup hook. | Production uses ordinary libnx provisioning, transactional staging, native recursive deletion, periodic bounded CacheStorage commits, and atomic directory publication only. |
 | Physical paths | A hash/truncation experiment was not reversible and coupled only some call sites to a renamed asset namespace. Removing all translation was also wrong: the v2 hardware run failed with FS 2-6003 on an exact 70-byte component while its full native path was only 120 bytes. Bootstrap also previously used 72/73-byte generation/staging basenames, and the state publisher attempted unsupported directory descriptor operations. | Engine/game paths remain exact logical names. Installed storage uses one reversible base64url component codec at every filesystem boundary, splitting only components that exceed the hardware-proven 64-byte limit or collide with its reserved `~pg*` namespace. Listings decode names; rename/removal hide empty continuation spines. The 8,462-entry AppAssets archive maps injectively with max component 64 and max path 161. Bootstrap-owned names use the full 64-character SHA-256 plus `.staging`; authenticated recovery may reset only incomplete replaceable CacheStorage when no completed generation exists. NRO paths remain native SD paths, and no unsupported directory descriptor or permission call is made. |
@@ -280,11 +270,10 @@ database-specific exception:
 | Packaging | Service auditing covered only a small hand-picked subset and allowed stale ACL entries. | The final ELF must account exactly for all 19 linked libnx services, all linked SVCs, filesystem mask `0x21`, selected-user NACP policy, and configured SaveData/CacheStorage sizes. |
 
 No emulator-specific production path remains. Compile, host probes, descriptor
-audits, deterministic staging, and NSP construction are green, but the rows in
-`SwitchHardwareAcceptance.md` remain the authority for behavior which cannot
-be proven by a cross-build—especially first writable-database creation,
-power-loss durability, HOME/sleep timing, user isolation, and Album/audio on a
-physical console.
+audits, deterministic staging, and NSP construction are useful evidence, but
+the port cannot pass its runtime audit or hardware acceptance until the
+database proposal is implemented. The rows in `SwitchHardwareAcceptance.md`
+remain the authority for physical behavior.
 
 ## Prerequisites
 
@@ -459,18 +448,11 @@ Engine URIs have explicit namespace and access semantics:
   otherwise read the install generation;
 - new ordinary `file://external/` downloads are reproducible CacheStorage
   content; reads see a selected-account SaveData overlay first;
-- writable external database opens copy up to, or create in, selected-account
-  SaveData according to the database API's explicit open mode;
 - `file://state/` is private per-user SaveData.
 
 Traversal, absolute, drive-qualified, backslash, and control-character URI
 paths are rejected. Cache publications and SaveData publications commit their
 respective filesystem devices.
-
-Switch devoptab paths (`pgstate:/...` and `pgcache:/...`) are already absolute.
-The Switch SQLite VFS preserves them verbatim instead of allowing the generic
-Unix canonicalizer to prepend `/`, which would make encrypted packaged
-databases inaccessible.
 
 In installed-title mode those absolute paths are the physical result of the
 lossless component codec described above. URI joining always happens in the
@@ -478,22 +460,11 @@ logical namespace, after which the complete path is encoded exactly once.
 Bootstrap returns a logical install root, not an already encoded path. Runtime
 directory enumeration reverses the codec before names reach engine callers.
 
-Every file-backed database uses the engine's existing encrypted SQLite
-wrapper, matching the Android runtime contract. Namespace plus explicit open
-mode selects only the physical storage layer; it never selects a database
-implementation based on a filename, extension, directory depth, caller, or
-game-specific list. A named database with no resolved native path fails its
-open, while an explicitly unnamed temporary database uses connection-local
-memory. A cloned
-`unix-none` VFS supplies path, time, and randomness helpers because Horizon
-mounts are private to the application process and libnx devoptab intentionally
-lacks POSIX `fcntl` advisory locks; it does not perform database I/O. The
-engine retains its original `journal_mode=OFF` policy on every platform. The
-path-helper VFS changes no file-I/O callbacks; it only preserves
-already-absolute devoptab paths. Horizon filesystem commits are owned by the
-platform durability contract at database sync/close, state/content
-publication, suspend, and shutdown. Only unavailable cross-process locking is
-omitted.
+Database URI resolution, encryption, SQLite VFS selection, write ownership,
+and durability are deliberately unspecified here until the isolated database
+adapter is implemented. The accepted design is recorded separately so this
+platform document cannot accidentally promote another untested workaround to
+an implementation contract.
 
 HOME/sleep cancels active curl transfers through the transfer progress hook,
 then commits state/cache without destroying BSD beneath a running callback.

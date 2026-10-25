@@ -60,7 +60,27 @@ CKLBSubThreadUnzip::ThreadExtractEntry(void * hThread, void * data)
 		unzip->m_status = -1;
 		return 0;
 	}
-	return unzip->ThreadExtract(unzip->m_extractRoot);
+	IPlatformRequest& platform = CPFInterface::getInstance().platform();
+	if (!platform.beginFileWriteBatch(unzip->m_extractRoot)) {
+		unzip->m_error = true;
+		unzip->m_status = -5;
+		return 0;
+	}
+	struct BatchGuard {
+		IPlatformRequest& platform;
+		const char* root;
+		bool active;
+		~BatchGuard() { if (active) platform.endFileWriteBatch(root, false); }
+	} batch = { platform, unzip->m_extractRoot, true };
+	const s32 result = unzip->ThreadExtract(unzip->m_extractRoot);
+	const bool durable = platform.endFileWriteBatch(unzip->m_extractRoot,
+		!unzip->m_error && !unzip->m_abnormalFile);
+	batch.active = false;
+	if (!durable) {
+		unzip->m_error = true;
+		unzip->m_status = -5;
+	}
+	return result;
 }
 
 s32

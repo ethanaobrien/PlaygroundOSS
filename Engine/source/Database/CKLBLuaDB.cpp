@@ -15,6 +15,7 @@
 */
 #include "CKLBLuaDB.h"
 #include "CKLBDatabase.h"
+#include "DatabasePlatform.h"
 #if defined(__WIIU__)
 #include "Playground/WiiU/WiiUSqlite.h"
 #endif
@@ -114,14 +115,7 @@ CKLBLuaDB::open(const char * db_asset, int flags)
 		return false;
 	}
 	bool isReadOnly = false;
-	const IPlatformRequest::DatabaseOpenMode openMode =
-		(flags & SQLITE_OPEN_CREATE)
-			? IPlatformRequest::DatabaseOpenMode::ReadWriteCreate
-			: ((flags & SQLITE_OPEN_READWRITE)
-				? IPlatformRequest::DatabaseOpenMode::ReadWrite
-				: IPlatformRequest::DatabaseOpenMode::ReadOnly);
-	const char* fullpath = platform.getDatabasePath(db_asset, openMode,
-		&isReadOnly);
+	const char* fullpath = resolveDatabaseOpenPath(db_asset, flags, true, &isReadOnly);
 	if (!fullpath || !fullpath[0]) {
 		platform.logging("Database path could not be resolved: %s",
 			db_asset ? db_asset : "(temporary)");
@@ -132,6 +126,11 @@ CKLBLuaDB::open(const char * db_asset, int flags)
 	//
 	if (isReadOnly && (flags & SQLITE_OPEN_READONLY) == 0) {
 		klb_assertAlways("DB Write Enabled on Read Only file system.");
+	}
+
+	if (!isReadOnly) {
+		flags |= SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE;
+		flags &= ~SQLITE_OPEN_READONLY;
 	}
 
 	// create が指定されていない場合、対象のDBファイルが見つからなければその時点でエラー
@@ -152,16 +151,22 @@ CKLBLuaDB::open(const char * db_asset, int flags)
 	const char* sqliteVfs = NULL;
 	#endif
 	int rc = sqlite3_open_v2(sqlitePath, &m_db, flags, sqliteVfs);
+	if (rc) {
+		platform.logging("Database open failed: uri=%s path=%s flags=0x%x rc=%d extended=%d: %s; %s",
+			db_asset, fullpath, flags, rc, sqlite3_extended_errcode(m_db), sqlite3_errmsg(m_db),
+			databasePlatform() ? databasePlatform()->error() : "no platform detail");
+		klb_assertAlways("Can not open db %s\nSQLite=%d extended=%d: %s\n%s", db_asset,
+			rc, sqlite3_extended_errcode(m_db), sqlite3_errmsg(m_db),
+			databasePlatform() ? databasePlatform()->error() : "no platform detail");
+		delete[] fullpath;
+		close();
+		return false;
+	}
     if (!isReadOnly) {
         CPFInterface::getInstance().platform().excludePathFromBackup(fullpath);
     }
 	
 	delete[] fullpath;
-	if (rc) {
-		klb_assertAlways("Can not open db %s", db_asset);
-		close();
-		return false;
-	}
 
 	char * errMsg;
 	m_pragmaJournal = true;
@@ -169,10 +174,7 @@ CKLBLuaDB::open(const char * db_asset, int flags)
 	m_pragmaJournal = false;
 
 	if (rc) {
-		platform.logging("Impossible to configure journal for %s: rc=%d error=%s",
-			db_asset ? db_asset : "(temporary)", rc,
-			errMsg ? errMsg : sqlite3_errmsg(m_db));
-		sqlite3_free(errMsg);
+		platform.logging("Impossible to disable journal");
 	}
 
 	return true;

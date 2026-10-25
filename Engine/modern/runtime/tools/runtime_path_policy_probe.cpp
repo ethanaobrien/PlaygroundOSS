@@ -1,9 +1,5 @@
 #include "Playground/Runtime/RuntimePlatform.h"
 #include "Playground/Switch/SwitchPath.h"
-#include "CKLBDatabase.h"
-#include "CPFInterface.h"
-#include "encryptFile.h"
-#include "sqlite3.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -27,16 +23,6 @@ bool check(bool condition, const char *message) {
 std::string fullPath(playground::runtime::RuntimePlatform &platform,
                      const char *uri, bool &readOnly) {
   const char *value = platform.getFullPath(uri, &readOnly);
-  std::string result = value ? value : "";
-  delete[] value;
-  return result;
-}
-
-std::string databasePath(playground::runtime::RuntimePlatform &platform,
-                         const char *uri,
-                         IPlatformRequest::DatabaseOpenMode mode,
-                         bool &readOnly) {
-  const char *value = platform.getDatabasePath(uri, mode, &readOnly);
   std::string result = value ? value : "";
   delete[] value;
   return result;
@@ -95,21 +81,6 @@ int main(int argc, char **argv) {
                      (content / "profile.db").string() &&
                  !readOnly,
              "ordinary external URI did not select the content root") ||
-      !check(databasePath(platform, "file://external/profile.db",
-                          IPlatformRequest::DatabaseOpenMode::ReadOnly,
-                          readOnly) == (content / "profile.db").string() &&
-                 !readOnly,
-             "read-only external database did not select visible content") ||
-      !check(databasePath(platform, "file://external/profile.db",
-                          IPlatformRequest::DatabaseOpenMode::ReadWriteCreate,
-                          readOnly) == (state / "profile.db").string() &&
-                 !readOnly,
-             "writable external database did not select account state") ||
-      !check(databasePath(platform, "file://state/settings.db",
-                          IPlatformRequest::DatabaseOpenMode::ReadWriteCreate,
-                          readOnly) == (state / "settings.db").string() &&
-                 !readOnly,
-             "explicit state database did not retain durable state") ||
       !check(fullPath(platform, "file://external/assets/cache.bin", readOnly) ==
                      (content / "assets/cache.bin").string() &&
                  !readOnly,
@@ -118,98 +89,6 @@ int main(int argc, char **argv) {
                      (install / "start.lua").string() &&
                  readOnly,
              "install URI did not select the read-only install root"))
-    return 1;
-
-  std::ofstream(content / "copy-up.db") << "seeded-content";
-  const int stateBeforeCopyUp = stateCommits;
-  if (!check(databasePath(platform, "file://external/copy-up.db",
-                          IPlatformRequest::DatabaseOpenMode::ReadWrite,
-                          readOnly) == (state / "copy-up.db").string(),
-             "writable database did not resolve to account state") ||
-      !check(std::filesystem::exists(state / "copy-up.db") &&
-                 stateCommits == stateBeforeCopyUp + 1,
-             "writable database did not durably copy up existing content"))
-    return 1;
-  std::ifstream copiedDatabase(state / "copy-up.db");
-  std::string copiedContents;
-  copiedDatabase >> copiedContents;
-  if (!check(copiedContents == "seeded-content",
-             "database copy-up changed the stored bytes"))
-    return 1;
-
-  // A failed archive commit must never leave a visible or durable partial
-  // upper-layer database. The implementation publishes through a unique
-  // same-directory temporary object, removes the completed name after the
-  // injected failure, and commits that rollback once storage recovers.
-  const std::filesystem::path failureState = scratch / "failure-state";
-  std::filesystem::create_directories(failureState, error);
-  std::ofstream(content / "commit-failure") << "complete-lower-object";
-  int failureCommits = 0;
-  bool failNextCommit = false;
-  playground::runtime::RuntimePlatform failurePlatform(
-      install.string(), content.string(), failureState.string(), nullptr,
-      [&] {
-        ++failureCommits;
-        if (failNextCommit) {
-          failNextCommit = false;
-          return false;
-        }
-        return true;
-      });
-  failureCommits = 0;
-  failNextCommit = true;
-  const std::string failedCopyUp = databasePath(
-      failurePlatform, "file://external/commit-failure",
-      IPlatformRequest::DatabaseOpenMode::ReadWrite, readOnly);
-  bool temporaryRemains = false;
-  for (const auto &entry : std::filesystem::directory_iterator(failureState)) {
-    if (entry.path().filename().string().rfind(".pg-copyup-", 0) == 0)
-      temporaryRemains = true;
-  }
-  if (!check(failedCopyUp.empty() && failureCommits == 2 &&
-                 !std::filesystem::exists(failureState / "commit-failure") &&
-                 !temporaryRemains,
-             "failed database publication left a visible or temporary copy"))
-    return 1;
-
-  // Account SaveData is the upper layer, while CacheStorage is shared by the
-  // title. Two selected users must therefore receive independent copy-ups of
-  // the same lower object without modifying that lower object or each other.
-  const std::filesystem::path accountA = scratch / "account-a";
-  const std::filesystem::path accountB = scratch / "account-b";
-  std::filesystem::create_directories(accountA, error);
-  std::filesystem::create_directories(accountB, error);
-  std::ofstream(content / "account-proof") << "shared-seed";
-  int accountACommits = 0;
-  int accountBCommits = 0;
-  playground::runtime::RuntimePlatform platformA(
-      install.string(), content.string(), accountA.string(), nullptr,
-      [&] { ++accountACommits; return true; });
-  playground::runtime::RuntimePlatform platformB(
-      install.string(), content.string(), accountB.string(), nullptr,
-      [&] { ++accountBCommits; return true; });
-  // Runtime construction may durably create the engine's account identity;
-  // isolate the copy-up boundary measured below.
-  accountACommits = 0;
-  accountBCommits = 0;
-  const std::string accountAPath = databasePath(
-      platformA, "file://external/account-proof",
-      IPlatformRequest::DatabaseOpenMode::ReadWrite, readOnly);
-  const std::string accountBPath = databasePath(
-      platformB, "file://external/account-proof",
-      IPlatformRequest::DatabaseOpenMode::ReadWrite, readOnly);
-  std::ofstream(accountAPath, std::ios::trunc) << "account-a-value";
-  std::ifstream accountBValue(accountBPath);
-  std::ifstream sharedValue(content / "account-proof");
-  std::string accountBText;
-  std::string sharedText;
-  accountBValue >> accountBText;
-  sharedValue >> sharedText;
-  if (!check(accountAPath == (accountA / "account-proof").string() &&
-                 accountBPath == (accountB / "account-proof").string() &&
-                 accountACommits == 1 && accountBCommits == 1 &&
-                 accountBText == "shared-seed" && sharedText == "shared-seed",
-             "database copy-up was not isolated by selected account"))
     return 1;
 
   std::ofstream(state / "delete-shadow") << "state";
@@ -227,12 +106,7 @@ int main(int argc, char **argv) {
 
   std::ofstream(state / "profile.db") << "private";
   std::ofstream(content / "profile.db") << "replaceable";
-  if (!check(databasePath(platform, "file://external/profile.db",
-                          IPlatformRequest::DatabaseOpenMode::ReadOnly,
-                          readOnly) == (state / "profile.db").string() &&
-                 !readOnly,
-             "read-only database did not observe the account-state overlay") ||
-      !check(fullPath(platform, "file://external/profile.db", readOnly) ==
+  if (!check(fullPath(platform, "file://external/profile.db", readOnly) ==
                      (state / "profile.db").string(),
              "ordinary reads did not observe the account-state overlay"))
     return 1;
@@ -256,9 +130,7 @@ int main(int argc, char **argv) {
     return 1;
 
   std::ofstream(content / "rename-copy-up") << "lower-source";
-  (void)databasePath(platform, "file://external/rename-copy-up",
-                     IPlatformRequest::DatabaseOpenMode::ReadWrite,
-                     readOnly);
+  std::ofstream(state / "rename-copy-up") << "upper-source";
   std::ofstream(content / "rename-copy-destination") << "lower-destination";
 
   // Lower-layer cleanup must be committed before the authoritative upper
@@ -302,29 +174,6 @@ int main(int argc, char **argv) {
   if (!check(fullPath(platform, "asset://asset/not-present.db_", readOnly)
                          .empty(),
              "missing asset unexpectedly resolved to an install path"))
-    return 1;
-  if (!check(databasePath(
-                 platform, "asset://asset/not-present.db_",
-                 IPlatformRequest::DatabaseOpenMode::ReadOnly, readOnly)
-                 .empty(),
-             "missing named database became a temporary database"))
-    return 1;
-
-  const int stateBeforeDatabaseCommit = stateCommits;
-  const int contentBeforeDatabaseCommit = contentCommits;
-  if (!check(platform.commitDatabasePath((state / "profile.db").c_str()) &&
-                 stateCommits == stateBeforeDatabaseCommit + 1 &&
-                 contentCommits == contentBeforeDatabaseCommit,
-             "database durability did not select the state filesystem") ||
-      !check(platform.commitDatabasePath((content / "cache.db").c_str()) &&
-                 stateCommits == stateBeforeDatabaseCommit + 1 &&
-                 contentCommits == contentBeforeDatabaseCommit + 1,
-             "database durability did not select the content filesystem") ||
-      !check(platform.commitDatabasePath(
-                 (install / "read-only.db").c_str()) &&
-                 stateCommits == stateBeforeDatabaseCommit + 1 &&
-                 contentCommits == contentBeforeDatabaseCommit + 1,
-             "database durability committed an unowned filesystem"))
     return 1;
 
   for (const char *invalid :
@@ -442,64 +291,6 @@ int main(int argc, char **argv) {
                "encoded storage leaked a removed logical name"))
       return 1;
   }
-
-  CPFInterface::getInstance().setPlatformRequest(&platform);
-  initNMAsset(0);
-  if (!check(initializeEncryptedSQLiteVFS(),
-             "encrypted SQLite VFS could not initialize"))
-    return 1;
-  const std::string encryptedUri = "file://external/encrypted-roundtrip";
-  const std::string encryptedState = databasePath(
-      platform, encryptedUri.c_str(),
-      IPlatformRequest::DatabaseOpenMode::ReadWriteCreate, readOnly);
-  sqlite3 *database = nullptr;
-  char *sqliteError = nullptr;
-  const int createOpen = sqlite3_open_v2(
-      encryptedState.c_str(), &database,
-      SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr);
-  if (!check(createOpen == SQLITE_OK,
-             database ? sqlite3_errmsg(database) :
-                        "could not open encrypted account database"))
-    return 1;
-  const int createExec = sqlite3_exec(
-      database,
-      "PRAGMA journal_mode=OFF;"
-      "CREATE TABLE proof(value INTEGER);"
-      "INSERT INTO proof VALUES(73);",
-      nullptr, nullptr, &sqliteError);
-  if (!check(createExec == SQLITE_OK,
-             sqliteError ? sqliteError : "could not write encrypted database") ||
-      !check(sqlite3_close(database) == SQLITE_OK,
-             "could not close encrypted account database"))
-    return 1;
-  sqlite3_free(sqliteError);
-
-  const std::filesystem::path encryptedContent = content / "encrypted-roundtrip";
-  std::filesystem::copy_file(encryptedState, encryptedContent,
-                             std::filesystem::copy_options::overwrite_existing,
-                             error);
-  std::filesystem::remove(encryptedState, error);
-  const std::string copiedState = databasePath(
-      platform, encryptedUri.c_str(), IPlatformRequest::DatabaseOpenMode::ReadWrite,
-      readOnly);
-  int selectedValue = 0;
-  const auto readValue = [](void *context, int columns, char **values,
-                            char **) {
-    if (columns == 1 && values && values[0])
-      *static_cast<int *>(context) = std::atoi(values[0]);
-    return 0;
-  };
-  database = nullptr;
-  sqliteError = nullptr;
-  if (!check(sqlite3_open_v2(copiedState.c_str(), &database,
-                             SQLITE_OPEN_READWRITE, nullptr) == SQLITE_OK &&
-                 sqlite3_exec(database, "SELECT value FROM proof;", readValue,
-                              &selectedValue, &sqliteError) == SQLITE_OK &&
-                 selectedValue == 73 && sqlite3_close(database) == SQLITE_OK,
-             sqliteError ? sqliteError :
-                           "encrypted database did not survive copy-up"))
-    return 1;
-  sqlite3_free(sqliteError);
 
   std::filesystem::remove_all(scratch, error);
   std::puts("runtime-path-policy-probe passed");

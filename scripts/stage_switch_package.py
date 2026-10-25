@@ -55,13 +55,19 @@ def main() -> int:
     parser.add_argument("--elf", type=pathlib.Path, required=True)
     parser.add_argument("--npdm", type=pathlib.Path, required=True)
     parser.add_argument("--nacp", type=pathlib.Path, required=True)
-    parser.add_argument("--archive", type=pathlib.Path, required=True)
-    parser.add_argument("--metadata", type=pathlib.Path, required=True)
+    parser.add_argument("--archive", type=pathlib.Path)
+    parser.add_argument("--metadata", type=pathlib.Path)
+    parser.add_argument("--database-probe", action="store_true")
     parser.add_argument("--icon", type=pathlib.Path, required=True)
     parser.add_argument("--elf2nso", type=pathlib.Path, required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
     parser.add_argument("--title-id", required=True)
     args = parser.parse_args()
+    if args.database_probe:
+        if args.archive or args.metadata or int(args.title_id, 0) != 0x0100F59153492000:
+            raise ValueError("Database probe requires its isolated title ID and no assets")
+    elif not args.archive or not args.metadata:
+        raise ValueError("Game package requires AppAssets archive and metadata")
 
     if jpeg_dimensions(args.icon) != (256, 256):
         raise ValueError("Switch icon must be exactly 256x256 pixels")
@@ -76,12 +82,14 @@ def main() -> int:
     copy(args.npdm, output / "exefs/main.npdm")
     copy(args.nacp, output / "control/control.nacp")
     copy(args.icon, output / "control/icon_AmericanEnglish.dat")
-    copy(args.archive, output / "romfs/AppAssets.zip")
-    copy(args.metadata, output / "romfs/AppAssets.metadata")
+    if not args.database_probe:
+        copy(args.archive, output / "romfs/AppAssets.zip")
+        copy(args.metadata, output / "romfs/AppAssets.metadata")
 
     files = sorted(path for path in output.rglob("*") if path.is_file())
     manifest = {
         "format": 1,
+        "kind": "database-probe" if args.database_probe else "game",
         "title_id": args.title_id,
         "files": [
             {"path": path.relative_to(output).as_posix(),

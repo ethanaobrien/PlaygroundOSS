@@ -482,6 +482,20 @@ if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux
     )
     playground_copy_sdl_runtime(playground-engine-link-probe)
     add_executable(playground-stream-probe tools/runtime_stream_probe.cpp)
+    add_executable(playground-database-native-probe tools/database_native_probe.cpp)
+    target_link_libraries(playground-database-native-probe PRIVATE playground_engine_runtime)
+    playground_copy_sdl_runtime(playground-database-native-probe)
+    if(PLAYGROUND_TARGET_PLATFORM STREQUAL linux)
+    add_executable(playground-archive-writer-probe tools/archive_writer_probe.cpp)
+    target_include_directories(playground-archive-writer-probe PRIVATE switch/include)
+    target_link_libraries(playground-archive-writer-probe PRIVATE playground_engine_runtime)
+    add_executable(playground-database-contract-probe tools/database_contract_probe.cpp
+        tools/database_contract_probe_main.cpp)
+    target_sources(playground-database-contract-probe PRIVATE
+        switch/src/SwitchDatabase.cpp switch/src/SwitchPath.cpp)
+    target_include_directories(playground-database-contract-probe PRIVATE switch/include)
+    target_link_libraries(playground-database-contract-probe PRIVATE playground_engine_runtime)
+    endif()
     target_link_libraries(playground-stream-probe PRIVATE playground_engine_runtime)
     playground_copy_sdl_runtime(playground-stream-probe)
     add_executable(playground-platform-services-probe

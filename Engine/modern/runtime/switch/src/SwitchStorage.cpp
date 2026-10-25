@@ -440,11 +440,12 @@ bool SwitchStorage::unmount(std::string *error) {
     failure += detail;
   };
   std::string commitError;
-  if (m_stateMounted && !commitState(commitError))
-    recordFailure("SaveData commit", commitError);
-  commitError.clear();
+  // Content first: durable state must never reference uncommitted content.
   if (m_cacheMounted && !commitCache(commitError))
     recordFailure("CacheStorage commit", commitError);
+  commitError.clear();
+  if (m_stateMounted && !commitState(commitError))
+    recordFailure("SaveData commit", commitError);
   if (m_cacheMounted) {
     fsdevUnmountDevice(CacheMount);
     m_cacheMounted = false;
